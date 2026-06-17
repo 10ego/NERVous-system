@@ -1,0 +1,1 @@
+{"type":"config","name":"Optimize NERVous GPT 5.5 low code-quality output per token","metricName":"quality_per_ktok","metricUnit":"","bestDirection":"higher"}
