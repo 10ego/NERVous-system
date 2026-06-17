@@ -23,7 +23,8 @@
     "test:lion": "vitest run --dir lion",
     "test:cerebel": "vitest run --dir cerebel",
     "test:ganglion": "vitest run --dir ganglion",
-    "test:amygdala": "vitest run --dir amygdala"
+    "test:amygdala": "vitest run --dir amygdala",
+    "test:e2e": "vitest run demo/tests/e2e-flow.test.ts"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "*",

@@ -2,7 +2,7 @@
 
 A modular multi-agent coding-agent extension framework for [pi](https://pi.dev), inspired by Evangelion naming but built as a practical system where multiple coding agents **plan, coordinate, execute, recover from interruptions, and review** work continuously.
 
-> **Status:** 🟢 Core component set is complete and tested: **MAGI**, **AXON**, **SYNAPSE**, **CORTEX**, **LION**, **CEREBEL**, **GANGLION**, and **AMYGDALA**. Next remaining work is the final end-to-end demo flow.
+> **Status:** 🟢 Core component set and final deterministic end-to-end demo are complete and tested: **MAGI**, **AXON**, **SYNAPSE**, **CORTEX**, **LION**, **CEREBEL**, **GANGLION**, **AMYGDALA**, plus [`demo/`](./demo).
 
 ## Components
 
@@ -16,6 +16,7 @@ A modular multi-agent coding-agent extension framework for [pi](https://pi.dev),
 | **GANGLION** | Working-group roster/capability allocator for LIONs | ✅ [`ganglion/`](./ganglion) |
 | **SYNAPSE** | Transient shared coordination scratchpad | ✅ [`synapse/`](./synapse) |
 | **AMYGDALA** | Risk escalation and safety triage | ✅ [`amygdala/`](./amygdala) |
+| **E2E demo** | Deterministic full-system todo API flow | ✅ [`demo/`](./demo) |
 
 ### Execution flow (target)
 
@@ -41,14 +42,16 @@ nervous-system/
 ├── lion/            # ✅ LION isolated pi coding subagent worker (extension + skill + prompt + tests)
 ├── cerebel/         # ✅ CEREBEL orchestration controller for LION waves (extension + skill + prompt + tests)
 ├── ganglion/        # ✅ GANGLION LION roster + capability allocator (extension + skill + prompt + tests)
-└── amygdala/        # ✅ AMYGDALA risk escalation + safety triage (extension + skill + prompt + tests)
+├── amygdala/        # ✅ AMYGDALA risk escalation + safety triage (extension + skill + prompt + tests)
+└── demo/            # ✅ deterministic final end-to-end flow
 ```
 
 ## Getting started
 
 ```bash
 npm install
-npm test                       # run all component tests
+npm test                       # run all component + demo tests
+npm run test:e2e               # run the deterministic final end-to-end flow
 
 # Try MAGI without installing:
 pi -e ./magi/extension/index.ts
