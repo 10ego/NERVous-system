@@ -100,7 +100,7 @@ export default function (pi: ExtensionAPI) {
 			"NOT long-term memory — retention prunes old notes. Use AXON for durable task state.",
 			"Actions: post, list, get, summary, prune, clear.",
 		].join(" "),
-		promptSnippet: "Post/read transient coordination notes (SYNAPSE) shared across agents",
+		promptSnippet: "Post/read short SYNAPSE coordination notes; use risk/blocker notes during blocked handoffs",
 		promptGuidelines: [
 			"Use the synapse tool action 'post' to announce work started, completed, blockers, risks, or decisions so other agents stay coordinated.",
 			"Keep synapse notes short and coordination-focused (who/what/why now); put durable state in AXON, not synapse.",
