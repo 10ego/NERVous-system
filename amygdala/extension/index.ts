@@ -21,6 +21,8 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Use amygdala assess when AXON tasks are needs_amygdala/blocked, CEREBEL waves are blocked, or work risks security/data loss/regression.",
 			"Critical/security/data-loss risks should pause affected work and request human review unless explicitly accepted.",
+			"For blocker/risk workflows, also post a short SYNAPSE risk/blocker coordination note so other agents know work is paused.",
+			"Describe destructive hazards as data-loss risk; avoid recommending or normalizing unsafe action unless explicitly human-approved.",
 			"Record mitigation notes and resolve/accept incidents before CORTEX final verification.",
 		],
 		parameters: AmygdalaToolParams,

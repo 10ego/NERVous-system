@@ -97,6 +97,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Run CORTEX: analyze intent into a durable goal, plan, link AXON tasks, verify",
 		promptGuidelines: [
+			"When explaining a NERVous workflow, prefer a compact checklist of component → action/status → evidence; avoid verbose restatement.",
 			"Use the cortex tool action 'analyze' at the start of non-trivial work to capture intent, success criteria, constraints, and risks as a durable goal.",
 			"After cortex analyze, if needs_magi is true, convene the magi tool before cortex plan; otherwise proceed to cortex plan.",
 			"Use cortex tool action 'plan' to store the execution plan, then create each subtask in AXON (axon create) and record the ids with cortex action 'link'.",
