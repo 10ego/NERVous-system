@@ -1,0 +1,129 @@
+# @nervous-system/cerebel
+
+> **CEREBEL** — orchestration controller for LION worker waves. It turns ready AXON tasks into LION assignments, tracks dispatch/results, and decides whether to dispatch more work, wait, complete, replan, or escalate.
+
+CEREBEL does not execute code itself. It controls a **wave** of assignments and persists orchestration state to `<cwd>/.pi/cerebel/cerebel.json` so work can resume after compaction/restart.
+
+---
+
+## Install / run
+
+```bash
+pi -e ./cerebel/extension/index.ts
+pi install ./cerebel
+pi install ./cerebel -l
+```
+
+Package surfaces:
+
+- `cerebel` tool
+- `/cerebel` command — orchestration summary
+- `/cerebel:waves` command — recent waves
+- `cerebel` skill
+- `/cerebel <context>` prompt template
+
+---
+
+## Tool actions
+
+| Action | Purpose |
+|--------|---------|
+| `plan_wave` | Create a wave from AXON task briefs or direct assignments |
+| `dispatch` | Mark assignments dispatched and link LION run ids |
+| `record` | Record a LION outcome for one assignment |
+| `decide` | Compute next controller decision |
+| `complete_wave` | Finish a successful wave |
+| `cancel` | Cancel a wave |
+| `get` | Show one wave/current wave |
+| `list` | List waves |
+| `summary` | Summarize orchestration state |
+
+Example flow:
+
+```text
+axon list ready_only=true
+
+cerebel plan_wave tasks=[
+  {id:"task-001",title:"Implement todo API",description:"CRUD endpoints",priority:"high"},
+  {id:"task-002",title:"Add API tests",priority:"medium"}
+] max_parallel=2 context="Goal: todo API with tests"
+
+lion run task_id="task-001" agent_id="lion-001-001" objective="Implement todo API" context="Goal: todo API with tests"
+lion run task_id="task-002" agent_id="lion-001-002" objective="Add API tests" context="Goal: todo API with tests"
+
+cerebel dispatch links=[
+  {assignment_id:"assign-001",lion_run_id:"run-001"},
+  {assignment_id:"assign-002",lion_run_id:"run-002"}
+]
+
+cerebel record assignment_id="assign-001" lion_run_id="run-001" outcome="completed" summary="API implemented"
+cerebel record assignment_id="assign-002" lion_run_id="run-002" outcome="blocked" blockers=["test framework missing"]
+cerebel decide
+```
+
+---
+
+## Decision logic
+
+CEREBEL decision reports are simple and explicit:
+
+- `dispatch` — planned assignments can be launched without exceeding `max_parallel`.
+- `wait` — assignments are dispatched/running; collect LION results.
+- `complete` — all assignments are `completed` or `partial`.
+- `replan` — at least one assignment failed.
+- `escalate_to_amygdala` — at least one assignment is blocked.
+- `cancelled` — wave cancelled.
+
+---
+
+## Storage & durability
+
+| Aspect | Behavior |
+|--------|----------|
+| Location | `<cwd>/.pi/cerebel/cerebel.json` (override with `CEREBEL_PATH`) |
+| Atomicity | Write to `cerebel.json.tmp` then rename |
+| Backup | Previous file copied to `cerebel.json.bak` |
+| Concurrency | Advisory lock (`cerebel.json.lock`) with stale-lock detection |
+| Corruption | Corrupt file copied aside (`.corrupt-<ts>`) and fresh ledger started |
+
+---
+
+## Architecture
+
+```
+cerebel/
+├── extension/
+│   ├── index.ts        # cerebel tool + /cerebel commands
+│   ├── schema.ts       # wave/assignment/decision/tool schemas
+│   ├── store.ts        # pure orchestration state machine
+│   ├── backend.ts      # durable file backend
+│   └── render.ts       # markdown/TUI summaries
+├── skills/cerebel/SKILL.md
+├── prompts/cerebel.md
+└── tests/
+```
+
+---
+
+## Relationship to NERVous
+
+- **CORTEX**: intent, plan, verification.
+- **AXON**: durable task state.
+- **CEREBEL**: orchestration waves and assignment decisions.
+- **LION**: actual isolated execution.
+- **SYNAPSE**: transient coordination notes.
+- **AMYGDALA**: future risk escalation target for blocked waves.
+
+CEREBEL deliberately has no hard runtime imports from AXON/LION/SYNAPSE. The agent bridges tools, which keeps each package independently installable.
+
+---
+
+## Test
+
+```bash
+npm test
+npx vitest run cerebel
+CEREBEL_LIVE=1 npx vitest run cerebel/tests/live.test.ts
+```
+
+The live test verifies a real model can call `cerebel plan_wave` and persist an orchestration wave.

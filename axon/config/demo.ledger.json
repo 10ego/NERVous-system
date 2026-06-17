@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "name": "demo: simple todo API",
+  "tasks": [
+    {
+      "id": "task-001",
+      "title": "Scaffold todo API project",
+      "description": "Set up the project structure, language runtime, and entry point for the todo API.",
+      "parent_id": null,
+      "dependencies": [],
+      "assigned_to": null,
+      "status": "ready",
+      "priority": "high",
+      "progress_notes": [],
+      "artifacts": [],
+      "blockers": [],
+      "review_status": "not_reviewed",
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "updated_at": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "task-002",
+      "title": "Implement CRUD endpoints",
+      "description": "Implement create/read/update/delete endpoints for todo items.",
+      "parent_id": null,
+      "dependencies": ["task-001"],
+      "assigned_to": null,
+      "status": "pending",
+      "priority": "high",
+      "progress_notes": [],
+      "artifacts": [],
+      "blockers": [],
+      "review_status": "not_reviewed",
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "updated_at": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "task-003",
+      "title": "Add in-memory storage layer",
+      "description": "Implement a simple in-memory store backing the endpoints.",
+      "parent_id": null,
+      "dependencies": ["task-001"],
+      "assigned_to": null,
+      "status": "pending",
+      "priority": "medium",
+      "progress_notes": [],
+      "artifacts": [],
+      "blockers": [],
+      "review_status": "not_reviewed",
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "updated_at": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "task-004",
+      "title": "Write endpoint tests",
+      "description": "Write tests covering all CRUD operations and edge cases.",
+      "parent_id": null,
+      "dependencies": ["task-002", "task-003"],
+      "assigned_to": null,
+      "status": "pending",
+      "priority": "high",
+      "progress_notes": [],
+      "artifacts": [],
+      "blockers": [],
+      "review_status": "not_reviewed",
+      "created_at": "2026-01-01T00:00:00.000Z",
+      "updated_at": "2026-01-01T00:00:00.000Z"
+    }
+  ]
+}

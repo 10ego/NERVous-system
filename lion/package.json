@@ -1,0 +1,41 @@
+{
+  "name": "@nervous-system/lion",
+  "version": "0.1.0",
+  "description": "LION — Local Intelligence Operations Node: an isolated pi coding subagent worker for the NERVous System.",
+  "keywords": [
+    "pi-package",
+    "nervous-system",
+    "lion",
+    "subagent",
+    "multi-agent"
+  ],
+  "license": "MIT",
+  "pi": {
+    "extensions": [
+      "extension/index.ts"
+    ],
+    "skills": [
+      "skills/lion"
+    ],
+    "prompts": [
+      "prompts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "@types/node": "^22.0.0",
+    "typebox": "*",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}
