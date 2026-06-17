@@ -41,7 +41,7 @@ export default function (pi: ExtensionAPI) {
 			"Use cerebel after CORTEX has planned work into AXON and ready AXON tasks exist.",
 			"First read axon list/summary, then pass ready task briefs into cerebel plan_wave.",
 			"For each ready assignment, call lion run with task_id/objective/context/agent_id, then cerebel dispatch/record the LION run id and outcome.",
-			"Use cerebel decide after recording worker results; blocked/failed waves should update AXON and later AMYGDALA, not silently continue.",
+			"After blocked/failed results: cerebel record/decide, update AXON, post a SYNAPSE risk/blocker note, then use AMYGDALA or replan; never silently continue.",
 		],
 		parameters: CerebelToolParams,
 
