@@ -34,7 +34,7 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Orchestration controller for LION worker waves. Forms assignments from ready AXON tasks,",
 			"records LION run outcomes, and decides whether to dispatch, wait, complete, replan, or escalate.",
-			"State persists in .pi/cerebel/cerebel.json. Actions: plan_wave, dispatch, record, decide, complete_wave, cancel, get, list, summary.",
+			"State persists in the active NERVous project/context namespace. Actions: plan_wave, dispatch, record, decide, complete_wave, cancel, get, list, summary.",
 		].join(" "),
 		promptSnippet: "Orchestrate ready AXON tasks into LION worker waves and record outcomes",
 		promptGuidelines: [

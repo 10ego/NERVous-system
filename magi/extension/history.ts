@@ -1,5 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import type { MagiInput, MagiOutput } from "./schema.ts";
 
 export interface MagiRecord {
@@ -21,8 +22,7 @@ const now = () => new Date().toISOString();
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
 
 export function resolveMagiHistoryPath(cwd: string): string {
-	const env = process.env.MAGI_HISTORY_PATH;
-	return env && path.isAbsolute(env) ? env : path.join(cwd, ".pi", "magi", "history.json");
+	return resolveNervousStateFile(cwd, "magi", "history.json", "MAGI_HISTORY_PATH");
 }
 
 export class MagiHistoryStore {

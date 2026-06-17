@@ -5,3 +5,6 @@ dist/
 coverage/
 .vscode/
 .idea/
+
+# pi/NERVous runtime state
+.pi/

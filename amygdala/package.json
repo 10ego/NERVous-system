@@ -1,13 +1,25 @@
 {
   "name": "@nervous-system/amygdala",
   "version": "0.1.0",
-  "description": "AMYGDALA — risk escalation and safety triage layer for the NERVous System.",
-  "keywords": ["pi-package", "nervous-system", "amygdala", "risk", "escalation"],
+  "description": "AMYGDALA \u2014 risk escalation and safety triage layer for the NERVous System.",
+  "keywords": [
+    "pi-package",
+    "nervous-system",
+    "amygdala",
+    "risk",
+    "escalation"
+  ],
   "license": "MIT",
   "pi": {
-    "extensions": ["extension/index.ts"],
-    "skills": ["skills/amygdala"],
-    "prompts": ["prompts"]
+    "extensions": [
+      "extension/index.ts"
+    ],
+    "skills": [
+      "skills/amygdala"
+    ],
+    "prompts": [
+      "prompts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
@@ -25,5 +37,8 @@
     "typebox": "*",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "@nervous-system/state": "0.1.0"
   }
 }

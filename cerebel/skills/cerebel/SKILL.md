@@ -7,7 +7,7 @@ description: Orchestrate ready AXON tasks into LION worker waves. Use CEREBEL af
 
 CEREBEL is the controller for a GANGLION of LION workers. It does not code directly. It forms **waves** of assignments from ready AXON tasks, delegates each assignment to LION, records outcomes, and decides whether to dispatch more work, wait, complete, replan, or escalate.
 
-Durable state: `<project>/.pi/cerebel/cerebel.json`.
+Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<context>/cerebel/cerebel.json` by default).
 
 ## Standard loop
 

@@ -7,12 +7,13 @@
  * or restart without the original context window.
  *
  * Storage: a single JSON document at <cortexPath> (default
- * `<cwd>/.pi/cortex/cortex.json`), shared across the main agent and any
+ * `~/.pi/nervous/<project>/<context>/cortex/cortex.json`), shared across the main agent and any
  * CORTEX subprocesses.
  */
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { GoalStore } from "./store.ts";
 import type { CortexFile } from "./schema.ts";
 
@@ -28,11 +29,10 @@ export interface CortexLocation {
 /**
  * Resolve the cortex-state path. Precedence:
  *   1. `CORTEX_PATH` env var (absolute path to the file)
- *   2. `<cwd>/.pi/cortex/cortex.json`
+ *   2. `~/.pi/nervous/<project>/<context>/cortex/cortex.json`
  */
 export function resolveCortexLocation(cwd: string): CortexLocation {
-	const env = process.env.CORTEX_PATH;
-	const cortexPath = env && path.isAbsolute(env) ? env : path.join(cwd, ".pi", "cortex", "cortex.json");
+	const cortexPath = resolveNervousStateFile(cwd, "cortex", "cortex.json", "CORTEX_PATH");
 	return { cortexPath, dir: path.dirname(cortexPath) };
 }
 

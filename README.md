@@ -17,6 +17,7 @@ A modular multi-agent coding-agent extension framework for [pi](https://pi.dev),
 | **SYNAPSE** | Transient shared coordination scratchpad | ✅ [`synapse/`](./synapse) |
 | **AMYGDALA** | Risk escalation and safety triage | ✅ [`amygdala/`](./amygdala) |
 | **Dashboard** | Read-only TUI modal for all NERVous system state | ✅ [`dashboard/`](./dashboard) |
+| **State** | Shared global project/context state resolver | ✅ [`state/`](./state) |
 | **E2E demo** | Deterministic full-system todo API flow | ✅ [`demo/`](./demo) |
 
 ### Execution flow (target)
@@ -29,6 +30,34 @@ LIONs complete → update AXON → CEREBEL assigns more → … → CORTEX check
 ```
 
 **Key principle:** AXON is durable state; SYNAPSE is transient coordination. Interrupted work resumes from AXON without the original context window.
+
+## State isolation
+
+NERVous runtime state is global but isolated by project and work context. By default, component ledgers live under:
+
+```text
+~/.pi/nervous/<project-slug>-<path-hash>/<context>/<component>/...
+```
+
+- **Project namespace** prevents cross-repo contamination. It is derived from the git root path; set `NERVOUS_PROJECT=<name>` to override.
+- **Context namespace** prevents stale completed work from bleeding into a new effort. It defaults to the current git branch, or `default` outside git; set `NERVOUS_CONTEXT=<work-id>` to intentionally start/resume a workstream.
+- Set `NERVOUS_STATE_ROOT=/path/to/root` to move all NERVous state elsewhere.
+- Existing explicit component paths still win, e.g. `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, `MAGI_HISTORY_PATH`.
+
+Examples:
+
+```bash
+# Start a clean, named work context in the current repo
+NERVOUS_CONTEXT=upload-api pi
+
+# Resume that same work context later
+NERVOUS_CONTEXT=upload-api pi --session <session-id>
+
+# Put all NERVous state under a custom global root
+NERVOUS_STATE_ROOT="$HOME/.pi/nervous" pi
+```
+
+NERVous does not auto-migrate or delete old repo-local `.pi/` state. If you have existing state you want to keep, copy it into the corresponding global namespace manually.
 
 ## NERVous prompts vs. raw LLM baseline
 
@@ -58,6 +87,7 @@ nervous-system/
 ├── ganglion/        # ✅ GANGLION LION roster + capability allocator (extension + skill + prompt + tests)
 ├── amygdala/        # ✅ AMYGDALA risk escalation + safety triage (extension + skill + prompt + tests)
 ├── dashboard/       # ✅ read-only TUI dashboard for all NERVous system state
+├── state/           # ✅ shared global project/context state resolver
 └── demo/            # ✅ deterministic final end-to-end flow
 ```
 
@@ -68,6 +98,7 @@ npm install
 npm test                       # run all component + demo tests
 npm run test:e2e               # run the deterministic final end-to-end flow
 npm run test:dashboard         # run dashboard tests
+npm run test:state             # run shared state resolver tests
 
 # Try MAGI without installing:
 pi -e ./magi/extension/index.ts

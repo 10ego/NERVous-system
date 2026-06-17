@@ -2,6 +2,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { GanglionLedger } from "./store.ts";
 import type { GanglionFile } from "./schema.ts";
 
@@ -11,8 +12,7 @@ const LOCK_DELAY_MS = 25;
 
 export interface GanglionLocation { ganglionPath: string; dir: string }
 export function resolveGanglionLocation(cwd: string): GanglionLocation {
-	const env = process.env.GANGLION_PATH;
-	const ganglionPath = env && path.isAbsolute(env) ? env : path.join(cwd, ".pi", "ganglion", "ganglion.json");
+	const ganglionPath = resolveNervousStateFile(cwd, "ganglion", "ganglion.json", "GANGLION_PATH");
 	return { ganglionPath, dir: path.dirname(ganglionPath) };
 }
 

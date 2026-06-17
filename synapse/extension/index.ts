@@ -233,7 +233,7 @@ export default function (pi: ExtensionAPI) {
 			if (ctx.hasUI) {
 				const confirmed = await ctx.ui.confirm(
 					"Clear SYNAPSE?",
-					`This removes ${count} note(s). A backup is written to .pi/synapse/synapse.json.bak first. This cannot be undone.`,
+					`This removes ${count} note(s) from the active NERVous context. A .bak file is written beside the scratchpad first. This cannot be undone.`,
 				);
 				if (!confirmed) {
 					ctx.ui.notify("Cancelled.", "info");
@@ -241,7 +241,7 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 			await store.backend.wipe();
-			ctx.ui.notify(`SYNAPSE cleared (${count} notes removed; backup at .pi/synapse/synapse.json.bak).`, "info");
+			ctx.ui.notify(`SYNAPSE cleared (${count} notes removed; backup written beside active scratchpad).`, "info");
 		},
 	});
 }

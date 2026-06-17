@@ -19,7 +19,7 @@ Opens a centered modal overlay with tabs for:
 - **GANGLION** — rosters, member status/capabilities, allocations.
 - **AMYGDALA** — risk incidents, severity, recommendations, mitigation notes.
 
-MAGI history is recorded for successful future `magi` tool calls and `/magi` commands in `.pi/magi/history.json`; older deliberations from before this feature may not appear unless referenced from CORTEX.
+MAGI history is recorded for successful future `magi` tool calls and `/magi` commands in the active global NERVous namespace (`~/.pi/nervous/<project>/<context>/magi/history.json` by default); older deliberations from before this feature may not appear unless referenced from CORTEX.
 
 ## Keys
 
@@ -30,4 +30,4 @@ MAGI history is recorded for successful future `magi` tool calls and `/magi` com
 - `r` — reload AXON/LION state from disk
 - `q` / `esc` — close dashboard
 
-The dashboard reads component state through existing store APIs and does not mutate state. It can display empty tabs when a component has not yet produced persisted state.
+The dashboard reads component state through existing store APIs and does not mutate state. It can display empty tabs when a component has not yet produced persisted state. Set `NERVOUS_CONTEXT=<work-id>` before launching pi to view or resume a specific work context.

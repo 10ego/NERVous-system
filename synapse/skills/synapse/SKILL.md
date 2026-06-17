@@ -7,7 +7,7 @@ description: Post and read the SYNAPSE transient coordination scratchpad — sho
 
 SYNAPSE is the **transient shared scratchpad** of the NERVous System. It is the forum where LIONs and CEREBEL coordinate: who started what, what's done, what's blocked, what's risky, and key decisions. It is **not long-term memory** — retention (TTL + max-notes) prunes old notes so it stays transient. **AXON holds durable task state; SYNAPSE holds ephemeral coordination chatter.**
 
-Because CEREBEL and LIONs run as separate `pi` subprocesses, SYNAPSE is stored on disk at `<project>/.pi/synapse/synapse.json` (override with `SYNAPSE_PATH`), shared across all agents.
+Because CEREBEL and LIONs run as separate `pi` subprocesses, SYNAPSE is stored on disk in the active global NERVous namespace (`~/.pi/nervous/<project>/<context>/synapse/synapse.json` by default; override with `SYNAPSE_PATH`), shared across all agents in that context.
 
 ## When to use SYNAPSE
 

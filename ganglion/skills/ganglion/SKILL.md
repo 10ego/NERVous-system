@@ -9,7 +9,7 @@ A **GANGLION** is a roster of LION slots with capabilities and capacity. It answ
 
 GANGLION does not execute work. CEREBEL orchestrates waves; LION runs subprocess workers. GANGLION owns only roster/capability/allocation state.
 
-Durable state: `<project>/.pi/ganglion/ganglion.json`.
+Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<context>/ganglion/ganglion.json` by default).
 
 ## Standard use
 

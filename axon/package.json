@@ -1,7 +1,7 @@
 {
   "name": "@nervous-system/axon",
   "version": "0.1.0",
-  "description": "AXON — the durable task ledger for the NERVous System. Survives compaction, restart, interruption, and subprocess agents. The single source of truth for multi-agent work state.",
+  "description": "AXON \u2014 the durable task ledger for the NERVous System. Survives compaction, restart, interruption, and subprocess agents. The single source of truth for multi-agent work state.",
   "keywords": [
     "pi-package",
     "nervous-system",
@@ -32,5 +32,8 @@
     "typebox": "*",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "@nervous-system/state": "0.1.0"
   }
 }

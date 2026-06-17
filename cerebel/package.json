@@ -1,13 +1,25 @@
 {
   "name": "@nervous-system/cerebel",
   "version": "0.1.0",
-  "description": "CEREBEL — orchestration controller for LION worker waves in the NERVous System.",
-  "keywords": ["pi-package", "nervous-system", "cerebel", "orchestration", "multi-agent"],
+  "description": "CEREBEL \u2014 orchestration controller for LION worker waves in the NERVous System.",
+  "keywords": [
+    "pi-package",
+    "nervous-system",
+    "cerebel",
+    "orchestration",
+    "multi-agent"
+  ],
   "license": "MIT",
   "pi": {
-    "extensions": ["extension/index.ts"],
-    "skills": ["skills/cerebel"],
-    "prompts": ["prompts"]
+    "extensions": [
+      "extension/index.ts"
+    ],
+    "skills": [
+      "skills/cerebel"
+    ],
+    "prompts": [
+      "prompts"
+    ]
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",
@@ -25,5 +37,8 @@
     "typebox": "*",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "@nervous-system/state": "0.1.0"
   }
 }

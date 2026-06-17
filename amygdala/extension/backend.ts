@@ -2,12 +2,13 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { AmygdalaLedger } from "./store.ts";
 import type { AmygdalaFile } from "./schema.ts";
 
 const LOCK_STALE_TTL_MS = 30_000, LOCK_MAX_ATTEMPTS = 200, LOCK_DELAY_MS = 25;
 export interface AmygdalaLocation { amygdalaPath: string; dir: string }
-export function resolveAmygdalaLocation(cwd: string): AmygdalaLocation { const env = process.env.AMYGDALA_PATH; const amygdalaPath = env && path.isAbsolute(env) ? env : path.join(cwd, ".pi", "amygdala", "amygdala.json"); return { amygdalaPath, dir: path.dirname(amygdalaPath) }; }
+export function resolveAmygdalaLocation(cwd: string): AmygdalaLocation { const amygdalaPath = resolveNervousStateFile(cwd, "amygdala", "amygdala.json", "AMYGDALA_PATH"); return { amygdalaPath, dir: path.dirname(amygdalaPath) }; }
 interface LockInfo { pid: number; ts: number }
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 function isPidAlive(pid: number): boolean { try { process.kill(pid, 0); return true; } catch (err) { const code = (err as NodeJS.ErrnoException).code; return code !== "ESRCH" && code !== "EINVAL"; } }

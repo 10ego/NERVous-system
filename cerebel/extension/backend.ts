@@ -2,6 +2,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { CerebelLedger } from "./store.ts";
 import type { CerebelFile } from "./schema.ts";
 
@@ -15,8 +16,7 @@ export interface CerebelLocation {
 }
 
 export function resolveCerebelLocation(cwd: string): CerebelLocation {
-	const env = process.env.CEREBEL_PATH;
-	const cerebelPath = env && path.isAbsolute(env) ? env : path.join(cwd, ".pi", "cerebel", "cerebel.json");
+	const cerebelPath = resolveNervousStateFile(cwd, "cerebel", "cerebel.json", "CEREBEL_PATH");
 	return { cerebelPath, dir: path.dirname(cerebelPath) };
 }
 

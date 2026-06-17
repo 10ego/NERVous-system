@@ -1,6 +1,6 @@
 ---
 name: lion
-description: Delegate one concrete coding assignment to an isolated LION subprocess worker. Use for self-contained AXON tasks that can be safely performed in a separate context. The worker returns a durable WORKER_REPORT stored in .pi/lion/runs.json.
+description: Delegate one concrete coding assignment to an isolated LION subprocess worker. Use for self-contained AXON tasks that can be safely performed in a separate context. The worker returns a durable WORKER_REPORT stored in the active NERVous state namespace.
 ---
 
 # LION — Local Intelligence Operations Node
@@ -52,7 +52,7 @@ The worker must end with a parseable `WORKER_REPORT` JSON block:
 }
 ```
 
-The LION package persists that report in `.pi/lion/runs.json`.
+The LION package persists that report in the active global NERVous namespace (`~/.pi/nervous/<project>/<context>/lion/runs.json` by default).
 
 ## Commands
 
