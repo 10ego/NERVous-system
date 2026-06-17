@@ -38,6 +38,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Orchestrate ready AXON tasks into LION worker waves and record outcomes",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use cerebel after CORTEX has planned work into AXON and ready AXON tasks exist.",
 			"First read axon list/summary, then pass ready task briefs into cerebel plan_wave.",
 			"For each ready assignment, call lion run with task_id/objective/context/agent_id, then cerebel dispatch/record the LION run id and outcome.",

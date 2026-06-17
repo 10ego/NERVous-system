@@ -61,6 +61,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Launch a LION coding subagent for one concrete assignment and record its worker report",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use lion run when a self-contained coding task should be delegated to an isolated subagent.",
 			"Give each LION a narrow objective and enough context/acceptance criteria; avoid broad ambiguous assignments.",
 			"Pass an AXON task id when available so the worker can update durable task state if the axon tool is available.",

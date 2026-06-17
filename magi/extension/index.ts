@@ -20,6 +20,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { deliberate } from "./council.ts";
 import { createSubprocessRunner } from "./subprocess.ts";
 import { resolveCouncil } from "./config.ts";
+import { MagiHistoryStore } from "./history.ts";
 import { formatStatus, renderMagiCall, renderMagiResult, summarizeOutput } from "./render.ts";
 import { MagiToolParams, type MagiInput, type MagiOutput, type MagiToolInput } from "./schema.ts";
 
@@ -63,6 +64,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Convene the MAGI council to deliberate a hard decision and return a recommendation",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use the magi tool when facing an ambiguous, high-risk, or architecturally significant decision with unclear tradeoffs.",
 			"Use the magi tool before final delivery to get a multi-perspective review of a major decision.",
 			"Do not use the magi tool for simple, well-understood tasks — reserve it for decisions that warrant deliberation.",
@@ -96,6 +98,7 @@ export default function (pi: ExtensionAPI) {
 						: undefined,
 				});
 
+				await MagiHistoryStore.fromCwd(ctx.cwd).append(input, output, source);
 				const details: MagiDetails = { ...output, source };
 				return {
 					content: [{ type: "text", text: summarizeOutput(output) }],
@@ -194,6 +197,7 @@ async function deliberateCommand(
 			cwd: ctx.cwd,
 			onStatusText: ctx.hasUI ? (text) => ctx.ui.setStatus("magi", text) : undefined,
 		});
+		await MagiHistoryStore.fromCwd(ctx.cwd).append(input, output, source);
 		if (ctx.hasUI) ctx.ui.setStatus("magi", undefined);
 
 		// Display the result in the transcript and notify a short summary.

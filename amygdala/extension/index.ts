@@ -19,6 +19,7 @@ export default function (pi: ExtensionAPI) {
 		description: ["Risk escalation and safety triage. Capture blockers, unsafe operations, failed orchestration, and uncertainty as durable incidents.", "Returns severity/category/recommendation and mitigation plan. Actions: assess, update, set_status, add_note, resolve, accept, get, list, summary, delete."].join(" "),
 		promptSnippet: "Assess and persist a risk/blocker incident with severity, recommendation, and mitigation plan",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use amygdala assess when AXON tasks are needs_amygdala/blocked, CEREBEL waves are blocked, or work risks security/data loss/regression.",
 			"Critical/security/data-loss risks should pause affected work and request human review unless explicitly accepted.",
 			"For blocker/risk workflows, also post a short SYNAPSE risk/blocker coordination note so other agents know work is paused.",

@@ -102,6 +102,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Post/read short SYNAPSE coordination notes; use risk/blocker notes during blocked handoffs",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use the synapse tool action 'post' to announce work started, completed, blockers, risks, or decisions so other agents stay coordinated.",
 			"Keep synapse notes short and coordination-focused (who/what/why now); put durable state in AXON, not synapse.",
 			"Use the synapse tool action 'list' or 'summary' before starting work to check what other agents are doing and avoid conflicts.",

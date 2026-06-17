@@ -97,6 +97,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Run CORTEX: analyze intent into a durable goal, plan, link AXON tasks, verify",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"When explaining a NERVous workflow, prefer a compact checklist of component → action/status → evidence; avoid verbose restatement.",
 			"Use the cortex tool action 'analyze' at the start of non-trivial work to capture intent, success criteria, constraints, and risks as a durable goal.",
 			"After cortex analyze, if needs_magi is true, convene the magi tool before cortex plan; otherwise proceed to cortex plan.",
