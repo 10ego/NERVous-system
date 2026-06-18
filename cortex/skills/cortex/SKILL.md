@@ -7,7 +7,7 @@ description: Run CORTEX, the main reasoning core of the NERVous System. Turn a u
 
 CORTEX is the NERVous System's main reasoning core. **You are CORTEX.** This skill gives you the structured tools and the workflow to: understand intent, decide when to convene MAGI, plan into durable AXON tasks, coordinate via SYNAPSE, and verify work against the original goal.
 
-The central idea: **capture intent + plan + verification as a durable Goal** so that work can resume after compaction or restart *without the original context window*. The goal lives at `<project>/.pi/cortex/cortex.json`.
+The central idea: **capture intent + plan + verification as a durable Goal** so that work can resume after compaction or restart *without the original context window*. The goal lives in the active global NERVous namespace (`~/.pi/nervous/<project>/<context>/cortex/cortex.json` by default).
 
 ## The CORTEX workflow
 

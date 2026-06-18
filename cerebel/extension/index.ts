@@ -34,14 +34,15 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Orchestration controller for LION worker waves. Forms assignments from ready AXON tasks,",
 			"records LION run outcomes, and decides whether to dispatch, wait, complete, replan, or escalate.",
-			"State persists in .pi/cerebel/cerebel.json. Actions: plan_wave, dispatch, record, decide, complete_wave, cancel, get, list, summary.",
+			"State persists in the active NERVous project/context namespace. Actions: plan_wave, dispatch, record, decide, complete_wave, cancel, get, list, summary.",
 		].join(" "),
 		promptSnippet: "Orchestrate ready AXON tasks into LION worker waves and record outcomes",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use cerebel after CORTEX has planned work into AXON and ready AXON tasks exist.",
 			"First read axon list/summary, then pass ready task briefs into cerebel plan_wave.",
 			"For each ready assignment, call lion run with task_id/objective/context/agent_id, then cerebel dispatch/record the LION run id and outcome.",
-			"Use cerebel decide after recording worker results; blocked/failed waves should update AXON and later AMYGDALA, not silently continue.",
+			"After blocked/failed results: cerebel record/decide, update AXON, post a SYNAPSE risk/blocker note, then use AMYGDALA or replan; never silently continue.",
 		],
 		parameters: CerebelToolParams,
 

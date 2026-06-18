@@ -13,8 +13,11 @@ async function tmpStore(): Promise<{ dir: string; backend: FileBackend; store: A
 async function exists(p: string): Promise<boolean> { try { await fs.access(p); return true; } catch { return false; } }
 
 describe("resolveAmygdalaLocation", () => {
-	it("defaults to <cwd>/.pi/amygdala/amygdala.json", () => {
-		assert.equal(resolveAmygdalaLocation("/tmp/proj").amygdalaPath, path.join("/tmp/proj", ".pi", "amygdala", "amygdala.json"));
+	it("defaults to global project/context namespaced state", () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		process.env.NERVOUS_STATE_ROOT = "/tmp/nervous"; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "work";
+		try { assert.equal(resolveAmygdalaLocation("/tmp/proj").amygdalaPath, path.join("/tmp/nervous", "proj", "work", "amygdala", "amygdala.json")); }
+		finally { if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot; if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject; if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext; }
 	});
 	it("respects AMYGDALA_PATH when absolute", () => {
 		const old = process.env.AMYGDALA_PATH;

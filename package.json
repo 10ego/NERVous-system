@@ -11,7 +11,9 @@
     "lion",
     "cerebel",
     "ganglion",
-    "amygdala"
+    "amygdala",
+    "dashboard",
+    "state"
   ],
   "scripts": {
     "test": "vitest run",
@@ -24,6 +26,8 @@
     "test:cerebel": "vitest run --dir cerebel",
     "test:ganglion": "vitest run --dir ganglion",
     "test:amygdala": "vitest run --dir amygdala",
+    "test:dashboard": "vitest run --dir dashboard",
+    "test:state": "vitest run --dir state",
     "test:e2e": "vitest run demo/tests/e2e-flow.test.ts"
   },
   "devDependencies": {

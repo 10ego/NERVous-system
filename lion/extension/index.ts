@@ -2,7 +2,7 @@
  * LION — pi extension entry point.
  *
  * Registers the `lion` tool. A LION run launches one isolated pi subprocess
- * worker and persists the final worker report in `.pi/lion/runs.json`.
+ * worker and persists the final worker report in the active NERVous state namespace.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -55,12 +55,13 @@ export default function (pi: ExtensionAPI) {
 		label: "LION",
 		description: [
 			"Local Intelligence Operations Node: launch one isolated pi coding subagent for a concrete assignment.",
-			"A run persists to .pi/lion/runs.json with status, output, and parsed WORKER_REPORT.",
+			"A run persists to the active NERVous state namespace with status, output, and parsed WORKER_REPORT.",
 			"Use it as CEREBEL's worker abstraction: task_id/objective in, worker report out.",
 			"Actions: run, get, list, summary, delete.",
 		].join(" "),
 		promptSnippet: "Launch a LION coding subagent for one concrete assignment and record its worker report",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use lion run when a self-contained coding task should be delegated to an isolated subagent.",
 			"Give each LION a narrow objective and enough context/acceptance criteria; avoid broad ambiguous assignments.",
 			"Pass an AXON task id when available so the worker can update durable task state if the axon tool is available.",

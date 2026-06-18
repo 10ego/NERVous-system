@@ -7,7 +7,7 @@ description: Read and write the AXON durable task ledger — the persistent sour
 
 AXON is the **durable work state** of the NERVous System. It is a project-scoped task ledger that survives context compaction, agent interruption, process restart, failed subagent execution, and destructive workflow interruption. **Interrupted work resumes from AXON without needing the original context window.**
 
-AXON is readable/writable by CORTEX, CEREBEL, and LION agents (and by you, via the `axon` tool). Because CEREBEL and LIONs run as separate `pi` subprocesses, AXON is stored on disk at `<project>/.pi/axon/ledger.json` (override with `AXON_LEDGER_PATH`), **not** in the session.
+AXON is readable/writable by CORTEX, CEREBEL, and LION agents (and by you, via the `axon` tool). Because CEREBEL and LIONs run as separate `pi` subprocesses, AXON is stored on disk in the active global NERVous namespace (`~/.pi/nervous/<project>/<context>/axon/ledger.json` by default; override with `AXON_LEDGER_PATH`), **not** in the chat session.
 
 ## When to use AXON
 

@@ -13,8 +13,11 @@ async function tmpStore(): Promise<{ dir: string; backend: FileBackend; store: G
 async function exists(p: string): Promise<boolean> { try { await fs.access(p); return true; } catch { return false; } }
 
 describe("resolveGanglionLocation", () => {
-	it("defaults to <cwd>/.pi/ganglion/ganglion.json", () => {
-		assert.equal(resolveGanglionLocation("/tmp/proj").ganglionPath, path.join("/tmp/proj", ".pi", "ganglion", "ganglion.json"));
+	it("defaults to global project/context namespaced state", () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		process.env.NERVOUS_STATE_ROOT = "/tmp/nervous"; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "work";
+		try { assert.equal(resolveGanglionLocation("/tmp/proj").ganglionPath, path.join("/tmp/nervous", "proj", "work", "ganglion", "ganglion.json")); }
+		finally { if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot; if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject; if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext; }
 	});
 	it("respects GANGLION_PATH when absolute", () => {
 		const old = process.env.GANGLION_PATH;

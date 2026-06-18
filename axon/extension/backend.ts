@@ -2,7 +2,7 @@
  * AXON — durable file backend + store wrapper.
  *
  * Persistence model: a single JSON document at <ledgerPath> (default
- * `<cwd>/.pi/axon/ledger.json`), written atomically (temp file + rename) so a
+ * `~/.pi/nervous/<project>/<context>/axon/ledger.json`), written atomically (temp file + rename) so a
  * crash can never leave a half-written ledger. The previous version is kept as
  * `ledger.json.bak` for one-step rollback.
  *
@@ -20,6 +20,7 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { Ledger } from "./store.ts";
 import type { LedgerFile } from "./schema.ts";
 
@@ -35,11 +36,10 @@ export interface LedgerLocation {
 /**
  * Resolve the ledger path. Precedence:
  *   1. `AXON_LEDGER_PATH` env var (absolute path to the file)
- *   2. `<cwd>/.pi/axon/ledger.json`
+ *   2. `~/.pi/nervous/<project>/<context>/axon/ledger.json`
  */
 export function resolveLedgerLocation(cwd: string): LedgerLocation {
-	const env = process.env.AXON_LEDGER_PATH;
-	const ledgerPath = env && path.isAbsolute(env) ? env : path.join(cwd, ".pi", "axon", "ledger.json");
+	const ledgerPath = resolveNervousStateFile(cwd, "axon", "ledger.json", "AXON_LEDGER_PATH");
 	return { ledgerPath, dir: path.dirname(ledgerPath) };
 }
 

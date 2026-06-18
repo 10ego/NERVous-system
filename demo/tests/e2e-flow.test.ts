@@ -24,6 +24,12 @@ import { AmygdalaStore } from "../../amygdala/extension/backend.ts";
 describe("NERVous System final end-to-end demo flow", () => {
 	it("builds and verifies the todo API demo flow across every component", async () => {
 		const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-e2e-"));
+		const oldRoot = process.env.NERVOUS_STATE_ROOT;
+		const oldProject = process.env.NERVOUS_PROJECT;
+		const oldContext = process.env.NERVOUS_CONTEXT;
+		process.env.NERVOUS_STATE_ROOT = path.join(cwd, "global-state");
+		process.env.NERVOUS_PROJECT = "demo";
+		process.env.NERVOUS_CONTEXT = "e2e";
 		try {
 			const cortex = CortexStore.fromCwd(cwd);
 			const axon = AxonStore.fromCwd(cwd);
@@ -46,7 +52,7 @@ describe("NERVous System final end-to-end demo flow", () => {
 						"All AXON tasks are complete",
 						"No unresolved critical AMYGDALA risks remain",
 					],
-					constraints: ["No live LLM calls in deterministic demo", "All state must persist under .pi/"],
+					constraints: ["No live LLM calls in deterministic demo", "All state must persist under the active NERVous namespace"],
 					risks: [{ description: "Demo orchestration can drift from the original intent", severity: "medium" }],
 					expected_output: "Durable proof that the complete NERVous flow works end-to-end.",
 					complexity: "medium",
@@ -201,17 +207,20 @@ describe("NERVous System final end-to-end demo flow", () => {
 			assert.ok(finalSynapse.result.total >= 6, "SYNAPSE captured transient coordination notes");
 
 			for (const rel of [
-				".pi/cortex/cortex.json",
-				".pi/axon/ledger.json",
-				".pi/synapse/synapse.json",
-				".pi/lion/runs.json",
-				".pi/cerebel/cerebel.json",
-				".pi/ganglion/ganglion.json",
-				".pi/amygdala/amygdala.json",
+				"global-state/demo/e2e/cortex/cortex.json",
+				"global-state/demo/e2e/axon/ledger.json",
+				"global-state/demo/e2e/synapse/synapse.json",
+				"global-state/demo/e2e/lion/runs.json",
+				"global-state/demo/e2e/cerebel/cerebel.json",
+				"global-state/demo/e2e/ganglion/ganglion.json",
+				"global-state/demo/e2e/amygdala/amygdala.json",
 			]) {
 				assert.ok(fs.existsSync(path.join(cwd, rel)), `${rel} should exist`);
 			}
 		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
 	});

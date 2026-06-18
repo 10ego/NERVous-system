@@ -1,12 +1,13 @@
 /**
  * LION — durable file backend.
  *
- * Stores worker run records at `<cwd>/.pi/lion/runs.json` (or LION_RUNS_PATH),
+ * Stores worker run records at `~/.pi/nervous/<project>/<context>/lion/runs.json` (or LION_RUNS_PATH),
  * with atomic writes, backup, advisory lock, and corrupt-file recovery.
  */
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { LionLedger } from "./store.ts";
 import type { LionFile } from "./schema.ts";
 
@@ -20,8 +21,7 @@ export interface LionLocation {
 }
 
 export function resolveLionLocation(cwd: string): LionLocation {
-	const env = process.env.LION_RUNS_PATH;
-	const runsPath = env && path.isAbsolute(env) ? env : path.join(cwd, ".pi", "lion", "runs.json");
+	const runsPath = resolveNervousStateFile(cwd, "lion", "runs.json", "LION_RUNS_PATH");
 	return { runsPath, dir: path.dirname(runsPath) };
 }
 

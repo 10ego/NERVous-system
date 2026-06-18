@@ -7,11 +7,12 @@
  * SYNAPSE stays bounded and transient rather than growing without limit.
  *
  * Storage: a single JSON document at <synapsePath> (default
- * `<cwd>/.pi/synapse/synapse.json`), shared across CEREBEL/LION subprocesses.
+ * `~/.pi/nervous/<project>/<context>/synapse/synapse.json`), shared across CEREBEL/LION subprocesses.
  */
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { NoteLog, type RetentionPolicy } from "./store.ts";
 import type { SynapseFile } from "./schema.ts";
 
@@ -27,12 +28,10 @@ export interface SynapseLocation {
 /**
  * Resolve the scratchpad path. Precedence:
  *   1. `SYNAPSE_PATH` env var (absolute path to the file)
- *   2. `<cwd>/.pi/synapse/synapse.json`
+ *   2. `~/.pi/nervous/<project>/<context>/synapse/synapse.json`
  */
 export function resolveSynapseLocation(cwd: string): SynapseLocation {
-	const env = process.env.SYNAPSE_PATH;
-	const synapsePath =
-		env && path.isAbsolute(env) ? env : path.join(cwd, ".pi", "synapse", "synapse.json");
+	const synapsePath = resolveNervousStateFile(cwd, "synapse", "synapse.json", "SYNAPSE_PATH");
 	return { synapsePath, dir: path.dirname(synapsePath) };
 }
 

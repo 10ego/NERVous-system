@@ -24,6 +24,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Manage a GANGLION working group of LION slots and allocate ready tasks by capability/capacity",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use ganglion to define or inspect the LION roster before CEREBEL dispatches worker waves.",
 			"Use ganglion allocate on ready AXON task briefs to choose member ids/objectives for CEREBEL/LION.",
 			"After LION runs finish, use ganglion record or release so capacity is available for later waves.",

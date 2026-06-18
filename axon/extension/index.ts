@@ -98,6 +98,7 @@ export default function (pi: ExtensionAPI) {
 		].join(" "),
 		promptSnippet: "Read/write the AXON durable task ledger (create/get/list/update/set_status/summary)",
 		promptGuidelines: [
+			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use the axon tool with action 'summary' or 'list' (ready_only) to find the next work to do.",
 			"Use the axon tool to persist tasks before starting them so work survives interruption and restart.",
 			"Use axon action 'set_status' to move work through pending→ready→in_progress→needs_review→completed.",
@@ -320,14 +321,14 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("axon:reset", {
-		description: "DANGER: wipe the AXON ledger (backs up to ledger.json.bak first)",
+		description: "DANGER: wipe the active AXON ledger (backs up to ledger.json.bak first)",
 		handler: async (_args, ctx) => {
 			const store = AxonStore.fromCwd(ctx.cwd);
 			const { result: count } = await store.query((l) => l.summary().total);
 			if (ctx.hasUI) {
 				const confirmed = await ctx.ui.confirm(
 					"Reset AXON ledger?",
-					`This deletes ${count} task(s). A backup is written to .pi/axon/ledger.json.bak first. This cannot be undone.`,
+					`This deletes ${count} task(s) from the active NERVous context. A .bak file is written beside the ledger first. This cannot be undone.`,
 				);
 				if (!confirmed) {
 					ctx.ui.notify("Cancelled.", "info");
@@ -335,7 +336,7 @@ export default function (pi: ExtensionAPI) {
 				}
 			}
 			await store.backend.wipe();
-			ctx.ui.notify(`AXON ledger reset (${count} tasks removed; backup at .pi/axon/ledger.json.bak).`, "info");
+			ctx.ui.notify(`AXON ledger reset (${count} tasks removed; backup written beside active ledger).`, "info");
 		},
 	});
 }

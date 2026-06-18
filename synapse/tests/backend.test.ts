@@ -31,9 +31,21 @@ async function exists(p: string): Promise<boolean> {
 }
 
 describe("resolveSynapseLocation", () => {
-	it("defaults to <cwd>/.pi/synapse/synapse.json", () => {
-		const loc = resolveSynapseLocation("/tmp/proj");
-		assert.equal(loc.synapsePath, path.join("/tmp/proj", ".pi", "synapse", "synapse.json"));
+	it("defaults to global project/context namespaced state", () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT;
+		const oldProject = process.env.NERVOUS_PROJECT;
+		const oldContext = process.env.NERVOUS_CONTEXT;
+		process.env.NERVOUS_STATE_ROOT = "/tmp/nervous";
+		process.env.NERVOUS_PROJECT = "proj";
+		process.env.NERVOUS_CONTEXT = "work";
+		try {
+			const loc = resolveSynapseLocation("/tmp/proj");
+			assert.equal(loc.synapsePath, path.join("/tmp/nervous", "proj", "work", "synapse", "synapse.json"));
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
 	});
 	it("respects SYNAPSE_PATH when absolute", () => {
 		const old = process.env.SYNAPSE_PATH;

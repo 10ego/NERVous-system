@@ -1,7 +1,7 @@
 {
   "name": "@nervous-system/synapse",
   "version": "0.1.0",
-  "description": "SYNAPSE — the transient shared coordination scratchpad for the NERVous System. Short, coordination-focused notes (work started/completed, blockers, risks, decisions) shared across LION/GANGLION agents. Bounded by retention so it stays transient, not long-term memory.",
+  "description": "SYNAPSE \u2014 the transient shared coordination scratchpad for the NERVous System. Short, coordination-focused notes (work started/completed, blockers, risks, decisions) shared across LION/GANGLION agents. Bounded by retention so it stays transient, not long-term memory.",
   "keywords": [
     "pi-package",
     "nervous-system",
@@ -31,5 +31,8 @@
     "typebox": "*",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "dependencies": {
+    "@nervous-system/state": "0.1.0"
   }
 }
