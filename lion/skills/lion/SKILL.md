@@ -1,6 +1,7 @@
 ---
 name: lion
 description: Delegate one concrete coding assignment to an isolated LION subprocess worker. Use for self-contained AXON tasks that can be safely performed in a separate context. The worker returns a durable WORKER_REPORT stored in the active NERVous state namespace.
+disable-model-invocation: true
 ---
 
 # LION — Local Intelligence Operations Node

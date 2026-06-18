@@ -17,7 +17,7 @@ import { SynapseStore } from "../../synapse/extension/backend.ts";
 import type { Note } from "../../synapse/extension/schema.ts";
 
 type Tab = "cortex" | "magi" | "axon" | "synapse" | "lion" | "cerebel" | "ganglion" | "amygdala";
-const TABS: Tab[] = ["cortex", "magi", "axon", "synapse", "lion", "cerebel", "ganglion", "amygdala"];
+const TABS: Tab[] = ["cortex", "magi", "axon", "synapse", "ganglion", "lion", "cerebel", "amygdala"];
 
 type Detail =
 	| { kind: "cortex"; item: Goal }
@@ -116,6 +116,30 @@ function pushWrapped(lines: string[], label: string, value: string | null | unde
 		lines.push(frameLine(part || rest.slice(0, inner), width, theme));
 		rest = rest.slice(Math.max(1, part.length)).trimStart();
 	}
+}
+
+function pushGanglionMembersBox(lines: string[], width: number, theme: Theme, members: Ganglion["members"]): void {
+	lines.push(frameLine(theme.fg("accent", "Members"), width, theme));
+	if (members.length === 0) {
+		lines.push(frameLine("No LION members registered.", width, theme));
+		return;
+	}
+
+	const available = Math.max(16, width - 4);
+	const statusCol = Math.min(12, Math.max(8, available - 12));
+	const nameCol = Math.max(8, available - statusCol - 7);
+	const top = `┌${"─".repeat(nameCol + 2)}┬${"─".repeat(statusCol + 2)}┐`;
+	const mid = `├${"─".repeat(nameCol + 2)}┼${"─".repeat(statusCol + 2)}┤`;
+	const bottom = `└${"─".repeat(nameCol + 2)}┴${"─".repeat(statusCol + 2)}┘`;
+	const row = (name: string, status: string, styledStatus = status) => `│ ${padVisible(name, nameCol)} │ ${padVisible(styledStatus, statusCol)} │`;
+
+	lines.push(frameLine(theme.fg("border", top), width, theme));
+	lines.push(frameLine(row(theme.bold("LION"), theme.bold("STATUS")), width, theme));
+	lines.push(frameLine(theme.fg("border", mid), width, theme));
+	for (const member of members) {
+		lines.push(frameLine(row(member.id, member.status, styleStatus(theme, member.status)), width, theme));
+	}
+	lines.push(frameLine(theme.fg("border", bottom), width, theme));
 }
 
 function summary(counts: Record<string, number>): string {
@@ -312,7 +336,13 @@ class NervousDashboard implements Component {
 	private renderSynapse(lines: string[], width: number, n: Note): void { this.title(lines, width, `SYNAPSE ${n.id}`); pushWrapped(lines, "Type", n.type, width, this.theme); pushWrapped(lines, "Task", n.task_id, width, this.theme); pushWrapped(lines, "Agent", n.agent_id, width, this.theme); pushWrapped(lines, "Message", n.message, width, this.theme); }
 	private renderLion(lines: string[], width: number, r: LionRun): void { this.title(lines, width, `LION ${r.agent_id}: ${r.id}`); pushWrapped(lines, "Status", r.status, width, this.theme); pushWrapped(lines, "Task", r.task_id, width, this.theme); pushWrapped(lines, "Objective", r.objective, width, this.theme); pushWrapped(lines, "Report", r.report?.summary, width, this.theme); pushWrapped(lines, "Tests", r.report?.tests_run.join(", "), width, this.theme); pushWrapped(lines, "Blockers", r.report?.blockers.join(" | ") || r.error, width, this.theme); pushWrapped(lines, "Next", r.report?.next_steps.join(" | "), width, this.theme); }
 	private renderCerebel(lines: string[], width: number, w: Wave): void { this.title(lines, width, `CEREBEL ${w.id}`); pushWrapped(lines, "Status", w.status, width, this.theme); pushWrapped(lines, "Goal", w.goal_id, width, this.theme); pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme); pushWrapped(lines, "Assignments", w.assignments.map((a) => `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}`).join(" | "), width, this.theme); }
-	private renderGanglion(lines: string[], width: number, g: Ganglion): void { this.title(lines, width, `GANGLION ${g.id}: ${g.name}`); pushWrapped(lines, "Status", g.status, width, this.theme); pushWrapped(lines, "Goal", g.goal_id, width, this.theme); pushWrapped(lines, "Members", g.members.map((m) => `${m.id}/${m.role}/${m.status} [${m.capabilities.join(",")}]`).join(" | "), width, this.theme); pushWrapped(lines, "Allocations", g.allocations.map((a) => `${a.id}/${a.member_id}/${a.status}`).join(" | "), width, this.theme); }
+	private renderGanglion(lines: string[], width: number, g: Ganglion): void {
+		this.title(lines, width, `GANGLION ${g.id}: ${g.name}`);
+		pushWrapped(lines, "Status", g.status, width, this.theme);
+		pushWrapped(lines, "Goal", g.goal_id, width, this.theme);
+		pushGanglionMembersBox(lines, width, this.theme, g.members);
+		pushWrapped(lines, "Allocations", g.allocations.map((a) => `${a.id}/${a.member_id}/${a.status}`).join(" | "), width, this.theme);
+	}
 	private renderAmygdala(lines: string[], width: number, i: Incident): void { this.title(lines, width, `AMYGDALA ${i.id}: ${i.title}`); pushWrapped(lines, "Status", `${i.status} • ${i.severity}/${i.category} • ${i.recommendation}`, width, this.theme); pushWrapped(lines, "Source", `${i.source}${i.source_id ? `:${i.source_id}` : ""}`, width, this.theme); pushWrapped(lines, "Description", i.description, width, this.theme); pushWrapped(lines, "Reason", i.reason, width, this.theme); pushWrapped(lines, "Mitigation", i.mitigation_plan.join(" | "), width, this.theme); pushWrapped(lines, "Latest note", i.notes.at(-1)?.text, width, this.theme); }
 
 	private closeDetail(): void { this.detail = null; this.invalidate(); this.tui.requestRender(); }

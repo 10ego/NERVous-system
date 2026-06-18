@@ -1,6 +1,7 @@
 ---
 name: ganglion
 description: Manage a GANGLION working group of LION slots. Use it to create a roster, track capabilities and availability, and allocate ready AXON tasks to suitable LION members before CEREBEL dispatches workers.
+disable-model-invocation: true
 ---
 
 # GANGLION — LION Working Group

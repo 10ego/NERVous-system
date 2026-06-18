@@ -1,6 +1,7 @@
 ---
 name: cortex
 description: Run CORTEX, the main reasoning core of the NERVous System. Turn a user request into a durable goal (intent, success criteria, constraints, risks), decide whether MAGI deliberation is needed, plan it into subtasks linked to AXON, and verify completed work against the original intent. Use it for any non-trivial multi-step task so progress survives compaction and restart.
+disable-model-invocation: true
 ---
 
 # CORTEX — Main Reasoning Core

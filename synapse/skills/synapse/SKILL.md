@@ -1,6 +1,7 @@
 ---
 name: synapse
 description: Post and read the SYNAPSE transient coordination scratchpad — short, coordination-focused notes (work started/completed, blockers, risks, decisions) shared across LION/GANGLION agents in the NERVous System. Use it to announce what you're doing, surface conflicts early, and stay coordinated. Bounded by retention so it stays transient, not long-term memory.
+disable-model-invocation: true
 ---
 
 # SYNAPSE — Transient Coordination Scratchpad

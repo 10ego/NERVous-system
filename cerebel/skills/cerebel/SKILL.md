@@ -1,6 +1,7 @@
 ---
 name: cerebel
 description: Orchestrate ready AXON tasks into LION worker waves. Use CEREBEL after CORTEX has planned work and AXON has ready tasks. CEREBEL tracks assignment waves, LION run links, outcomes, and next orchestration decisions.
+disable-model-invocation: true
 ---
 
 # CEREBEL — Orchestration Controller

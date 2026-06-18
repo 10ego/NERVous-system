@@ -1,6 +1,7 @@
 ---
 name: axon
 description: Read and write the AXON durable task ledger — the persistent source of truth for multi-agent work state. Use it to plan tasks into durable subtasks, find ready work, track status (pending→ready→in_progress→needs_review→completed), record blockers, and resume interrupted work after restart or compaction. Survives across sessions, subprocess agents, and crashes.
+disable-model-invocation: true
 ---
 
 # AXON — Durable Task Ledger

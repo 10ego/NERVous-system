@@ -1,6 +1,7 @@
 ---
 name: magi
 description: Convene the MAGI deliberation council (The Mind, The Heart, The Hand) for hard, ambiguous, risky, or architecturally significant decisions. Returns a structured multi-perspective recommendation. Use before major decisions or final review.
+disable-model-invocation: true
 ---
 
 # MAGI — Deliberation Council

@@ -1,6 +1,7 @@
 ---
 name: amygdala
 description: "Use AMYGDALA for risk escalation: blocked AXON tasks, blocked CEREBEL waves, failed LION/GANGLION allocations, security/data-loss/regression risks, or uncertainty that should pause/replan/MAGI/human review."
+disable-model-invocation: true
 ---
 
 # AMYGDALA — Risk Escalation
