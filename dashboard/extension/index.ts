@@ -184,6 +184,9 @@ class NervousDashboard implements Component {
 	private tabIndex = 0;
 	private selected = 0;
 	private detail: Detail | null = null;
+	private detailScroll = 0;
+	private detailLineCount = 0;
+	private readonly detailViewportRows = 20;
 	private refreshing = false;
 	private error: string | null = null;
 	private cachedWidth?: number;
@@ -205,6 +208,12 @@ class NervousDashboard implements Component {
 		}
 		if (this.detail) {
 			if (matchesKey(data, Key.left) || matchesKey(data, Key.backspace)) this.closeDetail();
+			else if (matchesKey(data, Key.up) || data === "k") this.scrollDetail(-1);
+			else if (matchesKey(data, Key.down) || data === "j") this.scrollDetail(1);
+			else if (matchesKey(data, Key.pageUp)) this.scrollDetail(-this.detailViewportRows);
+			else if (matchesKey(data, Key.pageDown)) this.scrollDetail(this.detailViewportRows);
+			else if (matchesKey(data, Key.home)) this.scrollDetailTo(0);
+			else if (matchesKey(data, Key.end)) this.scrollDetailTo(Number.MAX_SAFE_INTEGER);
 			else if (data === "r") this.reload();
 			return;
 		}
@@ -214,7 +223,7 @@ class NervousDashboard implements Component {
 		if (matchesKey(data, Key.down)) return this.move(1);
 		if (matchesKey(data, Key.enter)) {
 			const item = this.items()[this.selected];
-			if (item) this.detail = item;
+			if (item) { this.detail = item; this.detailScroll = 0; }
 			this.invalidate();
 			this.tui.requestRender();
 			return;
@@ -229,10 +238,10 @@ class NervousDashboard implements Component {
 		if (this.error) lines.push(frameLine(this.theme.fg("error", this.error), w, this.theme));
 		for (const warning of this.data.warnings.slice(0, 2)) lines.push(frameLine(this.theme.fg("warning", warning), w, this.theme));
 		if (this.refreshing) lines.push(frameLine(this.theme.fg("accent", "Refreshing…"), w, this.theme));
-		if (this.detail) this.renderDetail(lines, w);
+		if (this.detail) this.renderDetailViewport(lines, w);
 		else this.renderList(lines, w);
 		lines.push(hline(this.theme, w, "├", "┤"));
-		lines.push(frameLine(this.detail ? "esc/backspace close detail • r refresh • q close" : "←/→ or tab switch systems • ↑/↓ select • enter details • r refresh • q/esc close", w, this.theme));
+		lines.push(frameLine(this.detail ? "↑/↓ scroll • pgup/pgdn jump • esc/backspace close detail • r refresh • q close" : "←/→ or tab switch systems • ↑/↓ select • enter details • r refresh • q/esc close", w, this.theme));
 		lines.push(hline(this.theme, w, "└", "┘"));
 		this.cachedWidth = width;
 		this.cachedLines = lines;
@@ -313,6 +322,20 @@ class NervousDashboard implements Component {
 		}
 	}
 
+	private renderDetailViewport(lines: string[], width: number): void {
+		const detailLines: string[] = [];
+		this.renderDetail(detailLines, width);
+		this.detailLineCount = detailLines.length;
+		const maxScroll = Math.max(0, detailLines.length - this.detailViewportRows);
+		this.detailScroll = Math.max(0, Math.min(maxScroll, this.detailScroll));
+		if (detailLines.length > this.detailViewportRows) {
+			const from = this.detailScroll + 1;
+			const to = Math.min(this.detailScroll + this.detailViewportRows, detailLines.length);
+			lines.push(frameLine(this.theme.fg("muted", `Scroll ${from}-${to} of ${detailLines.length}`), width, this.theme));
+		}
+		lines.push(...detailLines.slice(this.detailScroll, this.detailScroll + this.detailViewportRows));
+	}
+
 	private renderDetail(lines: string[], width: number): void {
 		const detail = this.detail;
 		if (!detail) return;
@@ -388,9 +411,16 @@ class NervousDashboard implements Component {
 	}
 	private renderAmygdala(lines: string[], width: number, i: Incident): void { this.title(lines, width, `AMYGDALA ${i.id}: ${i.title}`); pushWrapped(lines, "Status", `${i.status} • ${i.severity}/${i.category} • ${i.recommendation}`, width, this.theme); pushWrapped(lines, "Source", `${i.source}${i.source_id ? `:${i.source_id}` : ""}`, width, this.theme); pushWrapped(lines, "Description", i.description, width, this.theme); pushWrapped(lines, "Reason", i.reason, width, this.theme); pushWrapped(lines, "Mitigation", i.mitigation_plan.join(" | "), width, this.theme); pushWrapped(lines, "Latest note", i.notes.at(-1)?.text, width, this.theme); }
 
-	private closeDetail(): void { this.detail = null; this.invalidate(); this.tui.requestRender(); }
-	private switchTab(delta: number): void { this.tabIndex = (this.tabIndex + delta + TABS.length) % TABS.length; this.selected = 0; this.invalidate(); this.tui.requestRender(); }
+	private closeDetail(): void { this.detail = null; this.detailScroll = 0; this.invalidate(); this.tui.requestRender(); }
+	private switchTab(delta: number): void { this.tabIndex = (this.tabIndex + delta + TABS.length) % TABS.length; this.selected = 0; this.detailScroll = 0; this.invalidate(); this.tui.requestRender(); }
 	private move(delta: number): void { this.selected = Math.max(0, Math.min(Math.max(0, this.items().length - 1), this.selected + delta)); this.invalidate(); this.tui.requestRender(); }
+	private scrollDetail(delta: number): void { this.scrollDetailTo(this.detailScroll + delta); }
+	private scrollDetailTo(target: number): void {
+		const maxScroll = Math.max(0, this.detailLineCount - this.detailViewportRows);
+		this.detailScroll = Math.max(0, Math.min(maxScroll, target));
+		this.invalidate();
+		this.tui.requestRender();
+	}
 	private reload(): void {
 		if (this.refreshing) return;
 		this.refreshing = true;
