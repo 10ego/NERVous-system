@@ -91,17 +91,47 @@ nervous-system/
 └── demo/            # ✅ deterministic final end-to-end flow
 ```
 
-## Getting started
+## Installation
 
-Install the full NERVous System pi package from git:
+### Install from GitHub
+
+Install the full NERVous System pi package with SSH:
 
 ```bash
 pi install git:git@github.com:10ego/NERVous-system.git
 ```
 
-For local development:
+Or with HTTPS:
 
 ```bash
+pi install git:https://github.com/10ego/NERVous-system.git
+```
+
+This installs the root pi package and enables all NERVous extensions, skills, and prompt templates: MAGI, AXON, SYNAPSE, CORTEX, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard.
+
+Verify that pi can see the package:
+
+```bash
+pi list
+```
+
+Update later with:
+
+```bash
+pi update git:git@github.com:10ego/NERVous-system.git
+```
+
+Remove with:
+
+```bash
+pi remove git:git@github.com:10ego/NERVous-system.git
+```
+
+### Local development install
+
+```bash
+git clone git@github.com:10ego/NERVous-system.git
+cd NERVous-system
 npm install
 npm test                       # run all component + demo tests
 npm run test:e2e               # run the deterministic final end-to-end flow
