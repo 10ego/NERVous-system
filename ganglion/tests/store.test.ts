@@ -76,6 +76,19 @@ describe("GanglionLedger", () => {
 		assert.equal(r.members[0]?.last_run_id, "run-001");
 	});
 
+	it("reconciles busy members from terminal LION runs", () => {
+		const l = new GanglionLedger();
+		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+		l.allocate(g.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
+		const report = l.reconcile(g.id, [{ id: "run-001", agent_id: "lion-api", task_id: "task-api", status: "completed", summary: "done", updated_at: "2026-01-01T00:00:00.000Z" }]);
+		assert.equal(report.released.length, 1);
+		assert.equal(report.released[0]?.allocation_id, "alloc-001");
+		assert.equal(report.ganglion.allocations[0]?.status, "completed");
+		assert.equal(report.ganglion.allocations[0]?.lion_run_id, "run-001");
+		assert.equal(report.ganglion.members[0]?.status, "available");
+		assert.equal(report.ganglion.members[0]?.last_run_id, "run-001");
+	});
+
 	it("release cancels active allocation", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });

@@ -10,6 +10,7 @@ import {
 	type AllocationStatus,
 	type Ganglion,
 	type GanglionFile,
+	type GanglionReconcileReport,
 	type GanglionStatus,
 	type GanglionSummary,
 	type Member,
@@ -48,6 +49,7 @@ export interface CreateGanglionInput {
 }
 export interface AllocateInput { tasks: WorkItemBrief[]; context?: string }
 export interface RecordInput { allocation_id?: string; task_id?: string; lion_run_id?: string; status: AllocationStatus; summary?: string }
+export interface LionRunBrief { id: string; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
 
 export class GanglionLedger {
 	readonly project?: string;
@@ -178,6 +180,34 @@ export class GanglionLedger {
 		return clone(g);
 	}
 
+	reconcile(ganglionId: string, runs: LionRunBrief[]): GanglionReconcileReport {
+		const g = this.require(ganglionId);
+		const released: GanglionReconcileReport["released"] = [];
+		const inconsistencies: string[] = [];
+		for (const m of g.members) {
+			if (m.status !== "busy") continue;
+			if (!m.current_allocation_id) { inconsistencies.push(`${m.id} is busy without current_allocation_id`); continue; }
+			const a = g.allocations.find((x) => x.id === m.current_allocation_id);
+			if (!a) { inconsistencies.push(`${m.id} references missing allocation ${m.current_allocation_id}`); continue; }
+			if (["completed", "blocked", "failed", "cancelled"].includes(a.status)) {
+				releaseMember(m, a.lion_run_id ?? undefined);
+				released.push({ member_id: m.id, allocation_id: a.id, lion_run_id: a.lion_run_id ?? null, status: a.status });
+				continue;
+			}
+			const run = findTerminalRunForAllocation(a, m, runs);
+			if (!run) continue;
+			const status = allocationStatusFromLionRun(run.status);
+			a.status = status;
+			a.lion_run_id = run.id;
+			a.outcome_summary = run.summary ?? a.outcome_summary ?? null;
+			a.updated_at = now();
+			releaseMember(m, run.id);
+			released.push({ member_id: m.id, allocation_id: a.id, lion_run_id: run.id, status });
+		}
+		if (released.length || inconsistencies.length) g.updated_at = now();
+		return { ganglion: clone(g), released, inconsistencies };
+	}
+
 	delete(id: string): Ganglion {
 		const g = this.require(id);
 		this.ganglionsById.delete(id);
@@ -246,6 +276,14 @@ function makeAllocation(g: Ganglion, task: WorkItemBrief, m: Member, context: st
 }
 function allocationReason(m: Member, required: string[]): string { return required.length ? `matched ${required.filter((r) => m.capabilities.includes(r)).join(", ") || "available member"}` : "no specific capability required"; }
 function releaseMember(m: Member, runId?: string): void { m.status = "available"; m.current_task_id = null; m.current_allocation_id = null; if (runId) m.last_run_id = runId; m.updated_at = now(); }
+function findTerminalRunForAllocation(a: Allocation, m: Member, runs: LionRunBrief[]): LionRunBrief | undefined {
+	const terminal = runs.filter((r) => ["completed", "blocked", "failed", "aborted"].includes(r.status));
+	if (a.lion_run_id) return terminal.find((r) => r.id === a.lion_run_id);
+	return terminal
+		.filter((r) => r.agent_id === m.id && r.task_id === a.task_id)
+		.sort((x, y) => (y.updated_at ?? "").localeCompare(x.updated_at ?? ""))[0];
+}
+function allocationStatusFromLionRun(status: string): AllocationStatus { return status === "completed" ? "completed" : status === "blocked" ? "blocked" : "failed"; }
 function requireMember(g: Ganglion, id: string): Member { const m = g.members.find((x) => x.id === id); if (!m) throw new GanglionError("not_found", `member ${id} not found`); return m; }
 function requireAllocation(g: Ganglion, id: string): Allocation { const a = g.allocations.find((x) => x.id === id); if (!a) throw new GanglionError("not_found", `allocation ${id} not found`); return a; }
 function findAllocation(g: Ganglion, taskId?: string): Allocation | undefined { return taskId ? g.allocations.find((a) => a.task_id === taskId && !["completed", "blocked", "failed", "cancelled"].includes(a.status)) : undefined; }

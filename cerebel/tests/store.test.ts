@@ -24,22 +24,26 @@ describe("CerebelLedger", () => {
 	});
 
 	it("plans direct assignments too", () => {
-		const w = new CerebelLedger().planWave({ assignments: [{ objective: "Do x", agent_id: "lion-x", priority: "critical" }] });
+		const w = new CerebelLedger().planWave({ assignments: [{ objective: "Do x", agent_id: "lion-x", priority: "critical", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] });
 		assert.equal(w.assignments[0]?.agent_id, "lion-x");
 		assert.equal(w.assignments[0]?.priority, "critical");
+		assert.equal(w.assignments[0]?.ganglion_id, "ganglion-001");
+		assert.equal(w.assignments[0]?.ganglion_allocation_id, "alloc-001");
 	});
 
 	it("requires at least one assignment", () => {
 		assert.throws(() => new CerebelLedger().planWave({ tasks: [] }), CerebelError);
 	});
 
-	it("dispatches a wave and links LION run ids", () => {
+	it("dispatches a wave and links LION run ids and GANGLION allocations", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
-		const d = l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] });
+		const d = l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] });
 		assert.equal(d.status, "dispatched");
 		assert.equal(d.assignments[0]?.status, "dispatched");
 		assert.equal(d.assignments[0]?.lion_run_id, "run-001");
+		assert.equal(d.assignments[0]?.ganglion_id, "ganglion-001");
+		assert.equal(d.assignments[0]?.ganglion_allocation_id, "alloc-001");
 		assert.equal(d.decision?.decision, "wait");
 	});
 

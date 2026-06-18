@@ -22,7 +22,8 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
 4. Use the returned allocations as CEREBEL/LION inputs:
    - member id → `agent_id`
    - allocation objective/context → LION objective/context
-5. After LION completion, call `ganglion record` with allocation status and run id, or `ganglion release`.
+5. Prefer linking the allocation through CEREBEL by passing `ganglion_id` and `ganglion_allocation_id`; CEREBEL will record/release capacity when the LION outcome is terminal. If not using CEREBEL, after LION completion call `ganglion record` with allocation status and run id, or `ganglion release`.
+6. If interrupted bookkeeping leaves members busy after terminal LION runs, call `ganglion reconcile` to conservatively release stale capacity from exact/same-task LION evidence.
 
 ## Capability allocation
 
@@ -38,7 +39,7 @@ Tasks may include `required_capabilities`. Members with matching capabilities ar
 
 ## Tool actions
 
-`create`, `add_member`, `update_member`, `remove_member`, `set_status`, `allocate`, `record`, `release`, `get`, `list`, `summary`, `delete`.
+`create`, `add_member`, `update_member`, `remove_member`, `set_status`, `allocate`, `record`, `release`, `reconcile`, `get`, `list`, `summary`, `delete`.
 
 ## Commands
 

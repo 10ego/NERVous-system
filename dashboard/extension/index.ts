@@ -118,15 +118,26 @@ function pushWrapped(lines: string[], label: string, value: string | null | unde
 	}
 }
 
-function pushGanglionMembersBox(lines: string[], width: number, theme: Theme, members: Ganglion["members"]): void {
+function terminalRunForMember(g: Ganglion, member: Ganglion["members"][number], runs: LionRun[]): LionRun | undefined {
+	if (member.status !== "busy" || !member.current_allocation_id) return undefined;
+	const allocation = g.allocations.find((a) => a.id === member.current_allocation_id);
+	if (!allocation) return undefined;
+	const terminal = runs.filter((run) => ["completed", "blocked", "failed", "aborted"].includes(run.status));
+	if (allocation.lion_run_id) return terminal.find((run) => run.id === allocation.lion_run_id);
+	return terminal
+		.filter((run) => run.agent_id === member.id && run.task_id === allocation.task_id)
+		.sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
+}
+
+function pushGanglionMembersBox(lines: string[], width: number, theme: Theme, ganglion: Ganglion, runs: LionRun[]): void {
 	lines.push(frameLine(theme.fg("accent", "Members"), width, theme));
-	if (members.length === 0) {
+	if (ganglion.members.length === 0) {
 		lines.push(frameLine("No LION members registered.", width, theme));
 		return;
 	}
 
 	const available = Math.max(16, width - 4);
-	const statusCol = Math.min(12, Math.max(8, available - 12));
+	const statusCol = Math.min(18, Math.max(8, available - 12));
 	const nameCol = Math.max(8, available - statusCol - 7);
 	const top = `┌${"─".repeat(nameCol + 2)}┬${"─".repeat(statusCol + 2)}┐`;
 	const mid = `├${"─".repeat(nameCol + 2)}┼${"─".repeat(statusCol + 2)}┤`;
@@ -136,8 +147,10 @@ function pushGanglionMembersBox(lines: string[], width: number, theme: Theme, me
 	lines.push(frameLine(theme.fg("border", top), width, theme));
 	lines.push(frameLine(row(theme.bold("LION"), theme.bold("STATUS")), width, theme));
 	lines.push(frameLine(theme.fg("border", mid), width, theme));
-	for (const member of members) {
-		lines.push(frameLine(row(member.id, member.status, styleStatus(theme, member.status)), width, theme));
+	for (const member of ganglion.members) {
+		const staleRun = terminalRunForMember(ganglion, member, runs);
+		const status = staleRun ? `${member.status} ⚠ ${staleRun.status}` : member.status;
+		lines.push(frameLine(row(member.id, status, staleRun ? theme.fg("warning", status) : styleStatus(theme, member.status)), width, theme));
 	}
 	lines.push(frameLine(theme.fg("border", bottom), width, theme));
 }
@@ -335,12 +348,12 @@ class NervousDashboard implements Component {
 	}
 	private renderSynapse(lines: string[], width: number, n: Note): void { this.title(lines, width, `SYNAPSE ${n.id}`); pushWrapped(lines, "Type", n.type, width, this.theme); pushWrapped(lines, "Task", n.task_id, width, this.theme); pushWrapped(lines, "Agent", n.agent_id, width, this.theme); pushWrapped(lines, "Message", n.message, width, this.theme); }
 	private renderLion(lines: string[], width: number, r: LionRun): void { this.title(lines, width, `LION ${r.agent_id}: ${r.id}`); pushWrapped(lines, "Status", r.status, width, this.theme); pushWrapped(lines, "Task", r.task_id, width, this.theme); pushWrapped(lines, "Objective", r.objective, width, this.theme); pushWrapped(lines, "Report", r.report?.summary, width, this.theme); pushWrapped(lines, "Tests", r.report?.tests_run.join(", "), width, this.theme); pushWrapped(lines, "Blockers", r.report?.blockers.join(" | ") || r.error, width, this.theme); pushWrapped(lines, "Next", r.report?.next_steps.join(" | "), width, this.theme); }
-	private renderCerebel(lines: string[], width: number, w: Wave): void { this.title(lines, width, `CEREBEL ${w.id}`); pushWrapped(lines, "Status", w.status, width, this.theme); pushWrapped(lines, "Goal", w.goal_id, width, this.theme); pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme); pushWrapped(lines, "Assignments", w.assignments.map((a) => `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}`).join(" | "), width, this.theme); }
+	private renderCerebel(lines: string[], width: number, w: Wave): void { this.title(lines, width, `CEREBEL ${w.id}`); pushWrapped(lines, "Status", w.status, width, this.theme); pushWrapped(lines, "Goal", w.goal_id, width, this.theme); pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme); pushWrapped(lines, "Assignments", w.assignments.map((a) => `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}${a.ganglion_allocation_id ? `/ganglion:${a.ganglion_id ?? "?"}/${a.ganglion_allocation_id}` : ""}`).join(" | "), width, this.theme); }
 	private renderGanglion(lines: string[], width: number, g: Ganglion): void {
 		this.title(lines, width, `GANGLION ${g.id}: ${g.name}`);
 		pushWrapped(lines, "Status", g.status, width, this.theme);
 		pushWrapped(lines, "Goal", g.goal_id, width, this.theme);
-		pushGanglionMembersBox(lines, width, this.theme, g.members);
+		pushGanglionMembersBox(lines, width, this.theme, g, this.data.runs);
 		pushWrapped(lines, "Allocations", g.allocations.map((a) => `${a.id}/${a.member_id}/${a.status}`).join(" | "), width, this.theme);
 	}
 	private renderAmygdala(lines: string[], width: number, i: Incident): void { this.title(lines, width, `AMYGDALA ${i.id}: ${i.title}`); pushWrapped(lines, "Status", `${i.status} • ${i.severity}/${i.category} • ${i.recommendation}`, width, this.theme); pushWrapped(lines, "Source", `${i.source}${i.source_id ? `:${i.source_id}` : ""}`, width, this.theme); pushWrapped(lines, "Description", i.description, width, this.theme); pushWrapped(lines, "Reason", i.reason, width, this.theme); pushWrapped(lines, "Mitigation", i.mitigation_plan.join(" | "), width, this.theme); pushWrapped(lines, "Latest note", i.notes.at(-1)?.text, width, this.theme); }

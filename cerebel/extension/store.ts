@@ -45,19 +45,21 @@ export function canTransition(from: WaveStatus, to: WaveStatus): boolean {
 export interface PlanWaveInput {
 	goal_id?: string | null;
 	tasks?: AxonTaskBrief[];
-	assignments?: Array<{ task_id?: string | null; agent_id?: string; objective: string; context?: string; priority?: Priority }>;
+	assignments?: Array<{ task_id?: string | null; agent_id?: string; objective: string; context?: string; priority?: Priority; ganglion_id?: string | null; ganglion_allocation_id?: string | null }>;
 	context?: string;
 	max_parallel?: number;
 }
 
 export interface DispatchInput {
-	links?: Array<{ assignment_id: string; lion_run_id?: string }>;
+	links?: Array<{ assignment_id: string; lion_run_id?: string; ganglion_id?: string | null; ganglion_allocation_id?: string | null }>;
 }
 
 export interface RecordInput {
 	assignment_id?: string;
 	task_id?: string;
 	lion_run_id?: string;
+	ganglion_id?: string | null;
+	ganglion_allocation_id?: string | null;
 	outcome: AssignmentStatus;
 	summary?: string;
 	changed_files?: string[];
@@ -105,6 +107,8 @@ export class CerebelLedger {
 			const a = requireAssignment(w, link.assignment_id);
 			a.status = "dispatched";
 			if (link.lion_run_id) a.lion_run_id = link.lion_run_id;
+			if (link.ganglion_id) a.ganglion_id = link.ganglion_id;
+			if (link.ganglion_allocation_id) a.ganglion_allocation_id = link.ganglion_allocation_id;
 			a.updated_at = now();
 		}
 		if (!links.length) {
@@ -127,6 +131,8 @@ export class CerebelLedger {
 		if (["cancelled"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot record cancelled assignment ${a.id}`);
 		a.status = input.outcome;
 		if (input.lion_run_id) a.lion_run_id = input.lion_run_id;
+		if (input.ganglion_id) a.ganglion_id = input.ganglion_id;
+		if (input.ganglion_allocation_id) a.ganglion_allocation_id = input.ganglion_allocation_id;
 		a.outcome_summary = input.summary ?? null;
 		a.changed_files = input.changed_files ?? [];
 		a.tests_run = input.tests_run ?? [];
@@ -258,6 +264,8 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			context: shared,
 			priority: normalizePriority(t.priority),
 			status: "planned",
+			ganglion_id: null,
+			ganglion_allocation_id: null,
 			lion_run_id: null,
 			outcome_summary: null,
 			changed_files: [], tests_run: [], blockers: [], next_steps: [],
@@ -273,6 +281,8 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			context: [shared, a.context ?? ""].filter(Boolean).join("\n\n"),
 			priority: normalizePriority(a.priority),
 			status: "planned",
+			ganglion_id: a.ganglion_id ?? null,
+			ganglion_allocation_id: a.ganglion_allocation_id ?? null,
 			lion_run_id: null,
 			outcome_summary: null,
 			changed_files: [], tests_run: [], blockers: [], next_steps: [],
@@ -355,6 +365,8 @@ function coerceAssignment(value: unknown): Assignment | null {
 		context: typeof value.context === "string" ? value.context : "",
 		priority: normalizePriority(value.priority),
 		status: typeof value.status === "string" && ASSIGNMENT_STATUS_SET.has(value.status) ? (value.status as AssignmentStatus) : "failed",
+		ganglion_id: typeof value.ganglion_id === "string" ? value.ganglion_id : null,
+		ganglion_allocation_id: typeof value.ganglion_allocation_id === "string" ? value.ganglion_allocation_id : null,
 		lion_run_id: typeof value.lion_run_id === "string" ? value.lion_run_id : null,
 		outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null,
 		changed_files: strings(value.changed_files),

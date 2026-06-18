@@ -20,9 +20,11 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
 3. Dispatch assignments:
    - for each ready assignment, call `lion run task_id=... agent_id=... objective=... context=...`
    - call `cerebel dispatch links=[{assignment_id,lion_run_id}]`
+   - if the assignment came from GANGLION, include `ganglion_id` and `ganglion_allocation_id` in the assignment or dispatch link so CEREBEL can release capacity later
 4. Record worker results:
    - read each LION report
    - `cerebel record assignment_id=... lion_run_id=... outcome=... summary=... blockers=[...]`
+   - for linked GANGLION allocations, terminal outcomes automatically record/release the GANGLION allocation
 5. Decide:
    - `cerebel decide`
    - `dispatch` → run more LIONs
@@ -37,7 +39,7 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
 - **AXON** owns durable task status.
 - **LION** does isolated execution.
 - **SYNAPSE** holds transient coordination notes.
-- **CEREBEL** owns orchestration state only: waves, assignments, run links, decisions.
+- **CEREBEL** owns orchestration lifecycle: waves, assignments, run links, decisions, and release of linked GANGLION capacity leases when LION outcomes are terminal.
 
 ## Tool actions
 

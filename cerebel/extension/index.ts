@@ -2,7 +2,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CerebelStore } from "./backend.ts";
-import { CerebelError, CerebelToolParams, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
+import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
 import { renderCerebelCall, renderCerebelResult, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
 
 interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; error?: string }
@@ -27,6 +27,26 @@ function waveId(l: import("./store.ts").CerebelLedger, id?: string): string | un
 	return id;
 }
 
+function isTerminalAssignment(status: AssignmentStatus): boolean { return ["completed", "partial", "blocked", "failed", "cancelled"].includes(status); }
+function ganglionStatusFromAssignment(status: AssignmentStatus): "completed" | "blocked" | "failed" | "cancelled" { return status === "blocked" ? "blocked" : status === "failed" ? "failed" : status === "cancelled" ? "cancelled" : "completed"; }
+function findRecordedAssignment(wave: Wave, p: CerebelToolInput): Assignment | undefined {
+	return wave.assignments.find((a) => (p.assignment_id && a.id === p.assignment_id) || (p.task_id && a.task_id === p.task_id) || (p.lion_run_id && a.lion_run_id === p.lion_run_id));
+}
+async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefined, p: CerebelToolInput, outcome: AssignmentStatus): Promise<string | null> {
+	if (!assignment || !isTerminalAssignment(outcome)) return null;
+	const ganglionId = p.ganglion_id ?? assignment.ganglion_id;
+	const allocationId = p.ganglion_allocation_id ?? assignment.ganglion_allocation_id;
+	if (!allocationId) return null;
+	if (!ganglionId) return `GANGLION release skipped: assignment ${assignment.id} has allocation ${allocationId} but no ganglion_id.`;
+	try {
+		const { GanglionStore } = await import("../../ganglion/extension/backend.ts");
+		await GanglionStore.fromCwd(cwd).mutate((l) => l.record(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
+		return `GANGLION ${ganglionId}/${allocationId} recorded and capacity released.`;
+	} catch (e) {
+		return `GANGLION release failed for ${ganglionId}/${allocationId}: ${e instanceof Error ? e.message : String(e)}`;
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "cerebel",
@@ -42,6 +62,7 @@ export default function (pi: ExtensionAPI) {
 			"Use cerebel after CORTEX has planned work into AXON and ready AXON tasks exist.",
 			"First read axon list/summary, then pass ready task briefs into cerebel plan_wave.",
 			"For each ready assignment, call lion run with task_id/objective/context/agent_id, then cerebel dispatch/record the LION run id and outcome.",
+			"When assignments come from GANGLION, include ganglion_id and ganglion_allocation_id on the CEREBEL assignment/dispatch/record so CEREBEL releases member capacity on terminal outcomes.",
 			"After blocked/failed results: cerebel record/decide, update AXON, post a SYNAPSE risk/blocker note, then use AMYGDALA or replan; never silently continue.",
 		],
 		parameters: CerebelToolParams,
@@ -68,12 +89,16 @@ export default function (pi: ExtensionAPI) {
 				case "record": {
 					const outcome = p.outcome;
 					if (!outcome) return fail(action, "record requires `outcome`.");
-					return runOp(store, action, (l) => {
+					const result = await runOp(store, action, (l) => {
 						const id = waveId(l, p.wave_id);
 						if (!id) return fail(action, "record requires wave_id or current wave.");
-						const wave = l.record(id, { assignment_id: p.assignment_id, task_id: p.task_id, lion_run_id: p.lion_run_id, outcome, summary: p.summary, changed_files: p.changed_files, tests_run: p.tests_run, blockers: p.blockers, next_steps: p.next_steps });
+						const wave = l.record(id, { assignment_id: p.assignment_id, task_id: p.task_id, lion_run_id: p.lion_run_id, ganglion_id: p.ganglion_id, ganglion_allocation_id: p.ganglion_allocation_id, outcome, summary: p.summary, changed_files: p.changed_files, tests_run: p.tests_run, blockers: p.blockers, next_steps: p.next_steps });
 						return ok(action, `Recorded result in ${wave.id}. Decision: ${wave.decision?.decision ?? "—"}.`, { wave });
 					});
+					const assignment = result.details.wave ? findRecordedAssignment(result.details.wave, p) : undefined;
+					const ganglionMessage = await recordLinkedGanglion(ctx.cwd, assignment, p, outcome as AssignmentStatus);
+					if (ganglionMessage) result.content[0]!.text += ` ${ganglionMessage}`;
+					return result;
 				}
 				case "decide": {
 					return runOp(store, action, (l) => {

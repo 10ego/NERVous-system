@@ -18,6 +18,7 @@ export function summarizeWave(w: Wave): string {
 	for (const a of w.assignments) {
 		lines.push(`- ${ASSIGN_ICON[a.status]} \`${a.id}\` **${a.agent_id}** ${a.task_id ? `→ \`${a.task_id}\`` : ""} _${a.status}/${a.priority}_ — ${firstLine(a.objective)}`);
 		if (a.lion_run_id) lines.push(`  - LION: \`${a.lion_run_id}\``);
+		if (a.ganglion_id || a.ganglion_allocation_id) lines.push(`  - GANGLION: \`${a.ganglion_id ?? "—"}\`${a.ganglion_allocation_id ? `/\`${a.ganglion_allocation_id}\`` : ""}`);
 		if (a.outcome_summary) lines.push(`  - ${a.outcome_summary}`);
 		if (a.blockers.length) lines.push(...a.blockers.map((b) => `  - blocker: ${b}`));
 	}

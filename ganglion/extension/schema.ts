@@ -30,6 +30,7 @@ export const GANGLION_ACTIONS = [
 	"allocate",
 	"record",
 	"release",
+	"reconcile",
 	"get",
 	"list",
 	"summary",
@@ -105,6 +106,12 @@ export interface GanglionSummary {
 	recent: Ganglion[];
 }
 
+export interface GanglionReconcileReport {
+	ganglion: Ganglion;
+	released: Array<{ member_id: string; allocation_id: string; lion_run_id?: string | null; status: AllocationStatus }>;
+	inconsistencies: string[];
+}
+
 export const PRIORITY_SCHEMA = StringEnum(PRIORITIES);
 export const MEMBER_STATUS_SCHEMA = StringEnum(MEMBER_STATUSES);
 export const GANGLION_STATUS_SCHEMA = StringEnum(GANGLION_STATUSES);
@@ -129,7 +136,7 @@ const WorkItemSchema = Type.Object({
 
 export const GanglionToolParams = Type.Object({
 	action: StringEnum(GANGLION_ACTIONS, {
-		description: "What to do. create/add_member/update_member/remove_member/set_status/allocate/record/release/get/list/summary/delete.",
+		description: "What to do. create/add_member/update_member/remove_member/set_status/allocate/record/release/reconcile/get/list/summary/delete.",
 	}),
 	ganglion_id: Type.Optional(Type.String({ description: "Ganglion id. Use current/latest when omitted for most actions." })),
 	name: Type.Optional(Type.String({ description: "Ganglion name (create/update)." })),
