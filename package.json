@@ -2,7 +2,19 @@
   "name": "nervous-system",
   "version": "0.1.0",
   "private": true,
-  "description": "NERVous System — a modular multi-agent coding-agent extension framework for pi. This repo hosts one pi package per component.",
+  "description": "NERVous System — a modular multi-agent coding-agent extension framework for pi.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/10ego/NERVous-system.git"
+  },
+  "keywords": [
+    "pi-package",
+    "nervous-system",
+    "multi-agent",
+    "coding-agent",
+    "pi-extension"
+  ],
   "workspaces": [
     "magi",
     "axon",
@@ -15,6 +27,37 @@
     "dashboard",
     "state"
   ],
+  "pi": {
+    "extensions": [
+      "magi/extension/index.ts",
+      "axon/extension/index.ts",
+      "synapse/extension/index.ts",
+      "cortex/extension/index.ts",
+      "lion/extension/index.ts",
+      "cerebel/extension/index.ts",
+      "ganglion/extension/index.ts",
+      "amygdala/extension/index.ts",
+      "dashboard/extension/index.ts"
+    ],
+    "skills": [
+      "magi/skills/magi",
+      "axon/skills/axon",
+      "synapse/skills/synapse",
+      "cortex/skills/cortex",
+      "lion/skills/lion",
+      "cerebel/skills/cerebel",
+      "ganglion/skills/ganglion",
+      "amygdala/skills/amygdala"
+    ],
+    "prompts": [
+      "magi/prompts",
+      "cortex/prompts",
+      "lion/prompts",
+      "cerebel/prompts",
+      "ganglion/prompts",
+      "amygdala/prompts"
+    ]
+  },
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",

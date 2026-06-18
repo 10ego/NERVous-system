@@ -93,6 +93,14 @@ nervous-system/
 
 ## Getting started
 
+Install the full NERVous System pi package from git:
+
+```bash
+pi install git:git@github.com:10ego/NERVous-system.git
+```
+
+For local development:
+
 ```bash
 npm install
 npm test                       # run all component + demo tests
@@ -100,11 +108,11 @@ npm run test:e2e               # run the deterministic final end-to-end flow
 npm run test:dashboard         # run dashboard tests
 npm run test:state             # run shared state resolver tests
 
-# Try MAGI without installing:
-pi -e ./magi/extension/index.ts
+# Load the full suite from this checkout without installing globally:
+pi -e .
 
-# Or install it:
-pi install ./magi
+# Or install this checkout as a local package:
+pi install .
 ```
 
 See component READMEs for usage and architecture: [`magi/`](./magi), [`axon/`](./axon), [`synapse/`](./synapse), [`cortex/`](./cortex), [`lion/`](./lion), [`cerebel/`](./cerebel), [`ganglion/`](./ganglion), [`amygdala/`](./amygdala), [`dashboard/`](./dashboard).
