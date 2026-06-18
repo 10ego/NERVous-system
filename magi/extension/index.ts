@@ -91,7 +91,7 @@ export default function (pi: ExtensionAPI) {
 						? (text) => {
 								const partial: AgentToolResult<MagiDetails> = {
 									content: [{ type: "text", text }],
-									details: { ...emptyOutput(), source },
+									details: { ...emptyOutput(), source: "running" },
 								};
 								onUpdate(partial);
 							}
