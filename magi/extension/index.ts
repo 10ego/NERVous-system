@@ -17,11 +17,11 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { deliberate } from "./council.ts";
+import { deliberate, type DeliberateStatus } from "./council.ts";
 import { createSubprocessRunner } from "./subprocess.ts";
 import { resolveCouncil } from "./config.ts";
 import { MagiHistoryStore } from "./history.ts";
-import { formatStatus, renderMagiCall, renderMagiResult, summarizeOutput } from "./render.ts";
+import { formatStatus, formatStatusWidget, renderMagiCall, renderMagiResult, summarizeOutput } from "./render.ts";
 import { MagiToolParams, type MagiInput, type MagiOutput, type MagiToolInput } from "./schema.ts";
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -34,6 +34,7 @@ async function runMagi(args: {
 	cwd: string;
 	signal?: AbortSignal;
 	onStatusText?: (text: string) => void;
+	onStatus?: (status: DeliberateStatus) => void;
 }): Promise<{ output: MagiOutput; source: string }> {
 	const resolved = resolveCouncil(args.councilSpec, { cwd: args.cwd, bundledConfigDir: BUNDLED_CONFIG_DIR });
 	const config = { ...resolved.config };
@@ -45,7 +46,10 @@ async function runMagi(args: {
 		config,
 		generate,
 		signal: args.signal,
-		onUpdate: args.onStatusText ? (status) => args.onStatusText!(formatStatus(status)) : undefined,
+		onUpdate: args.onStatusText || args.onStatus ? (status) => {
+			args.onStatusText?.(formatStatus(status));
+			args.onStatus?.(status);
+		} : undefined,
 	});
 	return { output, source: resolved.source };
 }
@@ -190,15 +194,17 @@ async function deliberateCommand(
 	if (ctx.hasUI) {
 		ctx.ui.notify("MAGI council convening…", "info");
 		ctx.ui.setStatus("magi", "MAGI deliberating…");
+		ctx.ui.setWidget("magi", ["MAGI council — starting", `Issue: ${input.issue.length > 96 ? `${input.issue.slice(0, 96)}…` : input.issue}`]);
 	}
 	try {
 		const { output, source } = await runMagi({
 			input,
 			cwd: ctx.cwd,
 			onStatusText: ctx.hasUI ? (text) => ctx.ui.setStatus("magi", text) : undefined,
+			onStatus: ctx.hasUI ? (status) => ctx.ui.setWidget("magi", formatStatusWidget(status, input.issue)) : undefined,
 		});
 		await MagiHistoryStore.fromCwd(ctx.cwd).append(input, output, source);
-		if (ctx.hasUI) ctx.ui.setStatus("magi", undefined);
+		if (ctx.hasUI) { ctx.ui.setStatus("magi", undefined); ctx.ui.setWidget("magi", undefined); }
 
 		// Display the result in the transcript and notify a short summary.
 		pi.sendMessage(
@@ -216,7 +222,7 @@ async function deliberateCommand(
 				: output.final_recommendation;
 		ctx.ui.notify(`MAGI complete (${output.confidence}): ${short || "(no recommendation)"}`, "info");
 	} catch (err) {
-		if (ctx.hasUI) ctx.ui.setStatus("magi", undefined);
+		if (ctx.hasUI) { ctx.ui.setStatus("magi", undefined); ctx.ui.setWidget("magi", undefined); }
 		ctx.ui.notify(`MAGI failed: ${err instanceof Error ? err.message : err}`, "error");
 	}
 }

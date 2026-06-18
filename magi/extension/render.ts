@@ -22,27 +22,44 @@ const CONFIDENCE_ICON: Record<MagiOutput["confidence"], string> = {
 	low: "▽",
 };
 
+function phaseLabel(phase: DeliberateStatus["phase"]): string {
+	return phase === "opinion"
+		? "gathering opinions"
+		: phase === "critique"
+			? "cross-critique"
+			: phase === "synthesis"
+				? "synthesizing"
+				: phase === "error"
+					? "error"
+					: "done";
+}
+
+function phaseIcon(phase: "pending" | "running" | "done" | "failed"): string {
+	return phase === "done" ? "✓" : phase === "running" ? "…" : phase === "failed" ? "✗" : "·";
+}
+
 /** One-line progress string for streaming tool updates. */
 export function formatStatus(status: DeliberateStatus): string {
-	const phaseLabel =
-		status.phase === "opinion"
-			? "gathering opinions"
-			: status.phase === "critique"
-				? "cross-critique"
-				: status.phase === "synthesis"
-					? "synthesizing"
-					: status.phase === "error"
-						? "error"
-						: "done";
-
 	const members = status.members
-		.map((m) => {
-			const icon =
-				m.phase === "done" ? "✓" : m.phase === "running" ? "…" : m.phase === "failed" ? "✗" : "·";
-			return `${m.id}${icon}`;
-		})
+		.map((m) => `${m.id}${phaseIcon(m.phase)}`)
 		.join(" ");
-	return `MAGI [${phaseLabel}] ${members}`.trim();
+	return `MAGI [${phaseLabel(status.phase)}] ${members}`.trim();
+}
+
+/** Multi-line progress widget for the /magi command. */
+export function formatStatusWidget(status: DeliberateStatus, issue?: string): string[] {
+	const lines = [
+		`MAGI council — ${phaseLabel(status.phase)}`,
+	];
+	if (issue) lines.push(`Issue: ${issue.length > 96 ? `${issue.slice(0, 96)}…` : issue}`);
+	lines.push("", "Councillors:");
+	for (const member of status.members) {
+		lines.push(`  ${phaseIcon(member.phase)} ${member.id.padEnd(14)} ${member.phase}`);
+	}
+	if (status.critique) lines.push("", "Critique round: enabled");
+	if (status.synthesis) lines.push(`Synthesis: ${phaseIcon(status.synthesis.phase)} ${status.synthesis.synthesizer || "synthesizer"} ${status.synthesis.phase}`);
+	if (status.error) lines.push(`Error: ${status.error}`);
+	return lines;
 }
 
 /** Compact, model/user-facing summary of a completed deliberation. */

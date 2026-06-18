@@ -118,6 +118,23 @@ function pushWrapped(lines: string[], label: string, value: string | null | unde
 	}
 }
 
+function pushSection(lines: string[], title: string, width: number, theme: Theme): void {
+	const inner = Math.max(8, width - 4);
+	const label = ` ${title} `;
+	const left = "─".repeat(2);
+	const right = "─".repeat(Math.max(0, inner - visibleWidth(label) - visibleWidth(left)));
+	lines.push(frameLine(theme.fg("muted", `${left}${label}${right}`), width, theme));
+}
+
+function pushBullets(lines: string[], label: string, items: string[], width: number, theme: Theme): void {
+	pushSection(lines, label, width, theme);
+	if (!items.length) {
+		lines.push(frameLine("—", width, theme));
+		return;
+	}
+	for (const item of items) pushWrapped(lines, "", `• ${item}`, width, theme);
+}
+
 function terminalRunForMember(g: Ganglion, member: Ganglion["members"][number], runs: LionRun[]): LionRun | undefined {
 	if (member.status !== "busy" || !member.current_allocation_id) return undefined;
 	const allocation = g.allocations.find((a) => a.id === member.current_allocation_id);
@@ -324,18 +341,31 @@ class NervousDashboard implements Component {
 		pushWrapped(lines, "Concerns", g.verification?.concerns.join(" | "), width, this.theme);
 	}
 	private renderMagi(lines: string[], width: number, r: MagiRecord): void {
-		this.title(lines, width, `MAGI ${r.id}: ${r.input.issue}`);
+		this.title(lines, width, `MAGI ${r.id}`);
+		pushSection(lines, "Request", width, this.theme);
+		pushWrapped(lines, "Issue", r.input.issue, width, this.theme);
 		pushWrapped(lines, "Decision", r.input.decision_needed, width, this.theme);
-		pushWrapped(lines, "Council", r.output.council_used.join(", "), width, this.theme);
+		if (r.input.options?.length) pushWrapped(lines, "Options", r.input.options.join(" | "), width, this.theme);
+		pushWrapped(lines, "Council", `${r.output.council_used.join(", ")} • synthesizer ${r.output.meta.synthesizer} • critique ${r.output.meta.critique_used ? "on" : "off"} • source ${r.source}`, width, this.theme);
 		pushWrapped(lines, "Confidence", r.output.confidence, width, this.theme);
+
+		pushSection(lines, "Final recommendation", width, this.theme);
+		pushWrapped(lines, "", r.output.final_recommendation, width, this.theme);
+
+		pushBullets(lines, "Agreement", r.output.points_of_agreement, width, this.theme);
+		pushBullets(lines, "Disagreement", r.output.points_of_disagreement, width, this.theme);
+		pushBullets(lines, "Risks", r.output.risks, width, this.theme);
+		pushBullets(lines, "Rejected options", r.output.rejected_options, width, this.theme);
+
 		for (const op of r.output.individual_opinions) {
-			pushWrapped(lines, `Opinion ${op.councillor}`, `${op.position}; recommends: ${op.recommendation}; concerns: ${op.concerns.join(" | ")}`, width, this.theme);
-			if (op.critiques?.length) pushWrapped(lines, `Critiques ${op.councillor}`, op.critiques.map((c) => `${c.of}: ${c.note}`).join(" | "), width, this.theme);
+			pushSection(lines, `Councillor ${op.councillor}`, width, this.theme);
+			pushWrapped(lines, "Position", op.position, width, this.theme);
+			pushWrapped(lines, "Verdict", op.recommendation, width, this.theme);
+			if (op.concerns.length) pushWrapped(lines, "Concerns", op.concerns.map((c) => `• ${c}`).join("  "), width, this.theme);
+			if (op.critiques?.length) pushWrapped(lines, "Critiques", op.critiques.map((c) => `${c.of}: ${c.note}`).join(" | "), width, this.theme);
 		}
-		pushWrapped(lines, "Agreement", r.output.points_of_agreement.join(" | "), width, this.theme);
-		pushWrapped(lines, "Disagreement", r.output.points_of_disagreement.join(" | "), width, this.theme);
-		pushWrapped(lines, "Risks", r.output.risks.join(" | "), width, this.theme);
-		pushWrapped(lines, "Resolution", r.output.final_recommendation, width, this.theme);
+
+		if (r.output.meta.warnings.length) pushBullets(lines, "Warnings", r.output.meta.warnings, width, this.theme);
 	}
 	private renderAxon(lines: string[], width: number, t: Task): void {
 		this.title(lines, width, `AXON ${t.id}: ${t.title}`);
