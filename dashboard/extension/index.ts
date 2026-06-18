@@ -107,32 +107,57 @@ function frameLine(content: string, width: number, theme: Theme, selected = fals
 	return theme.fg("border", "│ ") + body + theme.fg("border", " │");
 }
 
+function emptyText(theme: Theme): string { return theme.italic(theme.fg("muted", "—")); }
+
 function pushWrapped(lines: string[], label: string, value: string | null | undefined, width: number, theme: Theme): void {
 	const inner = Math.max(8, width - 4);
-	let rest = `${label ? `${label}: ` : ""}${value?.trim() || "—"}`;
+	let rest = value?.trim() || "—";
+	const isEmpty = rest === "—";
+	const isBullet = label === "•";
+	const rawPrefix = label ? (isBullet ? "• " : `${label}: `) : "";
+	const styledPrefix = label ? (isBullet ? `${theme.fg("mdListBullet", "•")} ` : `${theme.fg("accent", theme.bold(label))}${theme.fg("muted", ": ")}`) : "";
+	let first = true;
 	let guard = 0;
 	while (rest.length > 0 && guard++ < 40) {
+		const prefixWidth = first ? visibleWidth(rawPrefix) : rawPrefix.length;
+		const partWidth = Math.max(1, inner - prefixWidth);
+		const part = truncateToWidth(rest, partWidth, "");
+		const prefix = first ? styledPrefix : theme.fg("dim", " ".repeat(rawPrefix.length));
+		const body = isEmpty ? emptyText(theme) : part;
+		lines.push(frameLine(`${prefix}${body}`, width, theme));
+		rest = rest.slice(Math.max(1, part.length)).trimStart();
+		first = false;
+	}
+}
+
+function pushParagraph(lines: string[], value: string | null | undefined, width: number, theme: Theme, color: "text" | "toolOutput" | "muted" = "text"): void {
+	const inner = Math.max(8, width - 4);
+	let rest = value?.trim() || "—";
+	const isEmpty = rest === "—";
+	let guard = 0;
+	while (rest.length > 0 && guard++ < 60) {
 		const part = truncateToWidth(rest, inner, "");
-		lines.push(frameLine(part || rest.slice(0, inner), width, theme));
+		lines.push(frameLine(isEmpty ? emptyText(theme) : theme.fg(color, part), width, theme));
 		rest = rest.slice(Math.max(1, part.length)).trimStart();
 	}
 }
 
 function pushSection(lines: string[], title: string, width: number, theme: Theme): void {
+	if (lines.length > 0) lines.push(frameLine("", width, theme));
 	const inner = Math.max(8, width - 4);
-	const label = ` ${title} `;
-	const left = "─".repeat(2);
+	const label = ` ${title.toUpperCase()} `;
+	const left = "╾";
 	const right = "─".repeat(Math.max(0, inner - visibleWidth(label) - visibleWidth(left)));
-	lines.push(frameLine(theme.fg("muted", `${left}${label}${right}`), width, theme));
+	lines.push(frameLine(`${theme.fg("borderAccent", left)}${theme.fg("accent", theme.bold(label))}${theme.fg("borderMuted", right)}`, width, theme));
 }
 
 function pushBullets(lines: string[], label: string, items: string[], width: number, theme: Theme): void {
 	pushSection(lines, label, width, theme);
 	if (!items.length) {
-		lines.push(frameLine("—", width, theme));
+		lines.push(frameLine(emptyText(theme), width, theme));
 		return;
 	}
-	for (const item of items) pushWrapped(lines, "", `• ${item}`, width, theme);
+	for (const item of items) pushWrapped(lines, "•", item, width, theme);
 }
 
 function terminalRunForMember(g: Ganglion, member: Ganglion["members"][number], runs: LionRun[]): LionRun | undefined {
@@ -373,7 +398,7 @@ class NervousDashboard implements Component {
 		pushWrapped(lines, "Confidence", r.output.confidence, width, this.theme);
 
 		pushSection(lines, "Final recommendation", width, this.theme);
-		pushWrapped(lines, "", r.output.final_recommendation, width, this.theme);
+		pushParagraph(lines, r.output.final_recommendation, width, this.theme, "toolOutput");
 
 		pushBullets(lines, "Agreement", r.output.points_of_agreement, width, this.theme);
 		pushBullets(lines, "Disagreement", r.output.points_of_disagreement, width, this.theme);
