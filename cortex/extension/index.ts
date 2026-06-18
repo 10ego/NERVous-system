@@ -98,12 +98,14 @@ export default function (pi: ExtensionAPI) {
 		promptSnippet: "Run CORTEX: analyze intent into a durable goal, plan, link AXON tasks, verify",
 		promptGuidelines: [
 			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
+			"After explicit NERVous activation, default to draining all actionable incomplete CORTEX goals in the active context: list/summary goals, resume each one, verify/complete it, then continue until none remain.",
 			"When explaining a NERVous workflow, prefer a compact checklist of component → action/status → evidence; avoid verbose restatement.",
-			"Use the cortex tool action 'analyze' at the start of non-trivial work to capture intent, success criteria, constraints, and risks as a durable goal.",
-			"After cortex analyze, if needs_magi is true, convene the magi tool before cortex plan; otherwise proceed to cortex plan.",
+			"Use the cortex tool action 'analyze' at the start of non-trivial new work to capture intent, success criteria, constraints, and risks as a durable goal.",
+			"After cortex analyze, if needs_magi is true or the decision is hard/risky/ambiguous/architectural, convene the magi tool before cortex plan; otherwise proceed to cortex plan.",
 			"Use cortex tool action 'plan' to store the execution plan, then create each subtask in AXON (axon create) and record the ids with cortex action 'link'.",
 			"Use cortex tool action 'get' (goal_id 'current') to resume a goal after compaction or restart.",
 			"When AXON work is complete, read the axon board, then use cortex action 'verify' to check against the goal's success criteria before final review.",
+			"Do not silently stop with incomplete actionable goals; complete them, cancel them, or escalate blockers/unsafe uncertainty with AMYGDALA evidence.",
 		],
 		parameters: CortexToolParams,
 

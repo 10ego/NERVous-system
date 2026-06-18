@@ -12,17 +12,21 @@ The central idea: **capture intent + plan + verification as a durable Goal** so 
 
 ## The CORTEX workflow
 
-Follow this flow. Each step uses a tool.
+Default mode for explicit NERVous activation is **drain the active context**: keep progressing until every actionable incomplete CORTEX goal in the current NERVous context is completed. If a goal cannot safely proceed, escalate it to AMYGDALA or mark it cancelled/blocked with clear evidence; do not silently abandon it.
+
+First call `cortex list` or `cortex summary` to find incomplete goals. For each non-completed/non-cancelled goal, set it current, resume its state, run the workflow below, then move to the next incomplete goal. If the user prompt introduces new work, capture it as a CORTEX goal and include it in the same drain loop.
+
+Follow this flow for each goal. Each step uses a tool.
 
 ```
-1. analyze   → cortex analyze          (intent → durable Goal)
-2. magi?     → magi (only if needs_magi)
+1. analyze   → cortex analyze          (intent → durable Goal; for new work only)
+2. magi?     → magi (if needs_magi, or the decision is hard/risky/architectural)
 3. plan      → cortex plan             (subtasks; ref MAGI rec if used)
 4. create    → axon create (per subtask) → cortex link (record ids)
 5. execute   → do the work; axon set_status/add_note; synapse post
 6. verify    → read axon summary → cortex verify (vs success criteria)
-7. review    → magi (final review) if verify approved
-8. complete  → cortex complete; deliver final output to the user
+7. review    → magi (final review) for high-impact goals if verify approved
+8. complete  → cortex complete; continue to the next incomplete CORTEX goal
 ```
 
 ### 1. Analyze intent (`cortex analyze`)
@@ -51,13 +55,14 @@ Call `cortex complete` (requires `verified`), then deliver the final user-facing
 
 ## Resuming after interruption / compaction
 
-If you've been interrupted or your context was compacted, call **`cortex get`** with `goal_id: "current"` (or `/cortex:resume`). It returns the durable goal — intent, plan, linked AXON tasks, verification status — and a resume hint, so you can continue exactly where you left off. Then read **axon summary** to see task state.
+If you've been interrupted or your context was compacted, call **`cortex get`** with `goal_id: "current"` (or `/cortex:resume`). It returns the durable goal — intent, plan, linked AXON tasks, verification status — and a resume hint, so you can continue exactly where you left off. Then read **axon summary** to see task state. After resuming the current goal, return to the drain loop: use `cortex list`/`summary` and continue until no actionable incomplete goals remain.
 
 ## Key principles
 
 - **AXON is durable state** (the plan + status — source of truth). **SYNAPSE is transient** coordination. **CORTEX** holds the goal/intent/verification that ties them together. Don't duplicate: reference ids.
 - **Capture intent before acting.** A 30-second `cortex analyze` makes the work resumable and verifiable.
-- **MAGI is for hard calls, not routine work.** Respect its `needs_magi` signal.
+- **Default to draining all actionable incomplete goals** in the active NERVous context after explicit NERVous activation; stop only when goals are completed, cancelled, or blocked/escalated with evidence.
+- **MAGI is for hard calls, not routine work.** Respect its `needs_magi` signal and also use MAGI when a decision is clearly hard, risky, ambiguous, or architectural.
 - **Verify against the original success criteria**, not just "tasks are done."
 
 ## Commands
