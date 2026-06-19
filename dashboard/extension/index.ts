@@ -329,6 +329,7 @@ class NervousDashboard implements Component {
 			return;
 		}
 		const maxRows = 16;
+		if (this.tab === "synapse") lines.push(frameLine(this.theme.fg("muted", "SYNAPSE is an event log; note types are historical coordination events, not current task status."), width, this.theme));
 		const start = Math.max(0, Math.min(this.selected - Math.floor(maxRows / 2), Math.max(0, items.length - maxRows)));
 		for (let i = 0; i < items.slice(start, start + maxRows).length; i++) {
 			const absolute = start + i;
@@ -355,7 +356,10 @@ class NervousDashboard implements Component {
 			case "cortex": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} linked:${detail.item.axon_task_ids.length} ${detail.item.plan?.magi_used ? "MAGI" : ""} ${detail.item.intent.goal}`;
 			case "magi": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.output.confidence)} ${detail.item.input.issue}`;
 			case "axon": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} ${detail.item.priority} ${detail.item.title}`;
-			case "synapse": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.type)} ${detail.item.agent_id ?? "general"} ${detail.item.message}`;
+			case "synapse": {
+				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
+				return `${detail.item.id.padEnd(9)} event:${styleStatus(this.theme, detail.item.type)} ${detail.item.agent_id ?? "general"}${task ? ` task:${task.status}` : ""} ${detail.item.message}`;
+			}
 			case "lion": {
 				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
 				const historical = task?.status === "completed" && ["failed", "blocked", "aborted"].includes(detail.item.status) ? this.theme.fg("muted", " historical-attempt") : "";
@@ -451,7 +455,15 @@ class NervousDashboard implements Component {
 		pushWrapped(lines, "Latest note", t.progress_notes.at(-1)?.text, width, this.theme);
 		pushWrapped(lines, "Artifacts", t.artifacts.map((a) => `${a.kind ?? "file"}:${a.path}`).join(" | "), width, this.theme);
 	}
-	private renderSynapse(lines: string[], width: number, n: Note): void { this.title(lines, width, `SYNAPSE ${n.id}`); pushWrapped(lines, "Type", n.type, width, this.theme); pushWrapped(lines, "Task", n.task_id, width, this.theme); pushWrapped(lines, "Agent", n.agent_id, width, this.theme); pushWrapped(lines, "Message", n.message, width, this.theme); }
+	private renderSynapse(lines: string[], width: number, n: Note): void {
+		this.title(lines, width, `SYNAPSE ${n.id}`);
+		const task = n.task_id ? this.data.tasks.find((t) => t.id === n.task_id) : undefined;
+		pushWrapped(lines, "Event type", n.type, width, this.theme);
+		pushWrapped(lines, "Interpretation", "Historical coordination note; this is not a live status that must be closed.", width, this.theme);
+		pushWrapped(lines, "Task", task ? `${n.task_id} • AXON ${task.status} • ${task.title}` : n.task_id, width, this.theme);
+		pushWrapped(lines, "Agent", n.agent_id, width, this.theme);
+		pushWrapped(lines, "Message", n.message, width, this.theme);
+	}
 	private renderLion(lines: string[], width: number, r: LionRun): void {
 		this.title(lines, width, `LION ${r.agent_id}: ${r.id}`);
 		const task = r.task_id ? this.data.tasks.find((t) => t.id === r.task_id) : undefined;
