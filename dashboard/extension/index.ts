@@ -221,6 +221,25 @@ function summary(counts: Record<string, number>): string {
 		.join(" ") || "empty";
 }
 
+type Column = { text: string; width?: number };
+function columnLine(totalWidth: number, columns: Column[]): string {
+	const gap = "  ";
+	const gapWidth = Math.max(0, columns.length - 1) * visibleWidth(gap);
+	const fixedWidth = columns.reduce((sum, col) => sum + (col.width ?? 0), 0);
+	const flexCount = Math.max(1, columns.filter((col) => col.width === undefined).length);
+	let remaining = Math.max(4, totalWidth - gapWidth - fixedWidth);
+	return columns.map((col, index) => {
+		const flexLeft = columns.slice(index).filter((c) => c.width === undefined).length;
+		const width = col.width ?? Math.max(4, index === columns.length - 1 ? remaining : Math.floor(remaining / Math.max(1, flexLeft)));
+		if (col.width === undefined) remaining -= width;
+		return padVisible(col.text, width);
+	}).join(gap);
+}
+
+function headerColumnLine(theme: Theme, width: number, columns: Column[]): string {
+	return theme.fg("muted", theme.bold(columnLine(width, columns)));
+}
+
 class NervousDashboard implements Component {
 	private tabIndex = 0;
 	private selected = 0;
@@ -330,10 +349,12 @@ class NervousDashboard implements Component {
 		}
 		const maxRows = 16;
 		if (this.tab === "synapse") lines.push(frameLine(this.theme.fg("muted", "SYNAPSE is an event log; note types are historical coordination events, not current task status."), width, this.theme));
+		lines.push(frameLine(this.headerRow(width), width, this.theme));
+		lines.push(frameLine(this.theme.fg("borderMuted", "─".repeat(Math.max(0, width - 4))), width, this.theme));
 		const start = Math.max(0, Math.min(this.selected - Math.floor(maxRows / 2), Math.max(0, items.length - maxRows)));
 		for (let i = 0; i < items.slice(start, start + maxRows).length; i++) {
 			const absolute = start + i;
-			lines.push(frameLine(this.row(items[absolute]!), width, this.theme, absolute === this.selected));
+			lines.push(frameLine(this.row(items[absolute]!, width), width, this.theme, absolute === this.selected));
 		}
 		if (items.length > maxRows) lines.push(frameLine(this.theme.fg("dim", `${start + 1}-${Math.min(start + maxRows, items.length)} of ${items.length}`), width, this.theme));
 	}
@@ -351,26 +372,41 @@ class NervousDashboard implements Component {
 		}
 	}
 
-	private row(detail: Detail): string {
+	private headerRow(width: number): string {
+		const inner = Math.max(8, width - 4);
+		switch (this.tab) {
+			case "cortex": return headerColumnLine(this.theme, inner, [{ text: "GOAL", width: 9 }, { text: "STATUS", width: 13 }, { text: "LINKED", width: 8 }, { text: "FLAG", width: 7 }, { text: "SUMMARY" }]);
+			case "magi": return headerColumnLine(this.theme, inner, [{ text: "RECORD", width: 9 }, { text: "CONF", width: 8 }, { text: "COUNCIL", width: 16 }, { text: "ISSUE" }]);
+			case "axon": return headerColumnLine(this.theme, inner, [{ text: "TASK", width: 9 }, { text: "STATUS", width: 14 }, { text: "PRI", width: 8 }, { text: "REVIEW", width: 13 }, { text: "TITLE" }]);
+			case "synapse": return headerColumnLine(this.theme, inner, [{ text: "NOTE", width: 9 }, { text: "EVENT", width: 12 }, { text: "AGENT", width: 14 }, { text: "TASK", width: 17 }, { text: "MESSAGE" }]);
+			case "lion": return headerColumnLine(this.theme, inner, [{ text: "RUN", width: 9 }, { text: "AGENT", width: 18 }, { text: "STATUS", width: 20 }, { text: "TASK", width: 11 }, { text: "OBJECTIVE" }]);
+			case "cerebel": return headerColumnLine(this.theme, inner, [{ text: "WAVE", width: 9 }, { text: "STATUS", width: 14 }, { text: "ASSIGN", width: 8 }, { text: "DECISION" }]);
+			case "ganglion": return headerColumnLine(this.theme, inner, [{ text: "GROUP", width: 12 }, { text: "STATUS", width: 12 }, { text: "MEMBERS", width: 9 }, { text: "ACTIVE", width: 8 }, { text: "NAME" }]);
+			case "amygdala": return headerColumnLine(this.theme, inner, [{ text: "RISK", width: 9 }, { text: "STATUS", width: 14 }, { text: "SEV", width: 9 }, { text: "RECOMMEND", width: 18 }, { text: "TITLE" }]);
+		}
+	}
+
+	private row(detail: Detail, width: number): string {
+		const inner = Math.max(8, width - 4);
 		switch (detail.kind) {
-			case "cortex": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} linked:${detail.item.axon_task_ids.length} ${detail.item.plan?.magi_used ? "MAGI" : ""} ${detail.item.intent.goal}`;
-			case "magi": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.output.confidence)} ${detail.item.input.issue}`;
-			case "axon": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} ${detail.item.priority} ${detail.item.title}`;
+			case "cortex": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 13 }, { text: String(detail.item.axon_task_ids.length), width: 8 }, { text: detail.item.plan?.magi_used ? this.theme.fg("accent", "MAGI") : "", width: 7 }, { text: detail.item.intent.goal }]);
+			case "magi": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.output.confidence), width: 8 }, { text: detail.item.output.council_used.join(","), width: 16 }, { text: detail.item.input.issue }]);
+			case "axon": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: detail.item.priority, width: 8 }, { text: detail.item.review_status, width: 13 }, { text: detail.item.title }]);
 			case "synapse": {
 				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
-				return `${detail.item.id.padEnd(9)} event:${styleStatus(this.theme, detail.item.type)} ${detail.item.agent_id ?? "general"}${task ? ` task:${task.status}` : ""} ${detail.item.message}`;
+				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.type), width: 12 }, { text: detail.item.agent_id ?? "general", width: 14 }, { text: task ? `${detail.item.task_id}:${task.status}` : (detail.item.task_id ?? "general"), width: 17 }, { text: detail.item.message }]);
 			}
 			case "lion": {
 				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
-				const historical = task?.status === "completed" && ["failed", "blocked", "aborted"].includes(detail.item.status) ? this.theme.fg("muted", " historical-attempt") : "";
-				return `${detail.item.agent_id.padEnd(12)} ${styleStatus(this.theme, detail.item.status)}${historical} ${detail.item.id} ${detail.item.objective}`;
+				const historical = task?.status === "completed" && ["failed", "blocked", "aborted"].includes(detail.item.status) ? this.theme.fg("muted", "+historical") : "";
+				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: detail.item.agent_id, width: 18 }, { text: `${styleStatus(this.theme, detail.item.status)}${historical ? ` ${historical}` : ""}`, width: 20 }, { text: detail.item.task_id ?? "—", width: 11 }, { text: detail.item.objective }]);
 			}
-			case "cerebel": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} assign:${detail.item.assignments.length} ${detail.item.decision?.decision ?? ""}`;
+			case "cerebel": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: String(detail.item.assignments.length), width: 8 }, { text: detail.item.decision?.decision ?? "" }]);
 			case "ganglion": {
 				const note = ganglionConsistencyNote(detail.item, this.data.runs, this.data.goals);
-				return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} members:${detail.item.members.length} active:${activeGanglionAllocations(detail.item).length}${note ? this.theme.fg("warning", " ⚠") : ""} ${detail.item.name}`;
+				return columnLine(inner, [{ text: detail.item.id, width: 12 }, { text: styleStatus(this.theme, detail.item.status), width: 12 }, { text: String(detail.item.members.length), width: 9 }, { text: `${activeGanglionAllocations(detail.item).length}${note ? this.theme.fg("warning", " ⚠") : ""}`, width: 8 }, { text: detail.item.name }]);
 			}
-			case "amygdala": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} ${detail.item.severity}/${detail.item.recommendation} ${detail.item.title}`;
+			case "amygdala": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: detail.item.severity, width: 9 }, { text: detail.item.recommendation, width: 18 }, { text: detail.item.title }]);
 		}
 	}
 
