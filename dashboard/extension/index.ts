@@ -91,6 +91,10 @@ function styleStatus(theme: Theme, status: string): string {
 	return theme.fg("muted", status);
 }
 
+function styleEventType(theme: Theme, type: string): string {
+	return theme.fg("muted", type);
+}
+
 function padVisible(text: string, width: number): string {
 	const clipped = truncateToWidth(text, Math.max(0, width), "…");
 	return clipped + " ".repeat(Math.max(0, width - visibleWidth(clipped)));
@@ -394,7 +398,7 @@ class NervousDashboard implements Component {
 			case "axon": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: detail.item.priority, width: 8 }, { text: detail.item.review_status, width: 13 }, { text: detail.item.title }]);
 			case "synapse": {
 				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
-				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.type), width: 12 }, { text: detail.item.agent_id ?? "general", width: 14 }, { text: task ? `${detail.item.task_id}:${task.status}` : (detail.item.task_id ?? "general"), width: 17 }, { text: detail.item.message }]);
+				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleEventType(this.theme, detail.item.type), width: 12 }, { text: detail.item.agent_id ?? "general", width: 14 }, { text: task ? `${detail.item.task_id}:${task.status}` : (detail.item.task_id ?? "general"), width: 17 }, { text: detail.item.message }]);
 			}
 			case "lion": {
 				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
@@ -494,7 +498,7 @@ class NervousDashboard implements Component {
 	private renderSynapse(lines: string[], width: number, n: Note): void {
 		this.title(lines, width, `SYNAPSE ${n.id}`);
 		const task = n.task_id ? this.data.tasks.find((t) => t.id === n.task_id) : undefined;
-		pushWrapped(lines, "Event type", n.type, width, this.theme);
+		pushWrapped(lines, "Event type", styleEventType(this.theme, n.type), width, this.theme);
 		pushWrapped(lines, "Interpretation", "Historical coordination note; this is not a live status that must be closed.", width, this.theme);
 		pushWrapped(lines, "Task", task ? `${n.task_id} • AXON ${task.status} • ${task.title}` : n.task_id, width, this.theme);
 		pushWrapped(lines, "Agent", n.agent_id, width, this.theme);
