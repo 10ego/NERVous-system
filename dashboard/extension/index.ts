@@ -171,6 +171,22 @@ function terminalRunForMember(g: Ganglion, member: Ganglion["members"][number], 
 		.sort((a, b) => b.updated_at.localeCompare(a.updated_at))[0];
 }
 
+function activeGanglionAllocations(g: Ganglion): Ganglion["allocations"] {
+	return g.allocations.filter((a) => !["completed", "blocked", "failed", "cancelled"].includes(a.status));
+}
+
+function ganglionConsistencyNote(g: Ganglion, runs: LionRun[], goals: Goal[]): string | null {
+	const busy = g.members.filter((m) => m.status === "busy");
+	const staleBusy = busy.filter((m) => terminalRunForMember(g, m, runs));
+	if (staleBusy.length) return `${staleBusy.length} busy member(s) have terminal LION runs; run ganglion reconcile.`;
+	const activeAllocations = activeGanglionAllocations(g);
+	const allGoalsTerminal = goals.length > 0 && goals.every((goal) => ["completed", "cancelled"].includes(goal.status));
+	if (g.status !== "completed" && allGoalsTerminal && busy.length === 0 && activeAllocations.length === 0) {
+		return `Stored status is ${g.status}, but all CORTEX goals are terminal and GANGLION has no busy members or active allocations.`;
+	}
+	return null;
+}
+
 function pushGanglionMembersBox(lines: string[], width: number, theme: Theme, ganglion: Ganglion, runs: LionRun[]): void {
 	lines.push(frameLine(theme.fg("accent", "Members"), width, theme));
 	if (ganglion.members.length === 0) {
@@ -336,13 +352,20 @@ class NervousDashboard implements Component {
 
 	private row(detail: Detail): string {
 		switch (detail.kind) {
-			case "cortex": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} ${detail.item.plan?.magi_used ? "MAGI" : ""} ${detail.item.intent.goal}`;
+			case "cortex": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} linked:${detail.item.axon_task_ids.length} ${detail.item.plan?.magi_used ? "MAGI" : ""} ${detail.item.intent.goal}`;
 			case "magi": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.output.confidence)} ${detail.item.input.issue}`;
 			case "axon": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} ${detail.item.priority} ${detail.item.title}`;
 			case "synapse": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.type)} ${detail.item.agent_id ?? "general"} ${detail.item.message}`;
-			case "lion": return `${detail.item.agent_id.padEnd(12)} ${styleStatus(this.theme, detail.item.status)} ${detail.item.id} ${detail.item.objective}`;
+			case "lion": {
+				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
+				const historical = task?.status === "completed" && ["failed", "blocked", "aborted"].includes(detail.item.status) ? this.theme.fg("muted", " historical-attempt") : "";
+				return `${detail.item.agent_id.padEnd(12)} ${styleStatus(this.theme, detail.item.status)}${historical} ${detail.item.id} ${detail.item.objective}`;
+			}
 			case "cerebel": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} assign:${detail.item.assignments.length} ${detail.item.decision?.decision ?? ""}`;
-			case "ganglion": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} members:${detail.item.members.length} ${detail.item.name}`;
+			case "ganglion": {
+				const note = ganglionConsistencyNote(detail.item, this.data.runs, this.data.goals);
+				return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} members:${detail.item.members.length} active:${activeGanglionAllocations(detail.item).length}${note ? this.theme.fg("warning", " ⚠") : ""} ${detail.item.name}`;
+			}
 			case "amygdala": return `${detail.item.id.padEnd(9)} ${styleStatus(this.theme, detail.item.status)} ${detail.item.severity}/${detail.item.recommendation} ${detail.item.title}`;
 		}
 	}
@@ -384,7 +407,11 @@ class NervousDashboard implements Component {
 		pushWrapped(lines, "Success", g.intent.success_criteria.join(" | "), width, this.theme);
 		pushWrapped(lines, "Risks", g.intent.risks.map((r) => `${r.severity}:${r.description}`).join(" | "), width, this.theme);
 		pushWrapped(lines, "MAGI", g.intent.needs_magi || g.plan?.magi_used ? `needed:${g.intent.needs_magi} used:${Boolean(g.plan?.magi_used)} ${g.plan?.magi_output_ref ?? ""}` : "not used", width, this.theme);
-		pushWrapped(lines, "AXON", g.axon_task_ids.join(", "), width, this.theme);
+		const completedTasks = this.data.tasks.filter((t) => t.status === "completed").length;
+		pushWrapped(lines, "AXON linked", g.axon_task_ids.join(", "), width, this.theme);
+		pushWrapped(lines, "AXON context", `${completedTasks}/${this.data.tasks.length} completed in this context; ${g.axon_task_ids.length} linked to this goal`, width, this.theme);
+		if (g.status === "completed" && this.data.tasks.length > g.axon_task_ids.length) pushWrapped(lines, "Consistency", "Goal is completed but not every AXON task in this context is linked; this may be historical follow-up work or missing cortex link bookkeeping.", width, this.theme);
+		if (g.plan?.subtasks.length) pushWrapped(lines, "Plan", g.plan.subtasks.map((s) => `${s.id}:${s.axon_task_id ?? "unlinked"}`).join(" | "), width, this.theme);
 		pushWrapped(lines, "Verification", g.verification ? `${g.verification.recommendation}; ${g.verification.checks.filter((c) => c.passed).length}/${g.verification.checks.length} checks passed` : "—", width, this.theme);
 		pushWrapped(lines, "Concerns", g.verification?.concerns.join(" | "), width, this.theme);
 	}
@@ -425,11 +452,24 @@ class NervousDashboard implements Component {
 		pushWrapped(lines, "Artifacts", t.artifacts.map((a) => `${a.kind ?? "file"}:${a.path}`).join(" | "), width, this.theme);
 	}
 	private renderSynapse(lines: string[], width: number, n: Note): void { this.title(lines, width, `SYNAPSE ${n.id}`); pushWrapped(lines, "Type", n.type, width, this.theme); pushWrapped(lines, "Task", n.task_id, width, this.theme); pushWrapped(lines, "Agent", n.agent_id, width, this.theme); pushWrapped(lines, "Message", n.message, width, this.theme); }
-	private renderLion(lines: string[], width: number, r: LionRun): void { this.title(lines, width, `LION ${r.agent_id}: ${r.id}`); pushWrapped(lines, "Status", r.status, width, this.theme); pushWrapped(lines, "Task", r.task_id, width, this.theme); pushWrapped(lines, "Objective", r.objective, width, this.theme); pushWrapped(lines, "Report", r.report?.summary, width, this.theme); pushWrapped(lines, "Tests", r.report?.tests_run.join(", "), width, this.theme); pushWrapped(lines, "Blockers", r.report?.blockers.join(" | ") || r.error, width, this.theme); pushWrapped(lines, "Next", r.report?.next_steps.join(" | "), width, this.theme); }
+	private renderLion(lines: string[], width: number, r: LionRun): void {
+		this.title(lines, width, `LION ${r.agent_id}: ${r.id}`);
+		const task = r.task_id ? this.data.tasks.find((t) => t.id === r.task_id) : undefined;
+		pushWrapped(lines, "Status", r.status, width, this.theme);
+		pushWrapped(lines, "Task", task ? `${r.task_id} • AXON ${task.status} • ${task.title}` : r.task_id, width, this.theme);
+		if (task?.status === "completed" && ["failed", "blocked", "aborted"].includes(r.status)) pushWrapped(lines, "Interpretation", "Historical failed/blocked LION attempt; linked AXON task is now completed by a later path.", width, this.theme);
+		pushWrapped(lines, "Objective", r.objective, width, this.theme);
+		pushWrapped(lines, "Report", r.report?.summary, width, this.theme);
+		pushWrapped(lines, "Tests", r.report?.tests_run.join(", "), width, this.theme);
+		pushWrapped(lines, "Blockers", r.report?.blockers.join(" | ") || r.error, width, this.theme);
+		pushWrapped(lines, "Next", r.report?.next_steps.join(" | "), width, this.theme);
+	}
 	private renderCerebel(lines: string[], width: number, w: Wave): void { this.title(lines, width, `CEREBEL ${w.id}`); pushWrapped(lines, "Status", w.status, width, this.theme); pushWrapped(lines, "Goal", w.goal_id, width, this.theme); pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme); pushWrapped(lines, "Assignments", w.assignments.map((a) => `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}${a.ganglion_allocation_id ? `/ganglion:${a.ganglion_id ?? "?"}/${a.ganglion_allocation_id}` : ""}`).join(" | "), width, this.theme); }
 	private renderGanglion(lines: string[], width: number, g: Ganglion): void {
 		this.title(lines, width, `GANGLION ${g.id}: ${g.name}`);
 		pushWrapped(lines, "Status", g.status, width, this.theme);
+		const note = ganglionConsistencyNote(g, this.data.runs, this.data.goals);
+		if (note) pushWrapped(lines, "Consistency", note, width, this.theme);
 		pushWrapped(lines, "Goal", g.goal_id, width, this.theme);
 		pushGanglionMembersBox(lines, width, this.theme, g, this.data.runs);
 		pushWrapped(lines, "Allocations", g.allocations.map((a) => `${a.id}/${a.member_id}/${a.status}`).join(" | "), width, this.theme);
