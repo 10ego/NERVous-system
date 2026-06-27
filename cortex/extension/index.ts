@@ -32,6 +32,8 @@ interface CortexDetails {
 	action: string;
 	goal?: Goal;
 	goals?: Goal[];
+	drain_run?: import("./schema.ts").DrainRun;
+	config?: import("./schema.ts").CortexConfig;
 	error?: string;
 }
 
@@ -92,13 +94,13 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Main reasoning core: turn a user prompt into a durable goal (intent, success criteria, risks),",
 			"decide whether MAGI is needed, store an execution plan, link AXON tasks, and verify completion.",
-			"Goals persist across compaction/restart. Actions: analyze, plan, link, verify, complete, cancel,",
-			"get, list, summary, set_current.",
+			"Goals persist across compaction/restart. Actions: analyze, plan, link, verify, complete, block, escalate, cancel, drain,",
+			"get_config, set_config, get, list, summary, set_current.",
 		].join(" "),
 		promptSnippet: "Run CORTEX: analyze intent into a durable goal, plan, link AXON tasks, verify",
 		promptGuidelines: [
 			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
-			"After explicit NERVous activation, default to draining all actionable incomplete CORTEX goals in the active context: list/summary goals, resume each one, verify/complete it, then continue until none remain.",
+			"After explicit NERVous activation, check CORTEX config; unless drain_mode=off, default to draining all actionable incomplete CORTEX goals in the active context: list/summary goals, resume each one, verify/complete it, then continue until none remain.",
 			"When explaining a NERVous workflow, prefer a compact checklist of component → action/status → evidence; avoid verbose restatement.",
 			"Use the cortex tool action 'analyze' at the start of non-trivial new work to capture intent, success criteria, constraints, and risks as a durable goal.",
 			"After cortex analyze, if needs_magi is true or the decision is hard/risky/ambiguous/architectural, convene the magi tool before cortex plan; otherwise proceed to cortex plan.",
@@ -204,6 +206,55 @@ export default function (pi: ExtensionAPI) {
 					});
 				}
 
+				case "block": {
+					if (!p.goal_id) return fail(action, "block requires `goal_id`.");
+					if (!p.reason) return fail(action, "block requires `reason`.");
+					if (!p.evidence) return fail(action, "block requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.block(id, { reason: p.reason!, evidence: p.evidence, related_ids: p.related_ids });
+						return ok(action, `Blocked ${g.id}: ${g.blocker?.reason ?? p.reason}.`, { goal: g });
+					});
+				}
+
+				case "escalate": {
+					if (!p.goal_id) return fail(action, "escalate requires `goal_id`.");
+					if (!p.reason) return fail(action, "escalate requires `reason`.");
+					if (!p.evidence) return fail(action, "escalate requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.escalate(id, { reason: p.reason!, evidence: p.evidence, related_ids: p.related_ids });
+						return ok(action, `Escalated ${g.id} to AMYGDALA: ${g.blocker?.reason ?? p.reason}.`, { goal: g });
+					});
+				}
+
+				case "drain": {
+					return runOp(store, action, (s) => {
+						const run = s.startDrain({ policy_name: p.policy_name, max_goals: p.max_goals, evidence: p.evidence, force: p.force });
+						const text = [
+							`Drain ${run.id}: ${run.status}`,
+							`actionable: ${run.actionable_goal_ids.length ? run.actionable_goal_ids.map((id) => `\`${id}\``).join(", ") : "—"}`,
+							`blocked/needs_amygdala: ${run.blocked_goal_ids.length ? run.blocked_goal_ids.map((id) => `\`${id}\``).join(", ") : "—"}`,
+							`policy: ${run.policy.name}; budgets max_goals=${run.policy.max_goals}, replans=${run.policy.max_replans_per_goal}, retries=${run.policy.max_retries_per_goal}, no_progress=${run.policy.max_no_progress_iterations}`,
+						].join("\n");
+						return ok(action, text, { drain_run: run });
+					});
+				}
+
+				case "get_config": {
+					return runQuery(store, action, (s) => {
+						const config = s.getConfig();
+						return ok(action, `CORTEX config: drain_mode=${config.drain_mode}, default_drain_policy=${config.default_drain_policy}.`, { config });
+					});
+				}
+
+				case "set_config": {
+					return runOp(store, action, (s) => {
+						const config = s.setConfig({ drain_mode: p.drain_mode, default_drain_policy: p.default_drain_policy });
+						return ok(action, `Updated CORTEX config: drain_mode=${config.drain_mode}, default_drain_policy=${config.default_drain_policy}.`, { config });
+					});
+				}
+
 				case "cancel": {
 					if (!p.goal_id) return fail(action, "cancel requires `goal_id`.");
 					return runOp(store, action, (s) => {
@@ -235,12 +286,14 @@ export default function (pi: ExtensionAPI) {
 						const by_status: Partial<Record<GoalStatus, number>> = {};
 						for (const g of goals) by_status[g.status] = (by_status[g.status] ?? 0) + 1;
 						const active = goals
-							.filter((g) => g.status !== "completed" && g.status !== "cancelled")
+							.filter((g) => g.status !== "completed" && g.status !== "cancelled" && g.status !== "blocked" && g.status !== "needs_amygdala")
 							.map((g) => ({ id: g.id, goal: g.intent.goal || g.prompt, status: g.status }));
+						const config = s.getConfig();
 						const md = [
 							`# CORTEX — ${project}`,
 							``,
 							`**${goals.length}** goal(s) · current: \`${s.current_goal_id ?? s.current()?.id ?? "—"}\``,
+							`**drain:** ${config.drain_mode} · policy: ${config.default_drain_policy}`,
 							``,
 							active.length ? `## Active` : `_(no active goals)_`,
 							...active.map((g) => `- ${STATUS_HINT(g.status)} \`${g.id}\` — ${g.goal}`),
@@ -321,7 +374,9 @@ export default function (pi: ExtensionAPI) {
 								? "Next: MAGI final review, then cortex complete."
 								: result.status === "needs_replan"
 									? "Next: revise the plan (cortex plan)."
-									: "Goal is terminal.";
+									: result.status === "blocked" || result.status === "needs_amygdala"
+										? "Goal is waiting with blocker/AMYGDALA evidence; resolve or cancel before drain can act."
+										: "Goal is terminal.";
 			post(ctx, pi, `${summarizeGoal(result)}\n\n---\n**Resume hint:** ${hint}`, { goal: result });
 		},
 	});
@@ -341,6 +396,10 @@ function STATUS_HINT(status: GoalStatus): string {
 			return "✓";
 		case "needs_replan":
 			return "↻";
+		case "blocked":
+			return "⛔";
+		case "needs_amygdala":
+			return "⚠";
 		case "completed":
 			return "✓";
 		case "cancelled":

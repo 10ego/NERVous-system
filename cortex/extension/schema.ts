@@ -27,12 +27,17 @@ export type Severity = (typeof SEVERITIES)[number];
 export const PRIORITIES = ["low", "medium", "high", "critical"] as const;
 export type Priority = (typeof PRIORITIES)[number];
 
+export const DRAIN_MODES = ["off", "on_explicit_nervous", "always"] as const;
+export type DrainMode = (typeof DRAIN_MODES)[number];
+
 export const GOAL_STATUSES = [
 	"analyzed", // intent parsed, awaiting planning (and maybe MAGI)
 	"planned", // plan stored; AXON tasks may be created
 	"executing", // linked to AXON tasks; work in progress
 	"verified", // verification report recorded (approve)
 	"needs_replan", // verification found problems; plan must change
+	"blocked", // waiting on a blocker/risk/dependency with durable evidence
+	"needs_amygdala", // unsafe uncertainty/risk escalated to AMYGDALA
 	"completed", // done + (optionally) MAGI-reviewed
 	"cancelled",
 ] as const;
@@ -126,6 +131,53 @@ export interface VerificationReport {
 }
 
 /* -------------------------------------------------------------------------- */
+/* Drain mode / blocker evidence                                               */
+/* -------------------------------------------------------------------------- */
+
+export interface GoalBlocker {
+	/** blocked or needs_amygdala mirrors the goal status at time of recording. */
+	status: "blocked" | "needs_amygdala";
+	reason: string;
+	evidence: string;
+	/** Related AMYGDALA incident ids, AXON task ids, CEREBEL wave ids, etc. */
+	related_ids: string[];
+	created_at: string;
+}
+
+export type DrainPolicyName = "default" | "conservative" | "aggressive";
+
+export interface DrainPolicy {
+	name: DrainPolicyName;
+	max_goals: number;
+	max_replans_per_goal: number;
+	max_retries_per_goal: number;
+	max_no_progress_iterations: number;
+	/** High-risk safety categories never auto-continue; they become AMYGDALA/block evidence. */
+	hard_stop_categories: string[];
+}
+
+export interface CortexConfig {
+	/** off disables cortex drain unless force=true; on_explicit_nervous is the safe default; always is explicit opt-in. */
+	drain_mode: DrainMode;
+	default_drain_policy: DrainPolicyName;
+	updated_at: string;
+}
+
+export interface DrainRun {
+	id: string;
+	status: "running" | "completed" | "blocked" | "exhausted";
+	policy: DrainPolicy;
+	/** Snapshot of eligible goals selected at run start/resume. */
+	goal_ids: string[];
+	actionable_goal_ids: string[];
+	blocked_goal_ids: string[];
+	terminal_goal_ids: string[];
+	evidence: string[];
+	created_at: string;
+	updated_at: string;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Goal                                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -139,6 +191,8 @@ export interface Goal {
 	/** AXON task ids linked to this goal (set by cortex_link). */
 	axon_task_ids: string[];
 	verification?: VerificationReport;
+	/** Durable evidence explaining why drain mode cannot currently act on this goal. */
+	blocker?: GoalBlocker;
 	created_at: string;
 	updated_at: string;
 }
@@ -151,6 +205,8 @@ export interface CortexFile {
 	updated_at: string;
 	current_goal_id?: string;
 	goals: Record<string, Goal>;
+	drain_runs?: Record<string, DrainRun>;
+	config?: CortexConfig;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -160,6 +216,7 @@ export interface CortexFile {
 export const COMPLEXITY_SCHEMA = StringEnum(COMPLEXITIES);
 export const SEVERITY_SCHEMA = StringEnum(SEVERITIES);
 export const PRIORITY_SCHEMA = StringEnum(PRIORITIES);
+export const DRAIN_MODE_SCHEMA = StringEnum(DRAIN_MODES);
 export const GOAL_STATUS_SCHEMA = StringEnum(GOAL_STATUSES);
 
 export const CORTEX_ACTIONS = [
@@ -168,7 +225,12 @@ export const CORTEX_ACTIONS = [
 	"link",
 	"verify",
 	"complete",
+	"block",
+	"escalate",
 	"cancel",
+	"drain",
+	"get_config",
+	"set_config",
 	"get",
 	"list",
 	"summary",
@@ -198,7 +260,7 @@ const VerifyCheckSchema = Type.Object({
 export const CortexToolParams = Type.Object({
 	action: StringEnum(CORTEX_ACTIONS, {
 		description:
-			"What to do. analyze/plan/link/verify/complete/cancel/get/list/summary/set_current.",
+			"What to do. analyze/plan/link/verify/complete/block/escalate/cancel/drain/get_config/set_config/get/list/summary/set_current.",
 	}),
 	// analyze
 	prompt: Type.Optional(Type.String({ description: "The user prompt (analyze)." })),
@@ -235,6 +297,16 @@ export const CortexToolParams = Type.Object({
 	),
 	recommendation: Type.Optional(StringEnum(VERIFY_RECOMMENDATIONS)),
 	concerns: Type.Optional(Type.Array(Type.String(), { description: "Outstanding concerns (verify)." })),
+	// block/escalate
+	reason: Type.Optional(Type.String({ description: "Reason for block/escalation." })),
+	evidence: Type.Optional(Type.String({ description: "Evidence for block/escalation or drain run." })),
+	related_ids: Type.Optional(Type.Array(Type.String(), { description: "Related AMYGDALA/AXON/CEREBEL/LION ids." })),
+	// drain/config
+	policy_name: Type.Optional(StringEnum(["default", "conservative", "aggressive"] as const)),
+	max_goals: Type.Optional(Type.Number({ description: "Maximum goals to snapshot in a drain run." })),
+	force: Type.Optional(Type.Boolean({ description: "Allow drain even when drain_mode is off." })),
+	drain_mode: Type.Optional(DRAIN_MODE_SCHEMA),
+	default_drain_policy: Type.Optional(StringEnum(["default", "conservative", "aggressive"] as const)),
 	// common filters
 	status_filter: Type.Optional(GOAL_STATUS_SCHEMA),
 });

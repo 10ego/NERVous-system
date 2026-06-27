@@ -159,6 +159,23 @@ describe("GoalStore — verify + complete", () => {
 		assert.equal(s.cancel(g.id).status, "cancelled");
 		assert.throws(() => s.cancel(g.id), CortexError); // already terminal
 	});
+
+	it("records blocked and AMYGDALA escalation evidence", () => {
+		const s = store();
+		const a = s.analyze({ prompt: "blocked work" });
+		const blocked = s.block(a.id, { reason: "dependency unavailable", evidence: "AXON task task-123 blocked" });
+		assert.equal(blocked.status, "blocked");
+		assert.equal(blocked.blocker?.reason, "dependency unavailable");
+
+		const b = s.analyze({ prompt: "risky work" });
+		const escalated = s.escalate(b.id, {
+			reason: "production data-loss uncertainty",
+			evidence: "AMYGDALA incident amygdala-001",
+			related_ids: ["amygdala-001"],
+		});
+		assert.equal(escalated.status, "needs_amygdala");
+		assert.deepEqual(escalated.blocker?.related_ids, ["amygdala-001"]);
+	});
 });
 
 describe("GoalStore — transitions", () => {
@@ -170,9 +187,47 @@ describe("GoalStore — transitions", () => {
 		ok("verified", "completed");
 		ok("verified", "needs_replan");
 		ok("needs_replan", "planned");
+		ok("executing", "blocked");
+		ok("executing", "needs_amygdala");
+		ok("blocked", "needs_replan");
+		ok("needs_amygdala", "blocked");
 		assert.ok(!canTransition("analyzed", "executing"));
 		assert.ok(!canTransition("executing", "completed"));
 		assert.ok(!canTransition("completed", "verified"));
+	});
+});
+
+describe("GoalStore — config", () => {
+	it("defaults drain mode to explicit NERVous activation", () => {
+		const s = store();
+		assert.equal(s.getConfig().drain_mode, "on_explicit_nervous");
+		assert.equal(s.getConfig().default_drain_policy, "default");
+	});
+
+	it("sets and persists drain mode config", () => {
+		const s = store();
+		const cfg = s.setConfig({ drain_mode: "off", default_drain_policy: "conservative" });
+		assert.equal(cfg.drain_mode, "off");
+		assert.equal(cfg.default_drain_policy, "conservative");
+		const back = GoalStore.fromJSON(s.toJSON());
+		assert.equal(back.getConfig().drain_mode, "off");
+		assert.equal(back.getConfig().default_drain_policy, "conservative");
+	});
+
+	it("drain_mode off disables drain unless forced", () => {
+		const s = store();
+		s.analyze({ prompt: "a" });
+		s.setConfig({ drain_mode: "off" });
+		assert.throws(() => s.startDrain(), CortexError);
+		const run = s.startDrain({ force: true });
+		assert.equal(run.actionable_goal_ids.length, 1);
+	});
+
+	it("uses configured default drain policy", () => {
+		const s = store();
+		s.analyze({ prompt: "a" });
+		s.setConfig({ default_drain_policy: "aggressive" });
+		assert.equal(s.startDrain().policy.name, "aggressive");
 	});
 });
 
@@ -183,9 +238,18 @@ describe("GoalStore — current / list / serialization", () => {
 		s.analyze({ prompt: "b" });
 		s.complete; // noop
 		assert.equal(s.current()?.id, a.id === "goal-001" ? "goal-002" : "goal-001");
-		// explicit current wins
+		// explicit actionable current wins
 		s.setCurrent("goal-001");
 		assert.equal(s.current()?.id, "goal-001");
+	});
+
+	it("current skips a blocked current goal and falls back to actionable work", () => {
+		const s = store();
+		const blocked = s.analyze({ prompt: "blocked" });
+		const actionable = s.analyze({ prompt: "actionable" });
+		s.block(blocked.id, { reason: "waiting", evidence: "external dependency" });
+		s.setCurrent(blocked.id);
+		assert.equal(s.current()?.id, actionable.id);
 	});
 
 	it("list filters by status", () => {
@@ -195,6 +259,38 @@ describe("GoalStore — current / list / serialization", () => {
 		s.cancel(b.id);
 		assert.equal(s.list({ status: "analyzed" }).length, 1);
 		assert.equal(s.list({ status: "cancelled" }).length, 1);
+	});
+
+	it("starts a bounded drain run over actionable goals and excludes blocked goals", () => {
+		const s = store();
+		const actionable = s.analyze({ prompt: "do it" });
+		const blocked = s.analyze({ prompt: "wait" });
+		s.block(blocked.id, { reason: "needs credentials", evidence: "no credential lease" });
+		const run = s.startDrain({ max_goals: 10 });
+		assert.equal(run.id, "drain-001");
+		assert.deepEqual(run.actionable_goal_ids, [actionable.id]);
+		assert.deepEqual(run.blocked_goal_ids, [blocked.id]);
+		assert.equal(run.policy.max_no_progress_iterations, 5);
+	});
+
+	it("drain escalates hard-stop safety signals before action", () => {
+		const s = store();
+		const risky = s.analyze({ prompt: "migrate production database", risks: [{ description: "data loss possible", severity: "high" }] });
+		const safe = s.analyze({ prompt: "update docs" });
+		const run = s.startDrain();
+		assert.deepEqual(run.actionable_goal_ids, [safe.id]);
+		assert.deepEqual(run.blocked_goal_ids, [risky.id]);
+		assert.equal(s.get(risky.id)?.status, "needs_amygdala");
+		assert.match(s.get(risky.id)?.blocker?.evidence ?? "", /data_loss|production/);
+	});
+
+	it("drain does not mutate hard-stop goals outside the max_goals snapshot", () => {
+		const s = store();
+		const first = s.analyze({ prompt: "safe first" });
+		const outsideBudget = s.analyze({ prompt: "production data_loss outside budget" });
+		const run = s.startDrain({ max_goals: 1 });
+		assert.deepEqual(run.goal_ids, [first.id]);
+		assert.equal(s.get(outsideBudget.id)?.status, "analyzed");
 	});
 
 	it("round-trips through toJSON/fromJSON", () => {
@@ -207,6 +303,30 @@ describe("GoalStore — current / list / serialization", () => {
 		assert.equal(back.get(g.id)?.status, "executing");
 		assert.equal(back.get(g.id)?.plan?.subtasks[0]?.axon_task_id, "task-001");
 		assert.equal(back.current_goal_id, g.id);
+	});
+
+	it("round-trips blocker evidence and drain run records", () => {
+		const s = store();
+		const g = s.analyze({ prompt: "p" });
+		s.escalate(g.id, { reason: "unsafe uncertainty", evidence: "amygdala-001", related_ids: ["amygdala-001"] });
+		s.startDrain({ evidence: "resume after restart" });
+		const back = GoalStore.fromJSON(s.toJSON());
+		assert.equal(back.get(g.id)?.status, "needs_amygdala");
+		assert.equal(back.get(g.id)?.blocker?.evidence, "amygdala-001");
+		assert.equal(back.drain_runs.get("drain-001")?.evidence[0], "resume after restart");
+	});
+
+	it("round-trips full drain policy budgets", () => {
+		const s = store();
+		s.analyze({ prompt: "a" });
+		const run = s.startDrain({ policy_name: "aggressive", max_goals: 7 });
+		const raw = s.toJSON();
+		raw.drain_runs![run.id]!.policy.max_no_progress_iterations = 99;
+		raw.drain_runs![run.id]!.policy.hard_stop_categories = ["custom_stop"];
+		const back = GoalStore.fromJSON(raw);
+		assert.equal(back.drain_runs.get(run.id)?.policy.max_goals, 7);
+		assert.equal(back.drain_runs.get(run.id)?.policy.max_no_progress_iterations, 99);
+		assert.deepEqual(back.drain_runs.get(run.id)?.policy.hard_stop_categories, ["custom_stop"]);
 	});
 
 	it("fromJSON coerces bad enums to safe defaults", () => {

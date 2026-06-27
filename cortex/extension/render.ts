@@ -17,6 +17,8 @@ const STATUS_ICON: Record<GoalStatus, string> = {
 	executing: "▶",
 	verified: "✓",
 	needs_replan: "↻",
+	blocked: "⛔",
+	needs_amygdala: "⚠",
 	completed: "✓",
 	cancelled: "⊘",
 };
@@ -27,6 +29,8 @@ const STATUS_COLOR: Record<GoalStatus, string> = {
 	executing: "warning",
 	verified: "success",
 	needs_replan: "warning",
+	blocked: "error",
+	needs_amygdala: "error",
 	completed: "success",
 	cancelled: "muted",
 };
@@ -78,6 +82,13 @@ export function summarizeGoal(g: Goal): string {
 	if (g.verification) {
 		lines.push("");
 		lines.push(verificationSection(g.verification));
+	}
+	if (g.blocker) {
+		lines.push("");
+		lines.push(`## Blocker — ${g.blocker.status}`);
+		lines.push(`- **reason:** ${g.blocker.reason}`);
+		if (g.blocker.evidence) lines.push(`- **evidence:** ${g.blocker.evidence}`);
+		if (g.blocker.related_ids.length) lines.push(`- **related:** ${g.blocker.related_ids.map((id) => `\`${id}\``).join(", ")}`);
 	}
 	return lines.join("\n");
 }

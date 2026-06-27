@@ -58,11 +58,13 @@ cortex plan goal_id="goal-001" subtasks=[{title="Scaffold"},{title="Tests",depen
 cortex link goal_id="goal-001" links=[{plan_id="plan-001",axon_task_id="task-001"}]
 cortex verify goal_id="goal-001" checks=[{criterion="...",passed=true,evidence="..."}] all_axon_complete=true
 cortex complete goal_id="goal-001"
+cortex get_config
+cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default"
 cortex get goal_id="current"
 cortex summary
 ```
 
-Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `cancel`, `get`, `list`, `summary`, `set_current`.
+Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `cancel`, `drain`, `get_config`, `set_config`, `get`, `list`, `summary`, `set_current`.
 
 ### Commands
 
@@ -104,7 +106,49 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `cancel`, `get`, `list
 }
 ```
 
-**Goal lifecycle:** `analyzed → planned → executing → verified → completed`, with `needs_replan` looping back to `planned`, and `cancel` from any non-terminal status. `verify` with `approve` → `verified` (ready for MAGI review); failing checks → `needs_replan`.
+**Goal lifecycle:** `analyzed → planned → executing → verified → completed`, with `needs_replan` looping back to `planned`, and `cancel` from any non-terminal status. `verify` with `approve` → `verified` (ready for MAGI review); failing checks → `needs_replan`. Drain mode can move any non-terminal goal to `blocked` (resumable after evidence/dependency resolution) or `needs_amygdala` (unsafe uncertainty/risk escalated to AMYGDALA).
+
+---
+
+## Never-stopping / drain mode
+
+For explicit NERVous activation, CORTEX supports a bounded, policy-driven drain mode via `cortex drain`. A drain run snapshots incomplete goals in the active context, separates actionable goals (`analyzed`, `planned`, `executing`, `verified`, `needs_replan`) from waiting goals (`blocked`, `needs_amygdala`), and records durable run evidence/budgets.
+
+Drain mode is togglable with persistent CORTEX config:
+
+```text
+cortex get_config
+cortex set_config drain_mode="off"
+cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default"
+cortex set_config drain_mode="always" default_drain_policy="conservative"
+```
+
+Modes:
+
+- `off` — `cortex drain` is disabled unless `force=true` is passed for an explicit one-off run.
+- `on_explicit_nervous` — safe default; drain is available when the user explicitly invokes NERVous/drain behavior.
+- `always` — explicit opt-in for callers/skills that want drain behavior to be treated as the default active-context posture.
+
+Policies: `default`, `conservative`, `aggressive`. The configured `default_drain_policy` is used when `cortex drain` does not pass `policy_name`.
+
+Safety semantics:
+
+- Drain mode means **never silently abandon** a selected goal; each goal must become completed, cancelled, blocked, or needs_amygdala with evidence.
+- It does **not** bypass hard safety gates. Critical/security/data-loss/regression/policy/credential/production signals are auto-excluded from actionable work and escalated to `needs_amygdala` unless explicitly resolved elsewhere.
+- The default policy includes bounded budgets (`max_goals`, retry/replan/no-progress limits) to prevent infinite loops and thrashing.
+- Use `cortex block` for non-actionable dependency/tooling blockers and `cortex escalate` for unsafe uncertainty requiring AMYGDALA. Both require non-empty evidence; include AXON/AMYGDALA/CEREBEL/LION ids in `related_ids` where available.
+
+Typical loop:
+
+```text
+cortex drain                         # snapshot active context
+cortex set_current goal-...          # resume each actionable goal
+axon summary/list                    # inspect linked task state
+cerebel/lion/ganglion as useful      # execute ready work
+cortex verify → cortex complete      # close completed goals
+cortex block/escalate                # durable evidence for non-actionable/unsafe goals
+repeat cortex drain until no actionable goals remain
+```
 
 ---
 
