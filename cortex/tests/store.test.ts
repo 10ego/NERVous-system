@@ -198,20 +198,23 @@ describe("GoalStore — transitions", () => {
 });
 
 describe("GoalStore — config", () => {
-	it("defaults drain mode to explicit NERVous activation", () => {
+	it("defaults drain mode and risk gate to safe explicit activation", () => {
 		const s = store();
 		assert.equal(s.getConfig().drain_mode, "on_explicit_nervous");
 		assert.equal(s.getConfig().default_drain_policy, "default");
+		assert.equal(s.getConfig().risk_gate_mode, "strict");
 	});
 
-	it("sets and persists drain mode config", () => {
+	it("sets and persists drain/risk gate config", () => {
 		const s = store();
-		const cfg = s.setConfig({ drain_mode: "off", default_drain_policy: "conservative" });
+		const cfg = s.setConfig({ drain_mode: "off", default_drain_policy: "conservative", risk_gate_mode: "user_accepted" });
 		assert.equal(cfg.drain_mode, "off");
 		assert.equal(cfg.default_drain_policy, "conservative");
+		assert.equal(cfg.risk_gate_mode, "user_accepted");
 		const back = GoalStore.fromJSON(s.toJSON());
 		assert.equal(back.getConfig().drain_mode, "off");
 		assert.equal(back.getConfig().default_drain_policy, "conservative");
+		assert.equal(back.getConfig().risk_gate_mode, "user_accepted");
 	});
 
 	it("drain_mode off disables drain unless forced", () => {
@@ -228,6 +231,14 @@ describe("GoalStore — config", () => {
 		s.analyze({ prompt: "a" });
 		s.setConfig({ default_drain_policy: "aggressive" });
 		assert.equal(s.startDrain().policy.name, "aggressive");
+	});
+
+	it("risk_gate_mode disabled requires explicit dangerous opt-in evidence", () => {
+		const s = store();
+		assert.throws(() => s.setConfig({ risk_gate_mode: "disabled" }), CortexError);
+		const cfg = s.setConfig({ risk_gate_mode: "disabled", dangerous_opt_in: true, risk_gate_evidence: "user approved automated risky drain" });
+		assert.equal(cfg.risk_gate_mode, "disabled");
+		assert.match(cfg.risk_gate_evidence ?? "", /approved/);
 	});
 });
 
@@ -280,8 +291,37 @@ describe("GoalStore — current / list / serialization", () => {
 		const run = s.startDrain();
 		assert.deepEqual(run.actionable_goal_ids, [safe.id]);
 		assert.deepEqual(run.blocked_goal_ids, [risky.id]);
+		assert.deepEqual(run.due_revisit_goal_ids, [risky.id]);
 		assert.equal(s.get(risky.id)?.status, "needs_amygdala");
 		assert.match(s.get(risky.id)?.blocker?.evidence ?? "", /data_loss|production/);
+	});
+
+	it("user_accepted risk gate proceeds only with scoped acceptance evidence", () => {
+		const s = store();
+		const risky = s.analyze({ prompt: "production data_loss migration" });
+		s.setConfig({ risk_gate_mode: "user_accepted" });
+		let run = s.startDrain();
+		assert.deepEqual(run.actionable_goal_ids, []);
+		assert.deepEqual(run.blocked_goal_ids, [risky.id]);
+		assert.equal(s.get(risky.id)?.status, "needs_amygdala");
+
+		// Re-open for the second half of the scenario by creating a fresh risky goal with acceptance evidence.
+		const accepted = s.analyze({ prompt: "production data_loss migration with user approval" });
+		s.acceptRisk(accepted.id, { reason: "user accepts scoped migration risk", evidence: "ticket-123", actor: "user", scope: accepted.id });
+		run = s.startDrain();
+		assert.ok(run.actionable_goal_ids.includes(accepted.id));
+		assert.ok(run.risk_accepted_goal_ids.includes(accepted.id));
+	});
+
+	it("disabled risk gate records accepted-risk evidence instead of escalating", () => {
+		const s = store();
+		const risky = s.analyze({ prompt: "production credential rotation" });
+		s.setConfig({ risk_gate_mode: "disabled", dangerous_opt_in: true, risk_gate_evidence: "explicit user automation window" });
+		const run = s.startDrain();
+		assert.deepEqual(run.actionable_goal_ids, [risky.id]);
+		assert.deepEqual(run.blocked_goal_ids, []);
+		assert.deepEqual(run.risk_accepted_goal_ids, [risky.id]);
+		assert.match(run.evidence.join("\n"), /disabled/);
 	});
 
 	it("drain does not mutate hard-stop goals outside the max_goals snapshot", () => {
@@ -291,6 +331,46 @@ describe("GoalStore — current / list / serialization", () => {
 		const run = s.startDrain({ max_goals: 1 });
 		assert.deepEqual(run.goal_ids, [first.id]);
 		assert.equal(s.get(outsideBudget.id)?.status, "analyzed");
+	});
+
+	it("surfaces blocked/skipped work again when next_revisit_at is due", () => {
+		const s = store();
+		const due = s.analyze({ prompt: "due blocker" });
+		const waiting = s.analyze({ prompt: "future blocker" });
+		s.block(due.id, { reason: "waiting on dependency", evidence: "task-1", next_revisit_at: "1970-01-01T00:00:00.000Z" });
+		s.block(waiting.id, { reason: "waiting on dependency", evidence: "task-2", next_revisit_at: "2999-01-01T00:00:00.000Z" });
+		const run = s.startDrain();
+		assert.deepEqual(run.due_revisit_goal_ids, [due.id]);
+		assert.ok(run.workable_goal_ids.includes(due.id));
+		assert.ok(run.waiting_goal_ids.includes(waiting.id));
+		assert.equal(s.get(due.id)?.blocker?.revisit_count, 1);
+	});
+
+	it("reopens resolved skipped work so it can be replanned", () => {
+		const s = store();
+		const blocked = s.analyze({ prompt: "blocked" });
+		s.escalate(blocked.id, { reason: "needs review", evidence: "amygdala-001" });
+		const reopened = s.reopen(blocked.id, { reason: "review accepted mitigation", evidence: "amygdala-001 resolved" });
+		assert.equal(reopened.status, "needs_replan");
+		assert.match(reopened.blocker?.terminal_resolution ?? "", /accepted mitigation/);
+		s.plan(blocked.id, { subtasks: [{ title: "resume safely" }] });
+		assert.equal(s.get(blocked.id)?.status, "planned");
+	});
+
+	it("surfaces failed work for retryability classification or due retry", () => {
+		const s = store();
+		const unknown = s.analyze({ prompt: "unknown failure" });
+		const retry = s.analyze({ prompt: "retry failure" });
+		const future = s.analyze({ prompt: "future retry" });
+		s.recordFailure(unknown.id, { reason: "lion failed", evidence: "lion-1" });
+		s.recordFailure(retry.id, { reason: "transient", evidence: "lion-2", retryability: "retryable", next_retry_at: "1970-01-01T00:00:00.000Z" });
+		s.recordFailure(future.id, { reason: "transient", evidence: "lion-3", retryability: "retryable", next_retry_at: "2999-01-01T00:00:00.000Z" });
+		const run = s.startDrain();
+		assert.deepEqual(run.needs_retry_classification_goal_ids, [unknown.id]);
+		assert.deepEqual(run.retryable_goal_ids, [retry.id]);
+		assert.ok(run.workable_goal_ids.includes(unknown.id));
+		assert.ok(run.workable_goal_ids.includes(retry.id));
+		assert.ok(run.waiting_goal_ids.includes(future.id));
 	});
 
 	it("round-trips through toJSON/fromJSON", () => {

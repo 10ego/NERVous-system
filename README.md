@@ -163,6 +163,17 @@ For a read-only state browser, install/load the dashboard package and run:
 
 The dashboard opens a modal overlay with tabs for CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, and AMYGDALA; use arrow keys/tab to navigate, enter for details, `r` to refresh, and `q`/escape to close.
 
+### CORTEX drain and risk gates
+
+CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized:
+
+```text
+cortex set_config drain_mode="off|on_explicit_nervous|always"
+cortex set_config risk_gate_mode="strict|auto_deliberate|user_accepted|disabled"
+```
+
+`strict` is the default. `auto_deliberate` proceeds only with recorded MAGI/AMYGDALA approval evidence, `user_accepted` requires scoped user acceptance evidence, and `disabled` requires an explicit dangerous opt-in plus audit evidence. Failed work is recorded with retryability via `cortex record_failure`; skipped/blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.
+
 ## Why pi packages?
 
 Each NERVous component is a pi package (TypeScript extension loaded via jiti, plus optional skills/prompts/themes). This gives every component: lifecycle hooks, custom tools/commands, session persistence, subagent subprocess capabilities, and distribution via `pi install`. Components compose by reading shared durable state (AXON) and transient notes (SYNAPSE).

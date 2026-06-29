@@ -88,7 +88,28 @@ export function summarizeGoal(g: Goal): string {
 		lines.push(`## Blocker — ${g.blocker.status}`);
 		lines.push(`- **reason:** ${g.blocker.reason}`);
 		if (g.blocker.evidence) lines.push(`- **evidence:** ${g.blocker.evidence}`);
+		lines.push(`- **next revisit:** ${g.blocker.next_revisit_at} · **revisits:** ${g.blocker.revisit_count}`);
+		if (g.blocker.unblock_conditions.length) lines.push(`- **unblock:** ${g.blocker.unblock_conditions.join("; ")}`);
+		if (g.blocker.terminal_resolution) lines.push(`- **terminal resolution:** ${g.blocker.terminal_resolution}`);
 		if (g.blocker.related_ids.length) lines.push(`- **related:** ${g.blocker.related_ids.map((id) => `\`${id}\``).join(", ")}`);
+	}
+	if (g.failure) {
+		lines.push("");
+		lines.push(`## Failure — ${g.failure.retryability}`);
+		lines.push(`- **reason:** ${g.failure.reason}`);
+		if (g.failure.evidence) lines.push(`- **evidence:** ${g.failure.evidence}`);
+		lines.push(`- **attempts:** ${g.failure.attempts}/${g.failure.max_attempts}`);
+		if (g.failure.next_retry_at) lines.push(`- **next retry:** ${g.failure.next_retry_at}`);
+		if (g.failure.terminal_resolution) lines.push(`- **terminal resolution:** ${g.failure.terminal_resolution}`);
+		if (g.failure.related_ids.length) lines.push(`- **related:** ${g.failure.related_ids.map((id) => `\`${id}\``).join(", ")}`);
+	}
+	if (g.risk_acceptance) {
+		lines.push("");
+		lines.push(`## Risk acceptance — ${g.risk_acceptance.mode}`);
+		lines.push(`- **actor:** ${g.risk_acceptance.actor} · **scope:** ${g.risk_acceptance.scope}`);
+		lines.push(`- **reason:** ${g.risk_acceptance.reason}`);
+		lines.push(`- **evidence:** ${g.risk_acceptance.evidence}`);
+		if (g.risk_acceptance.expires_at) lines.push(`- **expires:** ${g.risk_acceptance.expires_at}`);
 	}
 	return lines.join("\n");
 }

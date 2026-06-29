@@ -30,6 +30,12 @@ export type Priority = (typeof PRIORITIES)[number];
 export const DRAIN_MODES = ["off", "on_explicit_nervous", "always"] as const;
 export type DrainMode = (typeof DRAIN_MODES)[number];
 
+export const RISK_GATE_MODES = ["strict", "auto_deliberate", "user_accepted", "disabled"] as const;
+export type RiskGateMode = (typeof RISK_GATE_MODES)[number];
+
+export const RETRYABILITIES = ["unknown", "retryable", "not_retryable"] as const;
+export type Retryability = (typeof RETRYABILITIES)[number];
+
 export const GOAL_STATUSES = [
 	"analyzed", // intent parsed, awaiting planning (and maybe MAGI)
 	"planned", // plan stored; AXON tasks may be created
@@ -141,7 +147,38 @@ export interface GoalBlocker {
 	evidence: string;
 	/** Related AMYGDALA incident ids, AXON task ids, CEREBEL wave ids, etc. */
 	related_ids: string[];
+	/** When drain should re-check this skipped/waiting work. */
+	next_revisit_at: string;
+	last_revisit_at?: string;
+	revisit_count: number;
+	unblock_conditions: string[];
+	/** Required when the skipped work is intentionally closed without completion. */
+	terminal_resolution?: string;
 	created_at: string;
+}
+
+export interface RiskAcceptance {
+	mode: "auto_deliberate" | "user_accepted" | "disabled";
+	actor: string;
+	scope: string;
+	reason: string;
+	evidence: string;
+	related_ids: string[];
+	accepted_at: string;
+	expires_at?: string;
+}
+
+export interface GoalFailure {
+	reason: string;
+	evidence: string;
+	related_ids: string[];
+	retryability: Retryability;
+	attempts: number;
+	max_attempts: number;
+	next_retry_at?: string;
+	last_failure_at: string;
+	/** Required when the failure is intentionally closed without retry/completion. */
+	terminal_resolution?: string;
 }
 
 export type DrainPolicyName = "default" | "conservative" | "aggressive";
@@ -160,6 +197,10 @@ export interface CortexConfig {
 	/** off disables cortex drain unless force=true; on_explicit_nervous is the safe default; always is explicit opt-in. */
 	drain_mode: DrainMode;
 	default_drain_policy: DrainPolicyName;
+	/** strict is the safe default; weaker modes require durable approval/evidence before risky work proceeds. */
+	risk_gate_mode: RiskGateMode;
+	/** Audit evidence required when risk_gate_mode=disabled. */
+	risk_gate_evidence?: string;
 	updated_at: string;
 }
 
@@ -167,11 +208,23 @@ export interface DrainRun {
 	id: string;
 	status: "running" | "completed" | "blocked" | "exhausted";
 	policy: DrainPolicy;
+	risk_gate_mode: RiskGateMode;
 	/** Snapshot of eligible goals selected at run start/resume. */
 	goal_ids: string[];
+	/** Normal actionable goals with no paused failure/revisit gate. */
 	actionable_goal_ids: string[];
+	/** Blocked/needs_amygdala goals whose revisit time is due now. */
+	due_revisit_goal_ids: string[];
+	/** Failed goals due for retry. */
+	retryable_goal_ids: string[];
+	/** Failed goals that need a retryability decision before drain can continue. */
+	needs_retry_classification_goal_ids: string[];
+	/** Actionable + due revisit + retry/classification queues; drain should not ignore these. */
+	workable_goal_ids: string[];
 	blocked_goal_ids: string[];
+	waiting_goal_ids: string[];
 	terminal_goal_ids: string[];
+	risk_accepted_goal_ids: string[];
 	evidence: string[];
 	created_at: string;
 	updated_at: string;
@@ -193,6 +246,10 @@ export interface Goal {
 	verification?: VerificationReport;
 	/** Durable evidence explaining why drain mode cannot currently act on this goal. */
 	blocker?: GoalBlocker;
+	/** Scoped approval that allows risk-gated work to proceed under non-strict modes. */
+	risk_acceptance?: RiskAcceptance;
+	/** Durable failure/retryability state so failed work is retried or explicitly resolved. */
+	failure?: GoalFailure;
 	created_at: string;
 	updated_at: string;
 }
@@ -217,6 +274,8 @@ export const COMPLEXITY_SCHEMA = StringEnum(COMPLEXITIES);
 export const SEVERITY_SCHEMA = StringEnum(SEVERITIES);
 export const PRIORITY_SCHEMA = StringEnum(PRIORITIES);
 export const DRAIN_MODE_SCHEMA = StringEnum(DRAIN_MODES);
+export const RISK_GATE_MODE_SCHEMA = StringEnum(RISK_GATE_MODES);
+export const RETRYABILITY_SCHEMA = StringEnum(RETRYABILITIES);
 export const GOAL_STATUS_SCHEMA = StringEnum(GOAL_STATUSES);
 
 export const CORTEX_ACTIONS = [
@@ -227,6 +286,9 @@ export const CORTEX_ACTIONS = [
 	"complete",
 	"block",
 	"escalate",
+	"accept_risk",
+	"record_failure",
+	"reopen",
 	"cancel",
 	"drain",
 	"get_config",
@@ -260,7 +322,7 @@ const VerifyCheckSchema = Type.Object({
 export const CortexToolParams = Type.Object({
 	action: StringEnum(CORTEX_ACTIONS, {
 		description:
-			"What to do. analyze/plan/link/verify/complete/block/escalate/cancel/drain/get_config/set_config/get/list/summary/set_current.",
+			"What to do. analyze/plan/link/verify/complete/block/escalate/accept_risk/record_failure/reopen/cancel/drain/get_config/set_config/get/list/summary/set_current.",
 	}),
 	// analyze
 	prompt: Type.Optional(Type.String({ description: "The user prompt (analyze)." })),
@@ -297,16 +359,28 @@ export const CortexToolParams = Type.Object({
 	),
 	recommendation: Type.Optional(StringEnum(VERIFY_RECOMMENDATIONS)),
 	concerns: Type.Optional(Type.Array(Type.String(), { description: "Outstanding concerns (verify)." })),
-	// block/escalate
-	reason: Type.Optional(Type.String({ description: "Reason for block/escalation." })),
-	evidence: Type.Optional(Type.String({ description: "Evidence for block/escalation or drain run." })),
+	// block/escalate/accept_risk/record_failure
+	reason: Type.Optional(Type.String({ description: "Reason for block/escalation/risk acceptance/failure." })),
+	evidence: Type.Optional(Type.String({ description: "Evidence for block/escalation/risk acceptance/failure or drain run." })),
 	related_ids: Type.Optional(Type.Array(Type.String(), { description: "Related AMYGDALA/AXON/CEREBEL/LION ids." })),
+	actor: Type.Optional(Type.String({ description: "Actor accepting risk (accept_risk)." })),
+	scope: Type.Optional(Type.String({ description: "Scope covered by risk acceptance." })),
+	expires_at: Type.Optional(Type.String({ description: "Expiration timestamp for risk acceptance." })),
+	retryability: Type.Optional(RETRYABILITY_SCHEMA),
+	next_retry_at: Type.Optional(Type.String({ description: "When retryable failed work should be retried." })),
+	max_attempts: Type.Optional(Type.Number({ description: "Maximum retry attempts for failed work." })),
+	next_revisit_at: Type.Optional(Type.String({ description: "When blocked/skipped work should be revisited." })),
+	unblock_conditions: Type.Optional(Type.Array(Type.String(), { description: "Conditions that would unblock skipped work." })),
+	terminal_resolution: Type.Optional(Type.String({ description: "Explicit closure reason for non-retried/non-completed work." })),
 	// drain/config
 	policy_name: Type.Optional(StringEnum(["default", "conservative", "aggressive"] as const)),
 	max_goals: Type.Optional(Type.Number({ description: "Maximum goals to snapshot in a drain run." })),
 	force: Type.Optional(Type.Boolean({ description: "Allow drain even when drain_mode is off." })),
 	drain_mode: Type.Optional(DRAIN_MODE_SCHEMA),
 	default_drain_policy: Type.Optional(StringEnum(["default", "conservative", "aggressive"] as const)),
+	risk_gate_mode: Type.Optional(RISK_GATE_MODE_SCHEMA),
+	risk_gate_evidence: Type.Optional(Type.String({ description: "Required evidence/audit note when setting risk_gate_mode=disabled." })),
+	dangerous_opt_in: Type.Optional(Type.Boolean({ description: "Required true when setting risk_gate_mode=disabled." })),
 	// common filters
 	status_filter: Type.Optional(GOAL_STATUS_SCHEMA),
 });

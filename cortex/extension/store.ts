@@ -19,9 +19,13 @@ import {
 	type ExecutionPlan,
 	type Goal,
 	type GoalBlocker,
+	type GoalFailure,
 	type GoalStatus,
 	type IntentAnalysis,
 	type PlannedSubtask,
+	type Retryability,
+	type RiskAcceptance,
+	type RiskGateMode,
 	type VerificationReport,
 	VERIFY_RECOMMENDATIONS,
 	type VerifyRecommendation,
@@ -101,6 +105,29 @@ export interface BlockInput {
 	reason: string;
 	evidence?: string;
 	related_ids?: string[];
+	next_revisit_at?: string;
+	unblock_conditions?: string[];
+	terminal_resolution?: string;
+}
+
+export interface RiskAcceptanceInput {
+	reason: string;
+	evidence?: string;
+	actor?: string;
+	scope?: string;
+	expires_at?: string;
+	related_ids?: string[];
+	mode?: "auto_deliberate" | "user_accepted" | "disabled";
+}
+
+export interface FailureInput {
+	reason: string;
+	evidence?: string;
+	related_ids?: string[];
+	retryability?: Retryability;
+	next_retry_at?: string;
+	max_attempts?: number;
+	terminal_resolution?: string;
 }
 
 export interface DrainInput {
@@ -113,6 +140,9 @@ export interface DrainInput {
 export interface ConfigInput {
 	drain_mode?: DrainMode;
 	default_drain_policy?: DrainPolicyName;
+	risk_gate_mode?: RiskGateMode;
+	risk_gate_evidence?: string;
+	dangerous_opt_in?: boolean;
 }
 
 const COMPLEXITIES = ["low", "medium", "high"] as const;
@@ -129,6 +159,10 @@ const PRIORITIES = ["low", "medium", "high", "critical"] as const;
 type Priority = (typeof PRIORITIES)[number];
 function asPriority(v: unknown): Priority {
 	return (PRIORITIES as readonly string[]).includes(v as string) ? (v as Priority) : "medium";
+}
+const RETRYABILITIES = ["unknown", "retryable", "not_retryable"] as const;
+function asRetryability(v: unknown): Retryability {
+	return (RETRYABILITIES as readonly string[]).includes(v as string) ? (v as Retryability) : "unknown";
 }
 
 /* ----------------------------- store ----------------------------------- */
@@ -214,7 +248,42 @@ export class GoalStore {
 					reason: str(blockerRaw.reason),
 					evidence: str(blockerRaw.evidence),
 					related_ids: strArr(blockerRaw.related_ids),
+					next_revisit_at: str(blockerRaw.next_revisit_at, str(blockerRaw.created_at, ts)),
+					last_revisit_at: typeof blockerRaw.last_revisit_at === "string" ? blockerRaw.last_revisit_at : undefined,
+					revisit_count: typeof blockerRaw.revisit_count === "number" ? blockerRaw.revisit_count : 0,
+					unblock_conditions: strArr(blockerRaw.unblock_conditions),
+					terminal_resolution: typeof blockerRaw.terminal_resolution === "string" ? blockerRaw.terminal_resolution : undefined,
 					created_at: str(blockerRaw.created_at, ts),
+				}
+			: undefined;
+		const acceptanceRaw = typeof r.risk_acceptance === "object" && r.risk_acceptance !== null ? (r.risk_acceptance as Record<string, unknown>) : undefined;
+		const risk_acceptance: RiskAcceptance | undefined = acceptanceRaw
+			? {
+					mode:
+						acceptanceRaw.mode === "auto_deliberate" || acceptanceRaw.mode === "disabled"
+							? acceptanceRaw.mode
+							: "user_accepted",
+					actor: str(acceptanceRaw.actor, "unknown"),
+					scope: str(acceptanceRaw.scope, id),
+					reason: str(acceptanceRaw.reason),
+					evidence: str(acceptanceRaw.evidence),
+					related_ids: strArr(acceptanceRaw.related_ids),
+					accepted_at: str(acceptanceRaw.accepted_at, ts),
+					expires_at: typeof acceptanceRaw.expires_at === "string" ? acceptanceRaw.expires_at : undefined,
+				}
+			: undefined;
+		const failureRaw = typeof r.failure === "object" && r.failure !== null ? (r.failure as Record<string, unknown>) : undefined;
+		const failure: GoalFailure | undefined = failureRaw
+			? {
+					reason: str(failureRaw.reason),
+					evidence: str(failureRaw.evidence),
+					related_ids: strArr(failureRaw.related_ids),
+					retryability: asRetryability(failureRaw.retryability),
+					attempts: typeof failureRaw.attempts === "number" ? failureRaw.attempts : 1,
+					max_attempts: typeof failureRaw.max_attempts === "number" ? failureRaw.max_attempts : 3,
+					next_retry_at: typeof failureRaw.next_retry_at === "string" ? failureRaw.next_retry_at : undefined,
+					last_failure_at: str(failureRaw.last_failure_at, ts),
+					terminal_resolution: typeof failureRaw.terminal_resolution === "string" ? failureRaw.terminal_resolution : undefined,
 				}
 			: undefined;
 		return {
@@ -239,6 +308,8 @@ export class GoalStore {
 					? (r.verification as VerificationReport)
 					: undefined,
 			blocker,
+			risk_acceptance,
+			failure,
 			created_at: str(r.created_at, ts),
 			updated_at: str(r.updated_at, ts),
 		};
@@ -255,15 +326,21 @@ export class GoalStore {
 			r.default_drain_policy === "conservative" || r.default_drain_policy === "aggressive" || r.default_drain_policy === "default"
 				? r.default_drain_policy
 				: base.default_drain_policy;
+		const risk_gate_mode: RiskGateMode =
+			r.risk_gate_mode === "auto_deliberate" || r.risk_gate_mode === "user_accepted" || r.risk_gate_mode === "disabled" || r.risk_gate_mode === "strict"
+				? r.risk_gate_mode
+				: base.risk_gate_mode;
 		return {
 			drain_mode,
 			default_drain_policy,
+			risk_gate_mode,
+			risk_gate_evidence: typeof r.risk_gate_evidence === "string" ? r.risk_gate_evidence : undefined,
 			updated_at: typeof r.updated_at === "string" ? r.updated_at : base.updated_at,
 		};
 	}
 
 	private static defaultConfig(ts = now()): CortexConfig {
-		return { drain_mode: "on_explicit_nervous", default_drain_policy: "default", updated_at: ts };
+		return { drain_mode: "on_explicit_nervous", default_drain_policy: "default", risk_gate_mode: "strict", updated_at: ts };
 	}
 
 	private static coerceDrainRun(id: string, raw: unknown): DrainRun | null {
@@ -283,14 +360,31 @@ export class GoalStore {
 		if (typeof policyRaw.max_no_progress_iterations === "number") policy.max_no_progress_iterations = policyRaw.max_no_progress_iterations;
 		const hardStops = strArr(policyRaw.hard_stop_categories);
 		if (hardStops.length) policy.hard_stop_categories = hardStops;
+		const risk_gate_mode: RiskGateMode =
+			r.risk_gate_mode === "auto_deliberate" || r.risk_gate_mode === "user_accepted" || r.risk_gate_mode === "disabled" || r.risk_gate_mode === "strict"
+				? r.risk_gate_mode
+				: "strict";
+		const actionable = strArr(r.actionable_goal_ids);
+		const dueRevisit = strArr(r.due_revisit_goal_ids);
+		const retryable = strArr(r.retryable_goal_ids);
+		const needsClassification = strArr(r.needs_retry_classification_goal_ids);
 		return {
 			id,
 			status,
 			policy,
+			risk_gate_mode,
 			goal_ids: strArr(r.goal_ids),
-			actionable_goal_ids: strArr(r.actionable_goal_ids),
+			actionable_goal_ids: actionable,
+			due_revisit_goal_ids: dueRevisit,
+			retryable_goal_ids: retryable,
+			needs_retry_classification_goal_ids: needsClassification,
+			workable_goal_ids: strArr(r.workable_goal_ids).length
+				? strArr(r.workable_goal_ids)
+				: [...new Set([...actionable, ...dueRevisit, ...retryable, ...needsClassification])],
 			blocked_goal_ids: strArr(r.blocked_goal_ids),
+			waiting_goal_ids: strArr(r.waiting_goal_ids),
 			terminal_goal_ids: strArr(r.terminal_goal_ids),
+			risk_accepted_goal_ids: strArr(r.risk_accepted_goal_ids),
 			evidence: strArr(r.evidence),
 			created_at: str(r.created_at, now()),
 			updated_at: str(r.updated_at, now()),
@@ -489,13 +583,90 @@ export class GoalStore {
 		return this.recordBlocker(goalId, "needs_amygdala", input);
 	}
 
+	acceptRisk(goalId: string, input: RiskAcceptanceInput): Goal {
+		if (!input.reason?.trim()) throw new CortexError("invalid_arg", "accept_risk requires a reason.");
+		if (!input.evidence?.trim()) throw new CortexError("invalid_arg", "accept_risk requires durable evidence.");
+		const g = this.require(goalId);
+		if (g.status === "completed" || g.status === "cancelled") {
+			throw new CortexError("invalid_transition", `Goal ${goalId} is already terminal ("${g.status}").`);
+		}
+		const mode = input.mode ?? (this.config.risk_gate_mode === "disabled" ? "disabled" : this.config.risk_gate_mode === "auto_deliberate" ? "auto_deliberate" : "user_accepted");
+		g.risk_acceptance = {
+			mode,
+			actor: input.actor?.trim() || "user",
+			scope: input.scope?.trim() || goalId,
+			reason: input.reason.trim(),
+			evidence: input.evidence.trim(),
+			related_ids: input.related_ids ?? [],
+			accepted_at: now(),
+			expires_at: input.expires_at,
+		};
+		g.updated_at = now();
+		this.meta.updated_at = g.updated_at;
+		return clone(g);
+	}
+
+	recordFailure(goalId: string, input: FailureInput): Goal {
+		if (!input.reason?.trim()) throw new CortexError("invalid_arg", "record_failure requires a reason.");
+		if (!input.evidence?.trim()) throw new CortexError("invalid_arg", "record_failure requires durable evidence.");
+		const g = this.require(goalId);
+		if (g.status === "completed" || g.status === "cancelled") {
+			throw new CortexError("invalid_transition", `Goal ${goalId} is already terminal ("${g.status}").`);
+		}
+		const previous = g.failure;
+		const attempts = (previous?.attempts ?? 0) + 1;
+		const max_attempts = Math.max(1, Math.min(input.max_attempts ?? previous?.max_attempts ?? 3, 25));
+		g.failure = {
+			reason: input.reason.trim(),
+			evidence: input.evidence.trim(),
+			related_ids: input.related_ids ?? [],
+			retryability: input.retryability ?? previous?.retryability ?? "unknown",
+			attempts,
+			max_attempts,
+			next_retry_at: input.next_retry_at ?? previous?.next_retry_at,
+			last_failure_at: now(),
+			terminal_resolution: input.terminal_resolution,
+		};
+		g.updated_at = now();
+		this.meta.updated_at = g.updated_at;
+		return clone(g);
+	}
+
+	reopen(goalId: string, input: BlockInput): Goal {
+		if (!input.reason?.trim()) throw new CortexError("invalid_arg", "reopen requires a reason.");
+		if (!input.evidence?.trim()) throw new CortexError("invalid_arg", "reopen requires durable evidence.");
+		const g = this.require(goalId);
+		if (!this.isWaitingStatus(g.status)) {
+			throw new CortexError("invalid_transition", `Cannot reopen goal ${goalId} from "${g.status}".`);
+		}
+		this.transition(g, "needs_replan");
+		const ts = now();
+		if (g.blocker) {
+			g.blocker.last_revisit_at = ts;
+			g.blocker.revisit_count += 1;
+			g.blocker.terminal_resolution = `${input.reason.trim()} — ${input.evidence.trim()}`;
+			g.blocker.related_ids = [...new Set([...g.blocker.related_ids, ...(input.related_ids ?? [])])];
+		}
+		g.updated_at = ts;
+		this.meta.updated_at = g.updated_at;
+		return clone(g);
+	}
+
 	setConfig(input: ConfigInput): CortexConfig {
-		if (!input.drain_mode && !input.default_drain_policy) {
-			throw new CortexError("invalid_arg", "set_config requires drain_mode or default_drain_policy.");
+		if (!input.drain_mode && !input.default_drain_policy && !input.risk_gate_mode) {
+			throw new CortexError("invalid_arg", "set_config requires drain_mode, default_drain_policy, or risk_gate_mode.");
+		}
+		if (input.risk_gate_mode === "disabled" && (!input.dangerous_opt_in || !input.risk_gate_evidence?.trim())) {
+			throw new CortexError(
+				"invalid_arg",
+				"risk_gate_mode=disabled requires dangerous_opt_in=true and non-empty risk_gate_evidence.",
+			);
 		}
 		this.config = {
 			drain_mode: input.drain_mode ?? this.config.drain_mode,
 			default_drain_policy: input.default_drain_policy ?? this.config.default_drain_policy,
+			risk_gate_mode: input.risk_gate_mode ?? this.config.risk_gate_mode,
+			risk_gate_evidence: input.risk_gate_evidence?.trim() ?? this.config.risk_gate_evidence,
 			updated_at: now(),
 		};
 		this.meta.updated_at = this.config.updated_at;
@@ -503,6 +674,7 @@ export class GoalStore {
 	}
 
 	startDrain(input: DrainInput = {}): DrainRun {
+		const ts = now();
 		if (this.config.drain_mode === "off" && !input.force) {
 			throw new CortexError("invalid_arg", "CORTEX drain is disabled by drain_mode=off. Use set_config or force=true.");
 		}
@@ -512,37 +684,78 @@ export class GoalStore {
 			.sort((a, b) => a.created_at.localeCompare(b.created_at))
 			.slice(0, policy.max_goals)
 			.map((g) => g.id);
-		const autoEscalationEvidence: string[] = [];
+		const gateEvidence: string[] = [];
+		const riskAccepted = new Set<string>();
 		for (const id of selectedIds) {
 			const g = this.require(id);
 			const signal = this.isActionableStatus(g.status) ? this.findHardStopSignal(g, policy) : undefined;
-			if (signal) {
-				const evidence = `Matched hard-stop category "${signal.category}" in ${signal.source}: ${signal.value}`;
-				this.recordBlocker(g.id, "needs_amygdala", {
-					reason: "Drain policy detected a hard-stop safety signal; AMYGDALA review is required before continuing.",
-					evidence,
-				});
-				autoEscalationEvidence.push(`${g.id}: ${evidence}`);
+			if (!signal) continue;
+			const evidence = `Matched hard-stop category "${signal.category}" in ${signal.source}: ${signal.value}`;
+			const allowed = this.riskGateAllows(g, evidence, ts);
+			if (allowed) {
+				riskAccepted.add(g.id);
+				gateEvidence.push(`${g.id}: risk gate allowed by ${allowed}; ${evidence}`);
+				continue;
+			}
+			this.recordBlocker(g.id, "needs_amygdala", {
+				reason: this.riskGateBlockReason(),
+				evidence,
+				next_revisit_at: ts,
+				unblock_conditions: this.riskGateUnblockConditions(),
+			});
+			gateEvidence.push(`${g.id}: ${evidence}`);
+		}
+
+		const dueRevisitIds = new Set<string>();
+		for (const id of selectedIds) {
+			const g = this.require(id);
+			if (this.isWaitingStatus(g.status) && g.blocker && this.isDue(g.blocker.next_revisit_at, ts)) {
+				g.blocker.last_revisit_at = ts;
+				g.blocker.revisit_count += 1;
+				g.updated_at = ts;
+				dueRevisitIds.add(g.id);
 			}
 		}
+
 		const selected = selectedIds.map((id) => this.get(id)).filter((g): g is Goal => Boolean(g));
+		const actionable = selected
+			.filter((g) => this.isActionableStatus(g.status) && !g.failure)
+			.map((g) => g.id);
+		const retryable = selected.filter((g) => this.isRetryableDue(g, ts)).map((g) => g.id);
+		const needsClassification = selected.filter((g) => this.needsRetryClassification(g)).map((g) => g.id);
+		const dueRevisit = selected.filter((g) => dueRevisitIds.has(g.id)).map((g) => g.id);
+		const workable = [...new Set([...actionable, ...dueRevisit, ...retryable, ...needsClassification])];
+		const blocked = selected.filter((g) => this.isWaitingStatus(g.status)).map((g) => g.id);
+		const waiting = selected
+			.filter((g) =>
+				(this.isWaitingStatus(g.status) && !dueRevisitIds.has(g.id)) ||
+				(Boolean(g.failure) && !this.isRetryableDue(g, ts) && !this.needsRetryClassification(g)),
+			)
+			.map((g) => g.id);
 		const run: DrainRun = {
 			id: this.nextDrainRunId(),
 			status: "running",
 			policy,
+			risk_gate_mode: this.config.risk_gate_mode,
 			goal_ids: selected.map((g) => g.id),
-			actionable_goal_ids: selected.filter((g) => this.isActionableStatus(g.status)).map((g) => g.id),
-			blocked_goal_ids: selected.filter((g) => g.status === "blocked" || g.status === "needs_amygdala").map((g) => g.id),
-			terminal_goal_ids: selected.filter((g) => g.status === "completed" || g.status === "cancelled").map((g) => g.id),
+			actionable_goal_ids: actionable,
+			due_revisit_goal_ids: dueRevisit,
+			retryable_goal_ids: retryable,
+			needs_retry_classification_goal_ids: needsClassification,
+			workable_goal_ids: workable,
+			blocked_goal_ids: blocked,
+			waiting_goal_ids: waiting,
+			terminal_goal_ids: [],
+			risk_accepted_goal_ids: [...riskAccepted],
 			evidence: [
 				input.evidence ??
-					"Drain snapshot: act on actionable goals; leave blocked/needs_amygdala goals waiting with evidence.",
-				...autoEscalationEvidence,
+					"Drain snapshot: act on workable goals; revisit due blocked/needs_amygdala goals; classify/retry failed goals; keep waiting goals visible.",
+				...gateEvidence,
 			],
-			created_at: now(),
-			updated_at: now(),
+			created_at: ts,
+			updated_at: ts,
 		};
-		if (run.actionable_goal_ids.length === 0) run.status = run.blocked_goal_ids.length ? "blocked" : "completed";
+		if (run.workable_goal_ids.length === 0) run.status = run.waiting_goal_ids.length || run.blocked_goal_ids.length ? "blocked" : "completed";
 		this.drain_runs.set(run.id, run);
 		this.meta.updated_at = run.updated_at;
 		return clone(run);
@@ -578,14 +791,19 @@ export class GoalStore {
 			throw new CortexError("invalid_transition", `Goal ${goalId} is already terminal ("${g.status}").`);
 		}
 		this.transition(g, status);
+		const ts = now();
 		g.blocker = {
 			status,
 			reason: input.reason.trim(),
 			evidence: input.evidence?.trim() ?? "",
 			related_ids: input.related_ids ?? [],
-			created_at: now(),
+			next_revisit_at: input.next_revisit_at ?? ts,
+			revisit_count: 0,
+			unblock_conditions: input.unblock_conditions ?? [],
+			terminal_resolution: input.terminal_resolution,
+			created_at: ts,
 		};
-		g.updated_at = now();
+		g.updated_at = ts;
 		this.meta.updated_at = g.updated_at;
 		return clone(g);
 	}
@@ -610,6 +828,77 @@ export class GoalStore {
 			}
 		}
 		return undefined;
+	}
+
+	private isWaitingStatus(status: GoalStatus): boolean {
+		return status === "blocked" || status === "needs_amygdala";
+	}
+
+	private isDue(timestamp: string | undefined, at = now()): boolean {
+		if (!timestamp) return true;
+		const due = Date.parse(timestamp);
+		const ref = Date.parse(at);
+		if (Number.isNaN(due) || Number.isNaN(ref)) return true;
+		return due <= ref;
+	}
+
+	private needsRetryClassification(g: Goal): boolean {
+		return Boolean(g.failure && !g.failure.terminal_resolution && g.failure.retryability === "unknown");
+	}
+
+	private isRetryableDue(g: Goal, at = now()): boolean {
+		return Boolean(
+			g.failure &&
+				!g.failure.terminal_resolution &&
+				g.failure.retryability === "retryable" &&
+				g.failure.attempts < g.failure.max_attempts &&
+				this.isDue(g.failure.next_retry_at, at),
+		);
+	}
+
+	private riskGateAllows(g: Goal, _evidence: string, at = now()): string | undefined {
+		if (this.config.risk_gate_mode === "strict") return undefined;
+		if (this.config.risk_gate_mode === "disabled") {
+			return this.config.risk_gate_evidence ? `disabled (${this.config.risk_gate_evidence})` : undefined;
+		}
+		if (!g.risk_acceptance || !this.isRiskAcceptanceActive(g.risk_acceptance, at)) return undefined;
+		if (this.config.risk_gate_mode === "auto_deliberate" && g.risk_acceptance.mode === "auto_deliberate") {
+			return `auto_deliberate acceptance ${g.risk_acceptance.evidence}`;
+		}
+		if (this.config.risk_gate_mode === "user_accepted" && g.risk_acceptance.mode === "user_accepted") {
+			return `user acceptance ${g.risk_acceptance.evidence}`;
+		}
+		return undefined;
+	}
+
+	private isRiskAcceptanceActive(acceptance: RiskAcceptance, at = now()): boolean {
+		return !acceptance.expires_at || !this.isDue(acceptance.expires_at, at);
+	}
+
+	private riskGateBlockReason(): string {
+		switch (this.config.risk_gate_mode) {
+			case "auto_deliberate":
+				return "Risk gate detected a hard-stop signal; auto-deliberation evidence from MAGI/AMYGDALA is required before continuing.";
+			case "user_accepted":
+				return "Risk gate detected a hard-stop signal; scoped user acceptance evidence is required before continuing.";
+			case "disabled":
+				return "Risk gate disabled mode lacks required opt-in evidence; continuing is blocked until configuration is corrected.";
+			case "strict":
+				return "Drain policy detected a hard-stop safety signal; AMYGDALA review is required before continuing.";
+		}
+	}
+
+	private riskGateUnblockConditions(): string[] {
+		switch (this.config.risk_gate_mode) {
+			case "auto_deliberate":
+				return ["Run MAGI/AMYGDALA review and record an auto_deliberate risk acceptance if approved."];
+			case "user_accepted":
+				return ["Record scoped user acceptance evidence for this goal/risk."];
+			case "disabled":
+				return ["Set risk_gate_mode=disabled with dangerous_opt_in=true and risk_gate_evidence, or choose a safer risk gate mode."];
+			case "strict":
+				return ["Resolve or accept the AMYGDALA incident before resuming."];
+		}
 	}
 
 	private nextDrainRunId(): string {

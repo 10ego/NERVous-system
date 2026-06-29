@@ -94,20 +94,21 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Main reasoning core: turn a user prompt into a durable goal (intent, success criteria, risks),",
 			"decide whether MAGI is needed, store an execution plan, link AXON tasks, and verify completion.",
-			"Goals persist across compaction/restart. Actions: analyze, plan, link, verify, complete, block, escalate, cancel, drain,",
+			"Goals persist across compaction/restart. Actions: analyze, plan, link, verify, complete, block, escalate, accept_risk, record_failure, reopen, cancel, drain,",
 			"get_config, set_config, get, list, summary, set_current.",
 		].join(" "),
 		promptSnippet: "Run CORTEX: analyze intent into a durable goal, plan, link AXON tasks, verify",
 		promptGuidelines: [
 			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
-			"After explicit NERVous activation, check CORTEX config; unless drain_mode=off, default to draining all actionable incomplete CORTEX goals in the active context: list/summary goals, resume each one, verify/complete it, then continue until none remain.",
+			"After explicit NERVous activation, check CORTEX config; unless drain_mode=off, default to draining all workable incomplete CORTEX goals, including due revisits and retryable/classification-needed failures.",
 			"When explaining a NERVous workflow, prefer a compact checklist of component → action/status → evidence; avoid verbose restatement.",
 			"Use the cortex tool action 'analyze' at the start of non-trivial new work to capture intent, success criteria, constraints, and risks as a durable goal.",
 			"After cortex analyze, if needs_magi is true or the decision is hard/risky/ambiguous/architectural, convene the magi tool before cortex plan; otherwise proceed to cortex plan.",
 			"Use cortex tool action 'plan' to store the execution plan, then create each subtask in AXON (axon create) and record the ids with cortex action 'link'.",
 			"Use cortex tool action 'get' (goal_id 'current') to resume a goal after compaction or restart.",
 			"When AXON work is complete, read the axon board, then use cortex action 'verify' to check against the goal's success criteria before final review.",
-			"Do not silently stop with incomplete actionable goals; complete them, cancel them, or escalate blockers/unsafe uncertainty with AMYGDALA evidence.",
+			"Do not silently stop with incomplete actionable, failed, or skipped goals; complete them, cancel them with evidence, record retryability, or escalate blockers/unsafe uncertainty with AMYGDALA evidence.",
+			"Respect risk_gate_mode: strict blocks, auto_deliberate needs MAGI/AMYGDALA approval evidence, user_accepted needs scoped user acceptance, disabled requires explicit dangerous opt-in evidence.",
 		],
 		parameters: CortexToolParams,
 
@@ -212,7 +213,14 @@ export default function (pi: ExtensionAPI) {
 					if (!p.evidence) return fail(action, "block requires `evidence`.");
 					return runOp(store, action, (s) => {
 						const id = resolveGoalId(s, p.goal_id)!;
-						const g = s.block(id, { reason: p.reason!, evidence: p.evidence, related_ids: p.related_ids });
+						const g = s.block(id, {
+							reason: p.reason!,
+							evidence: p.evidence,
+							related_ids: p.related_ids,
+							next_revisit_at: p.next_revisit_at,
+							unblock_conditions: p.unblock_conditions,
+							terminal_resolution: p.terminal_resolution,
+						});
 						return ok(action, `Blocked ${g.id}: ${g.blocker?.reason ?? p.reason}.`, { goal: g });
 					});
 				}
@@ -223,7 +231,14 @@ export default function (pi: ExtensionAPI) {
 					if (!p.evidence) return fail(action, "escalate requires `evidence`.");
 					return runOp(store, action, (s) => {
 						const id = resolveGoalId(s, p.goal_id)!;
-						const g = s.escalate(id, { reason: p.reason!, evidence: p.evidence, related_ids: p.related_ids });
+						const g = s.escalate(id, {
+							reason: p.reason!,
+							evidence: p.evidence,
+							related_ids: p.related_ids,
+							next_revisit_at: p.next_revisit_at,
+							unblock_conditions: p.unblock_conditions,
+							terminal_resolution: p.terminal_resolution,
+						});
 						return ok(action, `Escalated ${g.id} to AMYGDALA: ${g.blocker?.reason ?? p.reason}.`, { goal: g });
 					});
 				}
@@ -231,10 +246,15 @@ export default function (pi: ExtensionAPI) {
 				case "drain": {
 					return runOp(store, action, (s) => {
 						const run = s.startDrain({ policy_name: p.policy_name, max_goals: p.max_goals, evidence: p.evidence, force: p.force });
+						const ids = (xs: string[]) => xs.length ? xs.map((id) => `\`${id}\``).join(", ") : "—";
 						const text = [
 							`Drain ${run.id}: ${run.status}`,
-							`actionable: ${run.actionable_goal_ids.length ? run.actionable_goal_ids.map((id) => `\`${id}\``).join(", ") : "—"}`,
-							`blocked/needs_amygdala: ${run.blocked_goal_ids.length ? run.blocked_goal_ids.map((id) => `\`${id}\``).join(", ") : "—"}`,
+							`workable: ${ids(run.workable_goal_ids)}`,
+							`actionable: ${ids(run.actionable_goal_ids)}`,
+							`due_revisit: ${ids(run.due_revisit_goal_ids)}`,
+							`retryable: ${ids(run.retryable_goal_ids)} · classify: ${ids(run.needs_retry_classification_goal_ids)}`,
+							`waiting blocked/needs_amygdala: ${ids(run.waiting_goal_ids)}`,
+							`risk gate: ${run.risk_gate_mode}; accepted: ${ids(run.risk_accepted_goal_ids)}`,
 							`policy: ${run.policy.name}; budgets max_goals=${run.policy.max_goals}, replans=${run.policy.max_replans_per_goal}, retries=${run.policy.max_retries_per_goal}, no_progress=${run.policy.max_no_progress_iterations}`,
 						].join("\n");
 						return ok(action, text, { drain_run: run });
@@ -244,14 +264,69 @@ export default function (pi: ExtensionAPI) {
 				case "get_config": {
 					return runQuery(store, action, (s) => {
 						const config = s.getConfig();
-						return ok(action, `CORTEX config: drain_mode=${config.drain_mode}, default_drain_policy=${config.default_drain_policy}.`, { config });
+						return ok(action, `CORTEX config: drain_mode=${config.drain_mode}, default_drain_policy=${config.default_drain_policy}, risk_gate_mode=${config.risk_gate_mode}.`, { config });
 					});
 				}
 
 				case "set_config": {
 					return runOp(store, action, (s) => {
-						const config = s.setConfig({ drain_mode: p.drain_mode, default_drain_policy: p.default_drain_policy });
-						return ok(action, `Updated CORTEX config: drain_mode=${config.drain_mode}, default_drain_policy=${config.default_drain_policy}.`, { config });
+						const config = s.setConfig({
+							drain_mode: p.drain_mode,
+							default_drain_policy: p.default_drain_policy,
+							risk_gate_mode: p.risk_gate_mode,
+							risk_gate_evidence: p.risk_gate_evidence,
+							dangerous_opt_in: p.dangerous_opt_in,
+						});
+						return ok(action, `Updated CORTEX config: drain_mode=${config.drain_mode}, default_drain_policy=${config.default_drain_policy}, risk_gate_mode=${config.risk_gate_mode}.`, { config });
+					});
+				}
+
+				case "accept_risk": {
+					if (!p.goal_id) return fail(action, "accept_risk requires `goal_id`.");
+					if (!p.reason) return fail(action, "accept_risk requires `reason`.");
+					if (!p.evidence) return fail(action, "accept_risk requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.acceptRisk(id, {
+							reason: p.reason!,
+							evidence: p.evidence,
+							actor: p.actor,
+							scope: p.scope,
+							expires_at: p.expires_at,
+							related_ids: p.related_ids,
+							mode: p.risk_gate_mode === "auto_deliberate" || p.risk_gate_mode === "user_accepted" || p.risk_gate_mode === "disabled" ? p.risk_gate_mode : undefined,
+						});
+						return ok(action, `Accepted risk for ${g.id}: ${g.risk_acceptance?.reason ?? p.reason}.`, { goal: g });
+					});
+				}
+
+				case "record_failure": {
+					if (!p.goal_id) return fail(action, "record_failure requires `goal_id`.");
+					if (!p.reason) return fail(action, "record_failure requires `reason`.");
+					if (!p.evidence) return fail(action, "record_failure requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.recordFailure(id, {
+							reason: p.reason!,
+							evidence: p.evidence,
+							related_ids: p.related_ids,
+							retryability: p.retryability,
+							next_retry_at: p.next_retry_at,
+							max_attempts: p.max_attempts,
+							terminal_resolution: p.terminal_resolution,
+						});
+						return ok(action, `Recorded failure for ${g.id}: retryability=${g.failure?.retryability ?? "unknown"}.`, { goal: g });
+					});
+				}
+
+				case "reopen": {
+					if (!p.goal_id) return fail(action, "reopen requires `goal_id`.");
+					if (!p.reason) return fail(action, "reopen requires `reason`.");
+					if (!p.evidence) return fail(action, "reopen requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.reopen(id, { reason: p.reason!, evidence: p.evidence, related_ids: p.related_ids });
+						return ok(action, `Reopened ${g.id}; status=${g.status}.`, { goal: g });
 					});
 				}
 
@@ -293,7 +368,7 @@ export default function (pi: ExtensionAPI) {
 							`# CORTEX — ${project}`,
 							``,
 							`**${goals.length}** goal(s) · current: \`${s.current_goal_id ?? s.current()?.id ?? "—"}\``,
-							`**drain:** ${config.drain_mode} · policy: ${config.default_drain_policy}`,
+							`**drain:** ${config.drain_mode} · policy: ${config.default_drain_policy} · risk gate: ${config.risk_gate_mode}`,
 							``,
 							active.length ? `## Active` : `_(no active goals)_`,
 							...active.map((g) => `- ${STATUS_HINT(g.status)} \`${g.id}\` — ${g.goal}`),
