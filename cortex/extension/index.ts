@@ -20,18 +20,25 @@ import { CortexStore } from "./backend.ts";
 import {
 	type CortexAction,
 	CortexError,
+	type CortexConfig,
 	CortexToolParams,
 	type CortexToolInput,
+	type DrainMode,
+	type DrainPolicyName,
 	type Goal,
 	type GoalStatus,
+	type RiskGateMode,
 	type VerifyRecommendation,
 } from "./schema.ts";
+import type { ConfigInput } from "./store.ts";
 import { renderCortexCall, renderCortexResult, summarizeGoal, summarizeGoalList } from "./render.ts";
 
 interface CortexDetails {
 	action: string;
 	goal?: Goal;
 	goals?: Goal[];
+	drain_run?: import("./schema.ts").DrainRun;
+	config?: import("./schema.ts").CortexConfig;
 	error?: string;
 }
 
@@ -92,20 +99,21 @@ export default function (pi: ExtensionAPI) {
 		description: [
 			"Main reasoning core: turn a user prompt into a durable goal (intent, success criteria, risks),",
 			"decide whether MAGI is needed, store an execution plan, link AXON tasks, and verify completion.",
-			"Goals persist across compaction/restart. Actions: analyze, plan, link, verify, complete, cancel,",
-			"get, list, summary, set_current.",
+			"Goals persist across compaction/restart. Actions: analyze, plan, link, verify, complete, block, escalate, accept_risk, record_failure, reopen, cancel, drain,",
+			"get_config, set_config, get, list, summary, set_current.",
 		].join(" "),
 		promptSnippet: "Run CORTEX: analyze intent into a durable goal, plan, link AXON tasks, verify",
 		promptGuidelines: [
 			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
-			"After explicit NERVous activation, default to draining all actionable incomplete CORTEX goals in the active context: list/summary goals, resume each one, verify/complete it, then continue until none remain.",
+			"After explicit NERVous activation, check CORTEX config; unless drain_mode=off, default to draining all workable incomplete CORTEX goals, including due revisits and retryable/classification-needed failures.",
 			"When explaining a NERVous workflow, prefer a compact checklist of component → action/status → evidence; avoid verbose restatement.",
 			"Use the cortex tool action 'analyze' at the start of non-trivial new work to capture intent, success criteria, constraints, and risks as a durable goal.",
 			"After cortex analyze, if needs_magi is true or the decision is hard/risky/ambiguous/architectural, convene the magi tool before cortex plan; otherwise proceed to cortex plan.",
 			"Use cortex tool action 'plan' to store the execution plan, then create each subtask in AXON (axon create) and record the ids with cortex action 'link'.",
 			"Use cortex tool action 'get' (goal_id 'current') to resume a goal after compaction or restart.",
 			"When AXON work is complete, read the axon board, then use cortex action 'verify' to check against the goal's success criteria before final review.",
-			"Do not silently stop with incomplete actionable goals; complete them, cancel them, or escalate blockers/unsafe uncertainty with AMYGDALA evidence.",
+			"Do not silently stop with incomplete actionable, failed, or skipped goals; complete them, cancel them with evidence, record retryability, or escalate blockers/unsafe uncertainty with AMYGDALA evidence.",
+			"Respect risk_gate_mode: strict blocks, auto_deliberate needs MAGI/AMYGDALA approval evidence, user_accepted needs scoped user acceptance, disabled requires explicit dangerous opt-in evidence.",
 		],
 		parameters: CortexToolParams,
 
@@ -204,6 +212,129 @@ export default function (pi: ExtensionAPI) {
 					});
 				}
 
+				case "block": {
+					if (!p.goal_id) return fail(action, "block requires `goal_id`.");
+					if (!p.reason) return fail(action, "block requires `reason`.");
+					if (!p.evidence) return fail(action, "block requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.block(id, {
+							reason: p.reason!,
+							evidence: p.evidence,
+							related_ids: p.related_ids,
+							next_revisit_at: p.next_revisit_at,
+							unblock_conditions: p.unblock_conditions,
+							terminal_resolution: p.terminal_resolution,
+						});
+						return ok(action, `Blocked ${g.id}: ${g.blocker?.reason ?? p.reason}.`, { goal: g });
+					});
+				}
+
+				case "escalate": {
+					if (!p.goal_id) return fail(action, "escalate requires `goal_id`.");
+					if (!p.reason) return fail(action, "escalate requires `reason`.");
+					if (!p.evidence) return fail(action, "escalate requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.escalate(id, {
+							reason: p.reason!,
+							evidence: p.evidence,
+							related_ids: p.related_ids,
+							next_revisit_at: p.next_revisit_at,
+							unblock_conditions: p.unblock_conditions,
+							terminal_resolution: p.terminal_resolution,
+						});
+						return ok(action, `Escalated ${g.id} to AMYGDALA: ${g.blocker?.reason ?? p.reason}.`, { goal: g });
+					});
+				}
+
+				case "drain": {
+					return runOp(store, action, (s) => {
+						const run = s.startDrain({ policy_name: p.policy_name, max_goals: p.max_goals, evidence: p.evidence, force: p.force });
+						const ids = (xs: string[]) => xs.length ? xs.map((id) => `\`${id}\``).join(", ") : "—";
+						const text = [
+							`Drain ${run.id}: ${run.status}`,
+							`workable: ${ids(run.workable_goal_ids)}`,
+							`actionable: ${ids(run.actionable_goal_ids)}`,
+							`due_revisit: ${ids(run.due_revisit_goal_ids)}`,
+							`retryable: ${ids(run.retryable_goal_ids)} · classify: ${ids(run.needs_retry_classification_goal_ids)}`,
+							`waiting blocked/needs_amygdala: ${ids(run.waiting_goal_ids)}`,
+							`risk gate: ${run.risk_gate_mode}; accepted: ${ids(run.risk_accepted_goal_ids)}`,
+							`policy: ${run.policy.name}; budgets max_goals=${run.policy.max_goals}, replans=${run.policy.max_replans_per_goal}, retries=${run.policy.max_retries_per_goal}, no_progress=${run.policy.max_no_progress_iterations}`,
+						].join("\n");
+						return ok(action, text, { drain_run: run });
+					});
+				}
+
+				case "get_config": {
+					return runQuery(store, action, (s) => {
+						const config = s.getConfig();
+						return ok(action, `CORTEX config: drain_mode=${config.drain_mode}, default_drain_policy=${config.default_drain_policy}, risk_gate_mode=${config.risk_gate_mode}.`, { config });
+					});
+				}
+
+				case "set_config": {
+					return runOp(store, action, (s) => {
+						const config = s.setConfig({
+							drain_mode: p.drain_mode,
+							default_drain_policy: p.default_drain_policy,
+							risk_gate_mode: p.risk_gate_mode,
+							risk_gate_evidence: p.risk_gate_evidence,
+							dangerous_opt_in: p.dangerous_opt_in,
+						});
+						return ok(action, `Updated CORTEX config: drain_mode=${config.drain_mode}, default_drain_policy=${config.default_drain_policy}, risk_gate_mode=${config.risk_gate_mode}.`, { config });
+					});
+				}
+
+				case "accept_risk": {
+					if (!p.goal_id) return fail(action, "accept_risk requires `goal_id`.");
+					if (!p.reason) return fail(action, "accept_risk requires `reason`.");
+					if (!p.evidence) return fail(action, "accept_risk requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.acceptRisk(id, {
+							reason: p.reason!,
+							evidence: p.evidence,
+							actor: p.actor,
+							scope: p.scope,
+							expires_at: p.expires_at,
+							related_ids: p.related_ids,
+							mode: p.risk_gate_mode === "auto_deliberate" || p.risk_gate_mode === "user_accepted" || p.risk_gate_mode === "disabled" ? p.risk_gate_mode : undefined,
+						});
+						return ok(action, `Accepted risk for ${g.id}: ${g.risk_acceptance?.reason ?? p.reason}.`, { goal: g });
+					});
+				}
+
+				case "record_failure": {
+					if (!p.goal_id) return fail(action, "record_failure requires `goal_id`.");
+					if (!p.reason) return fail(action, "record_failure requires `reason`.");
+					if (!p.evidence) return fail(action, "record_failure requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.recordFailure(id, {
+							reason: p.reason!,
+							evidence: p.evidence,
+							related_ids: p.related_ids,
+							retryability: p.retryability,
+							next_retry_at: p.next_retry_at,
+							max_attempts: p.max_attempts,
+							terminal_resolution: p.terminal_resolution,
+						});
+						return ok(action, `Recorded failure for ${g.id}: retryability=${g.failure?.retryability ?? "unknown"}.`, { goal: g });
+					});
+				}
+
+				case "reopen": {
+					if (!p.goal_id) return fail(action, "reopen requires `goal_id`.");
+					if (!p.reason) return fail(action, "reopen requires `reason`.");
+					if (!p.evidence) return fail(action, "reopen requires `evidence`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.reopen(id, { reason: p.reason!, evidence: p.evidence, related_ids: p.related_ids });
+						return ok(action, `Reopened ${g.id}; status=${g.status}.`, { goal: g });
+					});
+				}
+
 				case "cancel": {
 					if (!p.goal_id) return fail(action, "cancel requires `goal_id`.");
 					return runOp(store, action, (s) => {
@@ -235,12 +366,14 @@ export default function (pi: ExtensionAPI) {
 						const by_status: Partial<Record<GoalStatus, number>> = {};
 						for (const g of goals) by_status[g.status] = (by_status[g.status] ?? 0) + 1;
 						const active = goals
-							.filter((g) => g.status !== "completed" && g.status !== "cancelled")
+							.filter((g) => g.status !== "completed" && g.status !== "cancelled" && g.status !== "blocked" && g.status !== "needs_amygdala")
 							.map((g) => ({ id: g.id, goal: g.intent.goal || g.prompt, status: g.status }));
+						const config = s.getConfig();
 						const md = [
 							`# CORTEX — ${project}`,
 							``,
 							`**${goals.length}** goal(s) · current: \`${s.current_goal_id ?? s.current()?.id ?? "—"}\``,
+							`**drain:** ${config.drain_mode} · policy: ${config.default_drain_policy} · risk gate: ${config.risk_gate_mode}`,
 							``,
 							active.length ? `## Active` : `_(no active goals)_`,
 							...active.map((g) => `- ${STATUS_HINT(g.status)} \`${g.id}\` — ${g.goal}`),
@@ -299,6 +432,45 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("nervous:config", {
+		description: "Show or set persistent CORTEX drain/risk-gate config used by /nervous",
+		handler: async (args, ctx) => {
+			const store = CortexStore.fromCwd(ctx.cwd);
+			const parsed = parseNervousConfigArgs(args ?? "");
+			if (parsed.errors.length) {
+				ctx.ui.notify(`Invalid NERVous config: ${parsed.errors.join("; ")}`, "error");
+				return;
+			}
+			try {
+				const { result } = parsed.hasChanges
+					? await store.mutate((s) => s.setConfig(parsed.patch))
+					: await store.query((s) => s.getConfig());
+				post(ctx, pi, summarizeConfig(result, parsed.hasChanges), { config: result });
+			} catch (e) {
+				const msg = e instanceof CortexError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
+				ctx.ui.notify(`nervous:config failed: ${msg}`, "error");
+			}
+		},
+		getArgumentCompletions(prefix: string) {
+			const items = [
+				"drain=off",
+				"drain=on_explicit_nervous",
+				"drain=always",
+				"risk=strict",
+				"risk=auto_deliberate",
+				"risk=user_accepted",
+				"risk=disabled",
+				"policy=default",
+				"policy=conservative",
+				"policy=aggressive",
+				"dangerous_opt_in=true",
+				"evidence=\"...\"",
+			];
+			const filtered = items.filter((value) => value.startsWith(prefix));
+			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
+		},
+	});
+
 	pi.registerCommand("cortex:resume", {
 		description: "Print the current goal so work can resume after compaction/restart",
 		handler: async (_args, ctx) => {
@@ -321,13 +493,105 @@ export default function (pi: ExtensionAPI) {
 								? "Next: MAGI final review, then cortex complete."
 								: result.status === "needs_replan"
 									? "Next: revise the plan (cortex plan)."
-									: "Goal is terminal.";
+									: result.status === "blocked" || result.status === "needs_amygdala"
+										? "Goal is waiting with blocker/AMYGDALA evidence; resolve or cancel before drain can act."
+										: "Goal is terminal.";
 			post(ctx, pi, `${summarizeGoal(result)}\n\n---\n**Resume hint:** ${hint}`, { goal: result });
 		},
 	});
 }
 
 /* ----------------------------- helpers ---------------------------------- */
+
+const DRAIN_MODE_VALUES = ["off", "on_explicit_nervous", "always"] as const;
+const RISK_GATE_MODE_VALUES = ["strict", "auto_deliberate", "user_accepted", "disabled"] as const;
+const DRAIN_POLICY_VALUES = ["default", "conservative", "aggressive"] as const;
+
+function splitCommandArgs(input: string): string[] {
+	const tokens: string[] = [];
+	const re = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\S+)/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(input)) !== null) {
+		const raw = m[1] ?? m[2] ?? m[3] ?? "";
+		tokens.push(raw.replace(/\\(["'\\])/g, "$1"));
+	}
+	return tokens;
+}
+
+function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges: boolean; errors: string[] } {
+	const patch: ConfigInput = {};
+	const errors: string[] = [];
+	const tokens = splitCommandArgs(args).filter((token) => !["show", "get", "current"].includes(token.toLowerCase()));
+	const takeValue = (i: number, key: string): { value?: string; next: number } => {
+		const token = tokens[i] ?? "";
+		const eq = token.indexOf("=");
+		if (eq >= 0) return { value: token.slice(eq + 1), next: i };
+		const next = tokens[i + 1];
+		if (!next || next.startsWith("--")) {
+			errors.push(`${key} requires a value`);
+			return { next: i };
+		}
+		return { value: next, next: i + 1 };
+	};
+
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		const rawKey = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
+		const key = rawKey.replace(/^--?/, "").toLowerCase();
+		if (["drain", "drain_mode"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value && (DRAIN_MODE_VALUES as readonly string[]).includes(value)) patch.drain_mode = value as DrainMode;
+			else if (value) errors.push(`invalid drain_mode "${value}"`);
+			continue;
+		}
+		if (["risk", "risk_gate", "risk_gate_mode"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value && (RISK_GATE_MODE_VALUES as readonly string[]).includes(value)) patch.risk_gate_mode = value as RiskGateMode;
+			else if (value) errors.push(`invalid risk_gate_mode "${value}"`);
+			continue;
+		}
+		if (["policy", "default_drain_policy"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value && (DRAIN_POLICY_VALUES as readonly string[]).includes(value)) patch.default_drain_policy = value as DrainPolicyName;
+			else if (value) errors.push(`invalid default_drain_policy "${value}"`);
+			continue;
+		}
+		if (["evidence", "risk_gate_evidence"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value?.trim()) patch.risk_gate_evidence = value.trim();
+			else if (value !== undefined) errors.push("risk_gate_evidence cannot be empty");
+			continue;
+		}
+		if (["dangerous", "dangerous_opt_in", "dangerous-opt-in"].includes(key)) {
+			if (token.includes("=")) {
+				const value = token.slice(token.indexOf("=") + 1).toLowerCase();
+				patch.dangerous_opt_in = !["false", "0", "no"].includes(value);
+			} else {
+				patch.dangerous_opt_in = true;
+			}
+			continue;
+		}
+		errors.push(`unknown option "${rawKey}"`);
+	}
+	return { patch, hasChanges: Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode), errors };
+}
+
+function summarizeConfig(config: CortexConfig, changed: boolean): string {
+	const lines = [
+		`# NERVous CORTEX config${changed ? " updated" : ""}`,
+		"",
+		`- **drain_mode:** ${config.drain_mode}`,
+		`- **risk_gate_mode:** ${config.risk_gate_mode}`,
+		`- **default_drain_policy:** ${config.default_drain_policy}`,
+	];
+	if (config.risk_gate_evidence) lines.push(`- **risk_gate_evidence:** ${config.risk_gate_evidence}`);
+	lines.push("", "Use `/nervous:config risk=strict drain=on_explicit_nervous policy=default` to change defaults.");
+	return lines.join("\n");
+}
 
 function STATUS_HINT(status: GoalStatus): string {
 	switch (status) {
@@ -341,6 +605,10 @@ function STATUS_HINT(status: GoalStatus): string {
 			return "✓";
 		case "needs_replan":
 			return "↻";
+		case "blocked":
+			return "⛔";
+		case "needs_amygdala":
+			return "⚠";
 		case "completed":
 			return "✓";
 		case "cancelled":

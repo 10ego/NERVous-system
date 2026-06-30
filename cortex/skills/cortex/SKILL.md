@@ -12,9 +12,9 @@ The central idea: **capture intent + plan + verification as a durable Goal** so 
 
 ## The CORTEX workflow
 
-Default mode for explicit NERVous activation is **drain the active context**: keep progressing until every actionable incomplete CORTEX goal in the current NERVous context is completed. If a goal cannot safely proceed, escalate it to AMYGDALA or mark it cancelled/blocked with clear evidence; do not silently abandon it.
+Default mode for explicit NERVous activation is **drain the active context**: keep progressing until every workable incomplete CORTEX goal in the current NERVous context is completed. Workable means normal actionable goals, skipped/blocked goals due for revisit, and failed goals due for retry or retryability classification. If a goal cannot safely proceed, escalate it to AMYGDALA or mark it cancelled/blocked with clear evidence and a revisit/retry obligation; when resolved, use `cortex reopen` to move it back to `needs_replan`. Do not silently abandon it.
 
-First call `cortex list` or `cortex summary` to find incomplete goals. For each non-completed/non-cancelled goal, set it current, resume its state, run the workflow below, then move to the next incomplete goal. If the user prompt introduces new work, capture it as a CORTEX goal and include it in the same drain loop.
+First call `cortex get_config`, then apply any explicit `/nervous` invocation config tokens (`drain=...`, `risk=...`, `policy=...`) with `cortex set_config`. Users can persist defaults ahead of time with `/nervous:config`. Then call `cortex drain`, `cortex list`, or `cortex summary` to find incomplete goals. For each non-completed/non-cancelled goal that is actionable, due for revisit, or due for failure classification/retry, set it current, resume its state, run the workflow below, then move to the next incomplete goal. If the user prompt introduces new work, capture it as a CORTEX goal and include it in the same drain loop.
 
 Follow this flow for each goal. Each step uses a tool.
 
@@ -42,7 +42,7 @@ Call `cortex plan` with the goal id and a list of `subtasks` (`title`, `descript
 For each planned subtask, call **axon create** (passing `dependencies` as the *AXON* task ids of upstream tasks once they exist, or create them in dependency order). Then call `cortex link` with `{plan_id, axon_task_id}` pairs (or just `axon_task_id`s) so CORTEX tracks the linkage. This moves the goal to `executing`.
 
 ### 5. Execute
-Do the actual work. As you go: `axon set_status` to move tasks `ready→in_progress→needs_review→completed`, `axon add_note` for durable milestones, and **synapse post** for transient coordination signals (started/completed/blocker/risk/decision) — especially if other agents are involved.
+Do the actual work. As you go: `axon set_status` to move tasks `ready→in_progress→needs_review→completed`, `axon add_note` for durable milestones, and **synapse post** for transient coordination signals (started/completed/blocker/risk/decision) — especially if other agents are involved. If execution fails, call `cortex record_failure` with durable evidence and `retryability` (`unknown`, `retryable`, or `not_retryable`) so drain can classify, retry, or explicitly resolve it instead of skipping it.
 
 ### 6. Verify (`cortex verify`)
 When AXON work is complete, read the **axon summary** (and per-task status). Then call `cortex verify` with a `checks[]` entry per success criterion (`criterion`, `passed`, `evidence`), `all_axon_complete`, and a `recommendation` (approve|revise|replan|escalate_to_magi). Approval → goal `verified` and ready for MAGI final review. Problems → `needs_replan` (revise the plan and repeat).
@@ -55,13 +55,14 @@ Call `cortex complete` (requires `verified`), then deliver the final user-facing
 
 ## Resuming after interruption / compaction
 
-If you've been interrupted or your context was compacted, call **`cortex get`** with `goal_id: "current"` (or `/cortex:resume`). It returns the durable goal — intent, plan, linked AXON tasks, verification status — and a resume hint, so you can continue exactly where you left off. Then read **axon summary** to see task state. After resuming the current goal, return to the drain loop: use `cortex list`/`summary` and continue until no actionable incomplete goals remain.
+If you've been interrupted or your context was compacted, call **`cortex get`** with `goal_id: "current"` (or `/cortex:resume`). It returns the durable goal — intent, plan, linked AXON tasks, verification status, blocker/revisit state, failure/retryability state, and risk acceptance evidence — so you can continue exactly where you left off. Then read **axon summary** to see task state. If due skipped work is now resolved/accepted, call `cortex reopen` to return it to `needs_replan`. After resuming the current goal, return to the drain loop: use `cortex drain`/`list`/`summary` and continue until no workable incomplete goals remain.
 
 ## Key principles
 
 - **AXON is durable state** (the plan + status — source of truth). **SYNAPSE is transient** coordination. **CORTEX** holds the goal/intent/verification that ties them together. Don't duplicate: reference ids.
 - **Capture intent before acting.** A 30-second `cortex analyze` makes the work resumable and verifiable.
-- **Default to draining all actionable incomplete goals** in the active NERVous context after explicit NERVous activation; stop only when goals are completed, cancelled, or blocked/escalated with evidence.
+- **Default to draining all workable incomplete goals** in the active NERVous context after explicit NERVous activation; stop only when goals are completed, cancelled, or waiting with explicit revisit/retry evidence.
+- **Respect `risk_gate_mode`.** `strict` blocks risky work; `auto_deliberate` needs MAGI/AMYGDALA approval evidence; `user_accepted` needs scoped user acceptance; `disabled` requires explicit dangerous opt-in evidence and must be called out.
 - **MAGI is for hard calls, not routine work.** Respect its `needs_magi` signal and also use MAGI when a decision is clearly hard, risky, ambiguous, or architectural.
 - **Verify against the original success criteria**, not just "tasks are done."
 
