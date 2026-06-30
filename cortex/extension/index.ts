@@ -20,12 +20,17 @@ import { CortexStore } from "./backend.ts";
 import {
 	type CortexAction,
 	CortexError,
+	type CortexConfig,
 	CortexToolParams,
 	type CortexToolInput,
+	type DrainMode,
+	type DrainPolicyName,
 	type Goal,
 	type GoalStatus,
+	type RiskGateMode,
 	type VerifyRecommendation,
 } from "./schema.ts";
+import type { ConfigInput } from "./store.ts";
 import { renderCortexCall, renderCortexResult, summarizeGoal, summarizeGoalList } from "./render.ts";
 
 interface CortexDetails {
@@ -427,6 +432,45 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
+	pi.registerCommand("nervous:config", {
+		description: "Show or set persistent CORTEX drain/risk-gate config used by /nervous",
+		handler: async (args, ctx) => {
+			const store = CortexStore.fromCwd(ctx.cwd);
+			const parsed = parseNervousConfigArgs(args ?? "");
+			if (parsed.errors.length) {
+				ctx.ui.notify(`Invalid NERVous config: ${parsed.errors.join("; ")}`, "error");
+				return;
+			}
+			try {
+				const { result } = parsed.hasChanges
+					? await store.mutate((s) => s.setConfig(parsed.patch))
+					: await store.query((s) => s.getConfig());
+				post(ctx, pi, summarizeConfig(result, parsed.hasChanges), { config: result });
+			} catch (e) {
+				const msg = e instanceof CortexError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
+				ctx.ui.notify(`nervous:config failed: ${msg}`, "error");
+			}
+		},
+		getArgumentCompletions(prefix: string) {
+			const items = [
+				"drain=off",
+				"drain=on_explicit_nervous",
+				"drain=always",
+				"risk=strict",
+				"risk=auto_deliberate",
+				"risk=user_accepted",
+				"risk=disabled",
+				"policy=default",
+				"policy=conservative",
+				"policy=aggressive",
+				"dangerous_opt_in=true",
+				"evidence=\"...\"",
+			];
+			const filtered = items.filter((value) => value.startsWith(prefix));
+			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
+		},
+	});
+
 	pi.registerCommand("cortex:resume", {
 		description: "Print the current goal so work can resume after compaction/restart",
 		handler: async (_args, ctx) => {
@@ -458,6 +502,96 @@ export default function (pi: ExtensionAPI) {
 }
 
 /* ----------------------------- helpers ---------------------------------- */
+
+const DRAIN_MODE_VALUES = ["off", "on_explicit_nervous", "always"] as const;
+const RISK_GATE_MODE_VALUES = ["strict", "auto_deliberate", "user_accepted", "disabled"] as const;
+const DRAIN_POLICY_VALUES = ["default", "conservative", "aggressive"] as const;
+
+function splitCommandArgs(input: string): string[] {
+	const tokens: string[] = [];
+	const re = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\S+)/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(input)) !== null) {
+		const raw = m[1] ?? m[2] ?? m[3] ?? "";
+		tokens.push(raw.replace(/\\(["'\\])/g, "$1"));
+	}
+	return tokens;
+}
+
+function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges: boolean; errors: string[] } {
+	const patch: ConfigInput = {};
+	const errors: string[] = [];
+	const tokens = splitCommandArgs(args).filter((token) => !["show", "get", "current"].includes(token.toLowerCase()));
+	const takeValue = (i: number, key: string): { value?: string; next: number } => {
+		const token = tokens[i] ?? "";
+		const eq = token.indexOf("=");
+		if (eq >= 0) return { value: token.slice(eq + 1), next: i };
+		const next = tokens[i + 1];
+		if (!next || next.startsWith("--")) {
+			errors.push(`${key} requires a value`);
+			return { next: i };
+		}
+		return { value: next, next: i + 1 };
+	};
+
+	for (let i = 0; i < tokens.length; i++) {
+		const token = tokens[i]!;
+		const rawKey = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
+		const key = rawKey.replace(/^--?/, "").toLowerCase();
+		if (["drain", "drain_mode"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value && (DRAIN_MODE_VALUES as readonly string[]).includes(value)) patch.drain_mode = value as DrainMode;
+			else if (value) errors.push(`invalid drain_mode "${value}"`);
+			continue;
+		}
+		if (["risk", "risk_gate", "risk_gate_mode"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value && (RISK_GATE_MODE_VALUES as readonly string[]).includes(value)) patch.risk_gate_mode = value as RiskGateMode;
+			else if (value) errors.push(`invalid risk_gate_mode "${value}"`);
+			continue;
+		}
+		if (["policy", "default_drain_policy"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value && (DRAIN_POLICY_VALUES as readonly string[]).includes(value)) patch.default_drain_policy = value as DrainPolicyName;
+			else if (value) errors.push(`invalid default_drain_policy "${value}"`);
+			continue;
+		}
+		if (["evidence", "risk_gate_evidence"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value?.trim()) patch.risk_gate_evidence = value.trim();
+			else if (value !== undefined) errors.push("risk_gate_evidence cannot be empty");
+			continue;
+		}
+		if (["dangerous", "dangerous_opt_in", "dangerous-opt-in"].includes(key)) {
+			if (token.includes("=")) {
+				const value = token.slice(token.indexOf("=") + 1).toLowerCase();
+				patch.dangerous_opt_in = !["false", "0", "no"].includes(value);
+			} else {
+				patch.dangerous_opt_in = true;
+			}
+			continue;
+		}
+		errors.push(`unknown option "${rawKey}"`);
+	}
+	return { patch, hasChanges: Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode), errors };
+}
+
+function summarizeConfig(config: CortexConfig, changed: boolean): string {
+	const lines = [
+		`# NERVous CORTEX config${changed ? " updated" : ""}`,
+		"",
+		`- **drain_mode:** ${config.drain_mode}`,
+		`- **risk_gate_mode:** ${config.risk_gate_mode}`,
+		`- **default_drain_policy:** ${config.default_drain_policy}`,
+	];
+	if (config.risk_gate_evidence) lines.push(`- **risk_gate_evidence:** ${config.risk_gate_evidence}`);
+	lines.push("", "Use `/nervous:config risk=strict drain=on_explicit_nervous policy=default` to change defaults.");
+	return lines.join("\n");
+}
 
 function STATUS_HINT(status: GoalStatus): string {
 	switch (status) {

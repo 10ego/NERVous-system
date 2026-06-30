@@ -74,11 +74,13 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `
 - **`/cortex`** — current goal.
 - **`/cortex:goals`** — all goals.
 - **`/cortex:resume`** — current goal + a "what's next" hint.
+- **`/nervous:config`** — show/set persistent drain/risk defaults used by `/nervous`.
 
 ### Skill + prompt template
 
 - `/skill:cortex` — force-load the workflow skill.
 - **`/cortex <request>`** — run the full CORTEX workflow end-to-end.
+- **`/nervous [drain=...] [risk=...] [policy=...] <request>`** — run the drain workflow and optionally ask the agent to apply invocation config first.
 
 ---
 
@@ -120,16 +122,23 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `
 
 For explicit NERVous activation, CORTEX supports a bounded, policy-driven drain mode via `cortex drain`. A drain run snapshots incomplete goals in the active context, separates normal actionable goals from due revisits (`blocked`, `needs_amygdala` whose `next_revisit_at` is due), retryable/needs-classification failures, and waiting goals, then records durable run evidence/budgets.
 
-Drain mode is togglable with persistent CORTEX config:
+Drain mode is togglable with persistent CORTEX config. Users can set it directly via the tool or with the slash command before invoking `/nervous`:
 
 ```text
+/nervous:config
+/nervous:config drain=on_explicit_nervous risk=strict policy=default
+/nervous:config drain=always risk=auto_deliberate policy=conservative
+/nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"
+
 cortex get_config
-cortex set_config drain_mode="off"
 cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="strict"
-cortex set_config risk_gate_mode="auto_deliberate"
-cortex set_config risk_gate_mode="user_accepted"
-cortex set_config risk_gate_mode="disabled" dangerous_opt_in=true risk_gate_evidence="explicit user-approved automation window"
-cortex set_config drain_mode="always" default_drain_policy="conservative"
+```
+
+For one-off prompt invocation, include config tokens in `/nervous` arguments; the prompt instructs the agent to apply them first:
+
+```text
+/nervous risk=user_accepted drain=always implement the migration
+/nervous risk=disabled dangerous_opt_in=true evidence="approved automation window" run the full backlog
 ```
 
 Modes:

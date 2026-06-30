@@ -1,12 +1,17 @@
 ---
 description: Enable NERVous System workflow for this task
-argument-hint: "[task]"
+argument-hint: "[drain=<off|on_explicit_nervous|always>] [risk=<strict|auto_deliberate|user_accepted|disabled>] [task]"
 ---
-Use the NERVous System for this task: $ARGUMENTS
+Use the NERVous System for this invocation.
+
+Invocation arguments: $ARGUMENTS
+
+Optional configuration tokens may be included in the arguments: `drain=<off|on_explicit_nervous|always>`, `risk=<strict|auto_deliberate|user_accepted|disabled>`, `policy=<default|conservative|aggressive>`, `evidence="..."`, `dangerous_opt_in=true`. If present, first call `cortex set_config` with those values, then treat the remaining arguments as the task. If `risk=disabled` is requested without explicit `dangerous_opt_in=true` and non-empty `evidence`, stop and ask the user for confirmation/evidence instead of proceeding.
 
 Default mode: drain the active NERVous context. Keep progressing until every workable incomplete CORTEX goal in this context is completed. Workable includes normal actionable goals, skipped/blocked goals due for revisit, and failed goals due for retry or retryability classification. If a goal cannot safely proceed, escalate it to AMYGDALA or mark it cancelled/blocked with clear evidence plus revisit/retry metadata; do not silently abandon it.
 
-- Start by checking CORTEX for existing incomplete goals before creating new unrelated goals.
+- Start by checking CORTEX config and applying invocation config tokens if supplied; users can also persist defaults with `/nervous:config` before invoking this prompt.
+- Check CORTEX for existing incomplete goals before creating new unrelated goals.
 - If this prompt introduces new work, capture it in CORTEX, then include it in the same drain loop.
 - Check CORTEX config/risk_gate_mode, then drain/list goals; for each workable CORTEX goal: set/resume it, inspect linked AXON tasks, execute ready/retry/revisit work, verify against success criteria, and complete it when verified.
 - Persist durable subtasks/status in AXON.

@@ -14,7 +14,7 @@ The central idea: **capture intent + plan + verification as a durable Goal** so 
 
 Default mode for explicit NERVous activation is **drain the active context**: keep progressing until every workable incomplete CORTEX goal in the current NERVous context is completed. Workable means normal actionable goals, skipped/blocked goals due for revisit, and failed goals due for retry or retryability classification. If a goal cannot safely proceed, escalate it to AMYGDALA or mark it cancelled/blocked with clear evidence and a revisit/retry obligation; when resolved, use `cortex reopen` to move it back to `needs_replan`. Do not silently abandon it.
 
-First call `cortex get_config`, then `cortex drain`, `cortex list`, or `cortex summary` to find incomplete goals. For each non-completed/non-cancelled goal that is actionable, due for revisit, or due for failure classification/retry, set it current, resume its state, run the workflow below, then move to the next incomplete goal. If the user prompt introduces new work, capture it as a CORTEX goal and include it in the same drain loop.
+First call `cortex get_config`, then apply any explicit `/nervous` invocation config tokens (`drain=...`, `risk=...`, `policy=...`) with `cortex set_config`. Users can persist defaults ahead of time with `/nervous:config`. Then call `cortex drain`, `cortex list`, or `cortex summary` to find incomplete goals. For each non-completed/non-cancelled goal that is actionable, due for revisit, or due for failure classification/retry, set it current, resume its state, run the workflow below, then move to the next incomplete goal. If the user prompt introduces new work, capture it as a CORTEX goal and include it in the same drain loop.
 
 Follow this flow for each goal. Each step uses a tool.
 

@@ -168,8 +168,9 @@ The dashboard opens a modal overlay with tabs for CORTEX, MAGI, AXON, SYNAPSE, L
 CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized:
 
 ```text
-cortex set_config drain_mode="off|on_explicit_nervous|always"
-cortex set_config risk_gate_mode="strict|auto_deliberate|user_accepted|disabled"
+/nervous:config                                    # show persistent defaults
+/nervous:config drain=always risk=auto_deliberate  # set defaults used by /nervous
+/nervous risk=user_accepted implement the migration # one invocation can ask the agent to apply config first
 ```
 
 `strict` is the default. `auto_deliberate` proceeds only with recorded MAGI/AMYGDALA approval evidence, `user_accepted` requires scoped user acceptance evidence, and `disabled` requires an explicit dangerous opt-in plus audit evidence. Failed work is recorded with retryability via `cortex record_failure`; skipped/blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.

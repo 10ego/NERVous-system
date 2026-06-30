@@ -40,5 +40,6 @@ describe("cortex extension factory", () => {
 		assert.ok(names.includes("cortex"), "/cortex registered");
 		assert.ok(names.includes("cortex:goals"), "/cortex:goals registered");
 		assert.ok(names.includes("cortex:resume"), "/cortex:resume registered");
+		assert.ok(names.includes("nervous:config"), "/nervous:config registered");
 	});
 });
