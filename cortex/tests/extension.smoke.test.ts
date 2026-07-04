@@ -212,6 +212,24 @@ describe("cortex extension factory", () => {
 		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
 	});
 
+	it("accepts quoted evidence with spaces for guarded disabled risk config", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+
+		await withTempCortex(async (dir) => {
+			await command.handler(
+				'risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"',
+				commandCtx(dir),
+			);
+		});
+
+		const output = String(captured.messages[0]?.content ?? "");
+		assert.match(output, /NERVous CORTEX config updated/);
+		assert.match(output, /\*\*risk_gate_mode:\*\* disabled/);
+		assert.match(output, /\*\*risk_gate_evidence:\*\* explicit user-approved automation window/);
+	});
+
 	it("does not allow disabled risk gate from the menu without confirmation", async () => {
 		const { pi, captured } = stubPi();
 		factory(pi);

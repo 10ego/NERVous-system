@@ -708,12 +708,42 @@ function hasConfigChanges(patch: ConfigInput): boolean {
 
 function splitCommandArgs(input: string): string[] {
 	const tokens: string[] = [];
-	const re = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\S+)/g;
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(input)) !== null) {
-		const raw = m[1] ?? m[2] ?? m[3] ?? "";
-		tokens.push(raw.replace(/\\(["'\\])/g, "$1"));
+	let token = "";
+	let quote: '"' | "'" | undefined;
+	for (let i = 0; i < input.length; i++) {
+		const ch = input[i]!;
+		if (quote) {
+			if (ch === "\\") {
+				const next = input[i + 1];
+				if (next === quote || next === "\\") {
+					token += next;
+					i++;
+				} else {
+					token += ch;
+				}
+				continue;
+			}
+			if (ch === quote) {
+				quote = undefined;
+				continue;
+			}
+			token += ch;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			quote = ch;
+			continue;
+		}
+		if (/\s/.test(ch)) {
+			if (token) {
+				tokens.push(token);
+				token = "";
+			}
+			continue;
+		}
+		token += ch;
 	}
+	if (token) tokens.push(token);
 	return tokens;
 }
 
