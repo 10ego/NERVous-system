@@ -796,12 +796,12 @@ function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges:
 			continue;
 		}
 		if (["dangerous", "dangerous_opt_in", "dangerous-opt-in"].includes(key)) {
-			if (token.includes("=")) {
-				const value = token.slice(token.indexOf("=") + 1).toLowerCase();
-				patch.dangerous_opt_in = !["false", "0", "no"].includes(value);
-			} else {
-				patch.dangerous_opt_in = true;
-			}
+			const { value, next } = takeValue(i, key);
+			i = next;
+			const normalized = value?.toLowerCase();
+			if (normalized === "true") patch.dangerous_opt_in = true;
+			else if (normalized === "false") patch.dangerous_opt_in = false;
+			else if (value !== undefined) errors.push(`invalid dangerous_opt_in "${value}"; use true or false`);
 			continue;
 		}
 		errors.push(`unknown option "${rawKey}"`);
