@@ -198,11 +198,11 @@ describe("GoalStore — transitions", () => {
 });
 
 describe("GoalStore — config", () => {
-	it("defaults drain mode and risk gate to safe explicit activation", () => {
+	it("defaults drain mode and risk gate to explicit auto-deliberation", () => {
 		const s = store();
 		assert.equal(s.getConfig().drain_mode, "on_explicit_nervous");
 		assert.equal(s.getConfig().default_drain_policy, "default");
-		assert.equal(s.getConfig().risk_gate_mode, "strict");
+		assert.equal(s.getConfig().risk_gate_mode, "auto_deliberate");
 	});
 
 	it("sets and persists drain/risk gate config", () => {

@@ -15,7 +15,8 @@
  */
 
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, Key, matchesKey, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import { CortexStore } from "./backend.ts";
 import {
 	type CortexAction,
@@ -436,38 +437,36 @@ export default function (pi: ExtensionAPI) {
 		description: "Show or set persistent CORTEX drain/risk-gate config used by /nervous",
 		handler: async (args, ctx) => {
 			const store = CortexStore.fromCwd(ctx.cwd);
-			const parsed = parseNervousConfigArgs(args ?? "");
+			const rawArgs = args ?? "";
+			const parsed = parseNervousConfigArgs(rawArgs);
 			if (parsed.errors.length) {
 				ctx.ui.notify(`Invalid NERVous config: ${parsed.errors.join("; ")}`, "error");
 				return;
 			}
 			try {
-				const { result } = parsed.hasChanges
-					? await store.mutate((s) => s.setConfig(parsed.patch))
-					: await store.query((s) => s.getConfig());
-				post(ctx, pi, summarizeConfig(result, parsed.hasChanges), { config: result });
+				if (parsed.hasChanges) {
+					const { result } = await store.mutate((s) => s.setConfig(parsed.patch));
+					post(ctx, pi, summarizeConfig(result, true), { config: result });
+					return;
+				}
+
+				const { result: config } = await store.query((s) => s.getConfig());
+				if (shouldOpenConfigMenu(rawArgs, ctx)) {
+					const menuResult = await showNervousConfigMenu(store, config, ctx);
+					if (menuResult.kind === "fallback") post(ctx, pi, summarizeConfig(config, false), { config });
+					return;
+				}
+
+				post(ctx, pi, summarizeConfig(config, false), { config });
 			} catch (e) {
 				const msg = e instanceof CortexError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
 				ctx.ui.notify(`nervous:config failed: ${msg}`, "error");
 			}
 		},
 		getArgumentCompletions(prefix: string) {
-			const items = [
-				"drain=off",
-				"drain=on_explicit_nervous",
-				"drain=always",
-				"risk=strict",
-				"risk=auto_deliberate",
-				"risk=user_accepted",
-				"risk=disabled",
-				"policy=default",
-				"policy=conservative",
-				"policy=aggressive",
-				"dangerous_opt_in=true",
-				"evidence=\"...\"",
-			];
-			const filtered = items.filter((value) => value.startsWith(prefix));
-			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
+			const normalized = prefix.toLowerCase();
+			const filtered = CONFIG_COMPLETIONS.filter((item) => item.value.toLowerCase().startsWith(normalized));
+			return filtered.length ? filtered : null;
 		},
 	});
 
@@ -507,14 +506,288 @@ const DRAIN_MODE_VALUES = ["off", "on_explicit_nervous", "always"] as const;
 const RISK_GATE_MODE_VALUES = ["strict", "auto_deliberate", "user_accepted", "disabled"] as const;
 const DRAIN_POLICY_VALUES = ["default", "conservative", "aggressive"] as const;
 
+const DRAIN_MODE_DESCRIPTIONS: Record<DrainMode, string> = {
+	off: "disable automatic drain; only explicit forced drain can run",
+	on_explicit_nervous: "drain when /nervous is explicitly invoked",
+	always: "default to draining/resuming actionable incomplete goals",
+};
+
+const RISK_GATE_MODE_DESCRIPTIONS: Record<RiskGateMode, string> = {
+	strict: "block or escalate risky work unless explicit evidence is recorded elsewhere",
+	auto_deliberate: "allow risky work only with recorded MAGI/AMYGDALA approval evidence",
+	user_accepted: "allow risky work only with scoped user acceptance evidence",
+	disabled: "dangerous opt-in; requires dangerous_opt_in=true and non-empty evidence",
+};
+
+const DRAIN_POLICY_DESCRIPTIONS: Record<DrainPolicyName, string> = {
+	default: "balanced drain budgets and retry/replan limits",
+	conservative: "smaller, safer drain budgets",
+	aggressive: "larger, more proactive drain budgets",
+};
+
+const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
+	...DRAIN_MODE_VALUES.map((value) => ({ value: `drain=${value}`, label: `drain=${value} — ${DRAIN_MODE_DESCRIPTIONS[value]}` })),
+	...RISK_GATE_MODE_VALUES.map((value) => ({ value: `risk=${value}`, label: `risk=${value} — ${RISK_GATE_MODE_DESCRIPTIONS[value]}` })),
+	...DRAIN_POLICY_VALUES.map((value) => ({ value: `policy=${value}`, label: `policy=${value} — ${DRAIN_POLICY_DESCRIPTIONS[value]}` })),
+	{ value: "dangerous_opt_in=true", label: "dangerous_opt_in=true — required with risk=disabled" },
+	{ value: 'evidence="..."', label: 'evidence="..." — audit note; required with risk=disabled' },
+];
+
+type ConfigMenuResult = { kind: "closed" } | { kind: "fallback" };
+
+interface ConfigDraft {
+	drain_mode: DrainMode;
+	risk_gate_mode: RiskGateMode;
+	default_drain_policy: DrainPolicyName;
+	risk_gate_evidence?: string;
+}
+
+function shouldOpenConfigMenu(args: string, ctx: ExtensionContext): boolean {
+	return args.trim().length === 0 && ctx.mode === "tui" && typeof ctx.ui.custom === "function";
+}
+
+async function showNervousConfigMenu(
+	store: CortexStore,
+	config: CortexConfig,
+	ctx: ExtensionContext,
+): Promise<ConfigMenuResult> {
+	const current: ConfigDraft = {
+		drain_mode: config.drain_mode,
+		risk_gate_mode: config.risk_gate_mode,
+		default_drain_policy: config.default_drain_policy,
+		risk_gate_evidence: config.risk_gate_evidence,
+	};
+
+	try {
+		await ctx.ui.custom<void>((tui, theme, _keybindings, done) => {
+			const container = new Container();
+			container.addChild(new Text(theme.fg("accent", theme.bold("NERVous CORTEX Config")), 1, 1));
+			container.addChild(
+				new Text(theme.fg("dim", "Select a value to apply it immediately. Esc closes the menu."), 1, 0),
+			);
+
+			let settingsList: SettingsList;
+			let disabledPrompt: { previous: ConfigDraft; evidence: string; applying: boolean } | undefined;
+
+			const updateSettingsList = () => {
+				settingsList.updateValue("drain_mode", current.drain_mode);
+				settingsList.updateValue("risk_gate_mode", current.risk_gate_mode);
+				settingsList.updateValue("default_drain_policy", current.default_drain_policy);
+				settingsList.updateValue("risk_gate_evidence", current.risk_gate_evidence ?? "(none)");
+			};
+
+			const revert = (previous: ConfigDraft, id: string) => {
+				Object.assign(current, previous);
+				settingsList.updateValue(id, configValueForId(previous, id));
+				settingsList.updateValue("risk_gate_evidence", previous.risk_gate_evidence ?? "(none)");
+				tui.requestRender();
+			};
+
+			const persistChange = async (id: string, patch: ConfigInput, previous: ConfigDraft) => {
+				try {
+					const { result } = await store.mutate((s) => s.setConfig(patch));
+					current.drain_mode = result.drain_mode;
+					current.risk_gate_mode = result.risk_gate_mode;
+					current.default_drain_policy = result.default_drain_policy;
+					current.risk_gate_evidence = result.risk_gate_evidence;
+					updateSettingsList();
+					ctx.ui.notify(`NERVous config updated: ${id}=${configValueForId(current, id)}`, "info");
+					tui.requestRender();
+				} catch (e) {
+					revert(previous, id);
+					const msg = e instanceof CortexError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
+					ctx.ui.notify(`nervous:config failed: ${msg}`, "error");
+				}
+			};
+
+			const applyChange = (id: string, newValue: string) => {
+				const previous = { ...current };
+				let patch: ConfigInput | undefined;
+				if (id === "drain_mode" && (DRAIN_MODE_VALUES as readonly string[]).includes(newValue)) {
+					patch = { drain_mode: newValue as DrainMode };
+				} else if (id === "default_drain_policy" && (DRAIN_POLICY_VALUES as readonly string[]).includes(newValue)) {
+					patch = { default_drain_policy: newValue as DrainPolicyName };
+				} else if (id === "risk_gate_mode" && (RISK_GATE_MODE_VALUES as readonly string[]).includes(newValue)) {
+					if (newValue === "disabled") {
+						disabledPrompt = {
+							previous,
+							evidence: `approved via /nervous:config TUI at ${new Date().toISOString()}`,
+							applying: false,
+						};
+						tui.requestRender();
+						return;
+					}
+					patch = { risk_gate_mode: newValue as RiskGateMode };
+				}
+				if (!patch) {
+					revert(previous, id);
+					return;
+				}
+				void persistChange(id, patch, previous);
+			};
+
+			const confirmDisabledRiskGate = () => {
+				if (!disabledPrompt || disabledPrompt.applying) return;
+				disabledPrompt.applying = true;
+				const { previous, evidence } = disabledPrompt;
+				void persistChange(
+					"risk_gate_mode",
+					{ risk_gate_mode: "disabled", dangerous_opt_in: true, risk_gate_evidence: evidence },
+					previous,
+				).finally(() => {
+					disabledPrompt = undefined;
+					tui.requestRender();
+				});
+			};
+
+			const cancelDisabledRiskGate = () => {
+				if (!disabledPrompt) return;
+				revert(disabledPrompt.previous, "risk_gate_mode");
+				disabledPrompt = undefined;
+				ctx.ui.notify("NERVous config unchanged; disabled risk gate was not confirmed.", "warning");
+				tui.requestRender();
+			};
+
+			settingsList = new SettingsList(
+				configMenuItems(current),
+				6,
+				getSettingsListTheme(),
+				(id, newValue) => applyChange(id, newValue),
+				() => done(undefined),
+				{ enableSearch: true },
+			);
+			container.addChild(settingsList);
+			return {
+				render(width: number) {
+					if (disabledPrompt) return renderDisabledRiskPrompt(width, theme, disabledPrompt.evidence, disabledPrompt.applying);
+					return container.render(width);
+				},
+				invalidate() {
+					container.invalidate();
+				},
+				handleInput(data: string) {
+					if (disabledPrompt) {
+						if (matchesKey(data, Key.enter) || data.toLowerCase() === "y") confirmDisabledRiskGate();
+						else if (matchesKey(data, Key.escape) || data.toLowerCase() === "n") cancelDisabledRiskGate();
+						tui.requestRender();
+						return;
+					}
+					settingsList.handleInput(data);
+					tui.requestRender();
+				},
+			};
+		});
+	} catch (e) {
+		const msg = e instanceof Error ? e.message : String(e);
+		ctx.ui.notify(`NERVous config menu unavailable; showing text config instead. ${msg}`, "warning");
+		return { kind: "fallback" };
+	}
+
+	return { kind: "closed" };
+}
+
+function configMenuItems(current: ConfigDraft): SettingItem[] {
+	return [
+		{
+			id: "drain_mode",
+			label: "Drain mode",
+			description: `When CORTEX drain resumes incomplete goals. ${formatInlineDescriptions(DRAIN_MODE_VALUES, DRAIN_MODE_DESCRIPTIONS)}`,
+			currentValue: current.drain_mode,
+			values: [...DRAIN_MODE_VALUES],
+		},
+		{
+			id: "risk_gate_mode",
+			label: "Risk gate",
+			description: `How risky work is authorized. Default: auto_deliberate. Hard-stop work still needs recorded MAGI/AMYGDALA evidence. ${formatInlineDescriptions(RISK_GATE_MODE_VALUES, RISK_GATE_MODE_DESCRIPTIONS)}`,
+			currentValue: current.risk_gate_mode,
+			values: [...RISK_GATE_MODE_VALUES],
+		},
+		{
+			id: "default_drain_policy",
+			label: "Drain policy",
+			description: `Drain budget/retry posture. ${formatInlineDescriptions(DRAIN_POLICY_VALUES, DRAIN_POLICY_DESCRIPTIONS)}`,
+			currentValue: current.default_drain_policy,
+			values: [...DRAIN_POLICY_VALUES],
+		},
+		{
+			id: "risk_gate_evidence",
+			label: "Disabled evidence",
+			description: "Audit note used only for risk_gate_mode=disabled. Selecting disabled prompts for this value.",
+			currentValue: current.risk_gate_evidence ?? "(none)",
+		},
+	];
+}
+
+function configValueForId(config: ConfigDraft, id: string): string {
+	if (id === "drain_mode") return config.drain_mode;
+	if (id === "risk_gate_mode") return config.risk_gate_mode;
+	if (id === "default_drain_policy") return config.default_drain_policy;
+	if (id === "risk_gate_evidence") return config.risk_gate_evidence ?? "(none)";
+	return "";
+}
+
+function renderDisabledRiskPrompt(width: number, theme: any, evidence: string, applying: boolean): string[] {
+	const warning = new Container();
+	warning.addChild(new Text(theme.fg("warning", theme.bold("Enable disabled risk gate?")), 1, 1));
+	warning.addChild(
+		new Text(
+			theme.fg(
+				"warning",
+				"This is a dangerous opt-in. Disabled mode still records evidence, but it bypasses normal risk-gate blocking.",
+			),
+			1,
+			0,
+		),
+	);
+	warning.addChild(new Text(theme.fg("muted", `Evidence: ${evidence}`), 1, 1));
+	warning.addChild(
+		new Text(
+			theme.fg("dim", applying ? "Applying…" : "Enter/Y to confirm • Esc/N to cancel and return to settings"),
+			1,
+			0,
+		),
+	);
+	return warning.render(width);
+}
+
 function splitCommandArgs(input: string): string[] {
 	const tokens: string[] = [];
-	const re = /"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|(\S+)/g;
-	let m: RegExpExecArray | null;
-	while ((m = re.exec(input)) !== null) {
-		const raw = m[1] ?? m[2] ?? m[3] ?? "";
-		tokens.push(raw.replace(/\\(["'\\])/g, "$1"));
+	let token = "";
+	let quote: '"' | "'" | undefined;
+	for (let i = 0; i < input.length; i++) {
+		const ch = input[i]!;
+		if (quote) {
+			if (ch === "\\") {
+				const next = input[i + 1];
+				if (next === quote || next === "\\") {
+					token += next;
+					i++;
+				} else {
+					token += ch;
+				}
+				continue;
+			}
+			if (ch === quote) {
+				quote = undefined;
+				continue;
+			}
+			token += ch;
+			continue;
+		}
+		if (ch === '"' || ch === "'") {
+			quote = ch;
+			continue;
+		}
+		if (/\s/.test(ch)) {
+			if (token) {
+				tokens.push(token);
+				token = "";
+			}
+			continue;
+		}
+		token += ch;
 	}
+	if (token) tokens.push(token);
 	return tokens;
 }
 
@@ -567,12 +840,12 @@ function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges:
 			continue;
 		}
 		if (["dangerous", "dangerous_opt_in", "dangerous-opt-in"].includes(key)) {
-			if (token.includes("=")) {
-				const value = token.slice(token.indexOf("=") + 1).toLowerCase();
-				patch.dangerous_opt_in = !["false", "0", "no"].includes(value);
-			} else {
-				patch.dangerous_opt_in = true;
-			}
+			const { value, next } = takeValue(i, key);
+			i = next;
+			const normalized = value?.toLowerCase();
+			if (normalized === "true") patch.dangerous_opt_in = true;
+			else if (normalized === "false") patch.dangerous_opt_in = false;
+			else if (value !== undefined) errors.push(`invalid dangerous_opt_in "${value}"; use true or false`);
 			continue;
 		}
 		errors.push(`unknown option "${rawKey}"`);
@@ -580,17 +853,53 @@ function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges:
 	return { patch, hasChanges: Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode), errors };
 }
 
-function summarizeConfig(config: CortexConfig, changed: boolean): string {
+export function summarizeConfig(config: CortexConfig, changed: boolean): string {
 	const lines = [
 		`# NERVous CORTEX config${changed ? " updated" : ""}`,
 		"",
-		`- **drain_mode:** ${config.drain_mode}`,
-		`- **risk_gate_mode:** ${config.risk_gate_mode}`,
-		`- **default_drain_policy:** ${config.default_drain_policy}`,
+		"## Current defaults",
+		"| Setting | Current | Meaning |",
+		"|---|---|---|",
+		`| \`drain_mode\` | \`${config.drain_mode}\` | When drain resumes incomplete goals. |`,
+		`| \`risk_gate_mode\` | \`${config.risk_gate_mode}\` | How risky work is authorized. |`,
+		`| \`default_drain_policy\` | \`${config.default_drain_policy}\` | Drain budget/retry posture. |`,
 	];
-	if (config.risk_gate_evidence) lines.push(`- **risk_gate_evidence:** ${config.risk_gate_evidence}`);
-	lines.push("", "Use `/nervous:config risk=strict drain=on_explicit_nervous policy=default` to change defaults.");
+	if (config.risk_gate_evidence) lines.push(`| \`risk_gate_evidence\` | ${config.risk_gate_evidence} | Audit evidence for disabled risk gate mode. |`);
+	lines.push(
+		"",
+		"## Usage",
+		"- Open the TUI menu: `/nervous:config`",
+		"- Print this help: `/nervous:config show`",
+		"- Set values directly: `/nervous:config drain=always risk=auto_deliberate policy=default`",
+		"",
+		"## Options",
+		"",
+		"### Drain mode",
+		"Aliases: `drain`, `drain_mode`",
+		...formatOptionTable(DRAIN_MODE_VALUES, DRAIN_MODE_DESCRIPTIONS),
+		"",
+		"### Risk gate",
+		"Aliases: `risk`, `risk_gate`, `risk_gate_mode`",
+		"Default: `auto_deliberate` — hard-stop work still needs recorded MAGI/AMYGDALA approval evidence.",
+		...formatOptionTable(RISK_GATE_MODE_VALUES, RISK_GATE_MODE_DESCRIPTIONS),
+		"",
+		"### Drain policy",
+		"Aliases: `policy`, `default_drain_policy`",
+		...formatOptionTable(DRAIN_POLICY_VALUES, DRAIN_POLICY_DESCRIPTIONS),
+		"",
+		"### Advanced disabled risk gate",
+		"- Requires exact `dangerous_opt_in=true` plus non-empty `evidence` / `risk_gate_evidence`.",
+		'- Example: `/nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"`',
+	);
 	return lines.join("\n");
+}
+
+function formatOptionTable<T extends string>(values: readonly T[], descriptions: Record<T, string>): string[] {
+	return ["| Value | Meaning |", "|---|---|", ...values.map((value) => `| \`${value}\` | ${descriptions[value]} |`)];
+}
+
+function formatInlineDescriptions<T extends string>(values: readonly T[], descriptions: Record<T, string>): string {
+	return values.map((value) => `${value}: ${descriptions[value]}`).join("; ");
 }
 
 function STATUS_HINT(status: GoalStatus): string {

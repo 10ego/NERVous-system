@@ -59,7 +59,7 @@ cortex link goal_id="goal-001" links=[{plan_id="plan-001",axon_task_id="task-001
 cortex verify goal_id="goal-001" checks=[{criterion="...",passed=true,evidence="..."}] all_axon_complete=true
 cortex complete goal_id="goal-001"
 cortex get_config
-cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="strict"
+cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="auto_deliberate"
 cortex accept_risk goal_id="goal-001" reason="User accepted scoped risk" evidence="approval ticket-123" actor="user" scope="goal-001"
 cortex record_failure goal_id="goal-001" reason="LION run failed" evidence="lion-run-003" retryability="retryable"
 cortex reopen goal_id="goal-001" reason="AMYGDALA accepted mitigation" evidence="amygdala-001 resolved"
@@ -74,7 +74,7 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `
 - **`/cortex`** — current goal.
 - **`/cortex:goals`** — all goals.
 - **`/cortex:resume`** — current goal + a "what's next" hint.
-- **`/nervous:config`** — show/set persistent drain/risk defaults used by `/nervous`.
+- **`/nervous:config`** — open a TUI menu or show/set persistent drain/risk defaults used by `/nervous`.
 
 ### Skill + prompt template
 
@@ -126,13 +126,16 @@ Drain mode is togglable with persistent CORTEX config. Users can set it directly
 
 ```text
 /nervous:config
-/nervous:config drain=on_explicit_nervous risk=strict policy=default
-/nervous:config drain=always risk=auto_deliberate policy=conservative
+/nervous:config show
+/nervous:config drain=on_explicit_nervous risk=auto_deliberate policy=default
+/nervous:config drain=always risk=strict policy=conservative
 /nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"
 
 cortex get_config
-cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="strict"
+cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="auto_deliberate"
 ```
+
+In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, and drain policy. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
 
 For one-off prompt invocation, include config tokens in `/nervous` arguments; the prompt instructs the agent to apply them first:
 
@@ -151,8 +154,8 @@ Policies: `default`, `conservative`, `aggressive`. The configured `default_drain
 
 Risk gate modes:
 
-- `strict` — safe default; hard-stop signals are escalated to `needs_amygdala` with revisit evidence.
-- `auto_deliberate` — risky work may proceed only after MAGI/AMYGDALA approval is recorded with `cortex accept_risk ... risk_gate_mode="auto_deliberate"`.
+- `strict` — hard-stop signals are escalated to `needs_amygdala` with revisit evidence.
+- `auto_deliberate` — default; risky work may proceed only after MAGI/AMYGDALA approval is recorded with `cortex accept_risk ... risk_gate_mode="auto_deliberate"`.
 - `user_accepted` — risky work may proceed only after scoped user acceptance evidence is recorded with `cortex accept_risk`.
 - `disabled` — dangerous explicit opt-in; requires `dangerous_opt_in=true` and `risk_gate_evidence`, and drain records accepted-risk evidence instead of silently bypassing gates.
 
