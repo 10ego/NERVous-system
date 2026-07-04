@@ -1,14 +1,18 @@
 import * as assert from "node:assert";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "vitest";
 import factory, { summarizeConfig } from "../extension/index.ts";
 
 interface Captured {
 	tools: Array<Record<string, unknown>>;
 	commands: Array<{ name: string; options: Record<string, unknown> }>;
+	messages: Array<Record<string, unknown>>;
 }
 
 function stubPi(): { pi: any; captured: Captured } {
-	const captured: Captured = { tools: [], commands: [] };
+	const captured: Captured = { tools: [], commands: [], messages: [] };
 	const pi: any = {
 		registerTool(def: Record<string, unknown>) {
 			captured.tools.push(def);
@@ -16,8 +20,43 @@ function stubPi(): { pi: any; captured: Captured } {
 		registerCommand(name: string, options: Record<string, unknown>) {
 			captured.commands.push({ name, options });
 		},
+		sendMessage(message: Record<string, unknown>) {
+			captured.messages.push(message);
+		},
 	};
 	return { pi, captured };
+}
+
+function nervousConfigCommand(captured: Captured): any {
+	const command = captured.commands.find((c) => c.name === "nervous:config");
+	assert.ok(command, "/nervous:config registered");
+	return command.options;
+}
+
+async function withTempCortex<T>(fn: (dir: string) => Promise<T>): Promise<T> {
+	const old = process.env.CORTEX_PATH;
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cortex-command-test-"));
+	process.env.CORTEX_PATH = path.join(dir, "cortex.json");
+	try {
+		return await fn(dir);
+	} finally {
+		if (old === undefined) delete process.env.CORTEX_PATH;
+		else process.env.CORTEX_PATH = old;
+	}
+}
+
+function commandCtx(dir: string, overrides: Record<string, unknown> = {}): any {
+	return {
+		cwd: dir,
+		mode: "print",
+		hasUI: true,
+		ui: {
+			notify() {},
+			confirm: async () => false,
+			input: async () => undefined,
+		},
+		...overrides,
+	};
 }
 
 describe("cortex extension factory", () => {
@@ -48,7 +87,7 @@ describe("cortex extension factory", () => {
 			{
 				drain_mode: "on_explicit_nervous",
 				default_drain_policy: "default",
-				risk_gate_mode: "strict",
+				risk_gate_mode: "auto_deliberate",
 				updated_at: "2026-07-03T00:00:00.000Z",
 			},
 			false,
@@ -68,12 +107,140 @@ describe("cortex extension factory", () => {
 	it("labels /nervous:config completions with option meanings", () => {
 		const { pi, captured } = stubPi();
 		factory(pi);
-		const command = captured.commands.find((c) => c.name === "nervous:config");
-		assert.ok(command, "/nervous:config registered");
+		const command = nervousConfigCommand(captured);
 
-		const complete = command.options.getArgumentCompletions as (prefix: string) => Array<{ value: string; label: string }> | null;
+		const complete = command.getArgumentCompletions as (prefix: string) => Array<{ value: string; label: string }> | null;
 		const completions = complete("risk=auto") ?? [];
 		assert.deepEqual(completions.map((item) => item.value), ["risk=auto_deliberate"]);
 		assert.match(completions[0]?.label ?? "", /MAGI\/AMYGDALA approval evidence/);
+	});
+
+	it("prints markdown config with the auto_deliberate default outside TUI", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+
+		await withTempCortex(async (dir) => {
+			await command.handler("", commandCtx(dir));
+		});
+
+		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
+	});
+
+	it("opens a TUI config menu on empty args and saves staged values", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+		let openedMenu = false;
+
+		await withTempCortex(async (dir) => {
+			await command.handler(
+				"",
+				commandCtx(dir, {
+					mode: "tui",
+					ui: {
+						notify() {},
+						confirm: async () => false,
+						input: async () => undefined,
+						custom: async () => {
+							openedMenu = true;
+							return { drain_mode: "always", risk_gate_mode: "strict", default_drain_policy: "aggressive" };
+						},
+					},
+				}),
+			);
+		});
+
+		assert.equal(openedMenu, true);
+		const output = String(captured.messages[0]?.content ?? "");
+		assert.match(output, /NERVous CORTEX config updated/);
+		assert.match(output, /\*\*drain_mode:\*\* always/);
+		assert.match(output, /\*\*risk_gate_mode:\*\* strict/);
+		assert.match(output, /\*\*default_drain_policy:\*\* aggressive/);
+	});
+
+	it("falls back to markdown when the TUI menu is unavailable", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+		const notifications: string[] = [];
+
+		await withTempCortex(async (dir) => {
+			await command.handler(
+				"",
+				commandCtx(dir, {
+					mode: "tui",
+					ui: {
+						notify(message: string) {
+							notifications.push(message);
+						},
+						custom: async () => {
+							throw new Error("custom unavailable");
+						},
+					},
+				}),
+			);
+		});
+
+		assert.match(notifications.join("\n"), /menu unavailable/);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
+	});
+
+	it("keeps explicit show/get behavior as markdown in TUI", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+		let openedMenu = false;
+
+		await withTempCortex(async (dir) => {
+			await command.handler(
+				"show",
+				commandCtx(dir, {
+					mode: "tui",
+					ui: {
+						notify() {},
+						custom: async () => {
+							openedMenu = true;
+							return undefined;
+						},
+					},
+				}),
+			);
+		});
+
+		assert.equal(openedMenu, false);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
+	});
+
+	it("does not allow disabled risk gate from the menu without confirmation", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+		const notifications: string[] = [];
+
+		await withTempCortex(async (dir) => {
+			await command.handler(
+				"",
+				commandCtx(dir, {
+					mode: "tui",
+					ui: {
+						notify(message: string) {
+							notifications.push(message);
+						},
+						confirm: async () => false,
+						input: async () => "should-not-be-used",
+						custom: async () => ({
+							drain_mode: "on_explicit_nervous",
+							risk_gate_mode: "disabled",
+							default_drain_policy: "default",
+						}),
+					},
+				}),
+			);
+			await command.handler("show", commandCtx(dir));
+		});
+
+		assert.match(notifications.join("\n"), /disabled risk gate was not confirmed/);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
 	});
 });

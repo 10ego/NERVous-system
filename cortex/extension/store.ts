@@ -340,7 +340,7 @@ export class GoalStore {
 	}
 
 	private static defaultConfig(ts = now()): CortexConfig {
-		return { drain_mode: "on_explicit_nervous", default_drain_policy: "default", risk_gate_mode: "strict", updated_at: ts };
+		return { drain_mode: "on_explicit_nervous", default_drain_policy: "default", risk_gate_mode: "auto_deliberate", updated_at: ts };
 	}
 
 	private static coerceDrainRun(id: string, raw: unknown): DrainRun | null {

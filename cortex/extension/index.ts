@@ -15,7 +15,8 @@
  */
 
 import * as path from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import { CortexStore } from "./backend.ts";
 import {
 	type CortexAction,
@@ -436,16 +437,31 @@ export default function (pi: ExtensionAPI) {
 		description: "Show or set persistent CORTEX drain/risk-gate config used by /nervous",
 		handler: async (args, ctx) => {
 			const store = CortexStore.fromCwd(ctx.cwd);
-			const parsed = parseNervousConfigArgs(args ?? "");
+			const rawArgs = args ?? "";
+			const parsed = parseNervousConfigArgs(rawArgs);
 			if (parsed.errors.length) {
 				ctx.ui.notify(`Invalid NERVous config: ${parsed.errors.join("; ")}`, "error");
 				return;
 			}
 			try {
-				const { result } = parsed.hasChanges
-					? await store.mutate((s) => s.setConfig(parsed.patch))
-					: await store.query((s) => s.getConfig());
-				post(ctx, pi, summarizeConfig(result, parsed.hasChanges), { config: result });
+				if (parsed.hasChanges) {
+					const { result } = await store.mutate((s) => s.setConfig(parsed.patch));
+					post(ctx, pi, summarizeConfig(result, true), { config: result });
+					return;
+				}
+
+				const { result: config } = await store.query((s) => s.getConfig());
+				if (shouldOpenConfigMenu(rawArgs, ctx)) {
+					const menuResult = await showNervousConfigMenu(store, config, ctx);
+					if (menuResult.kind === "updated") {
+						post(ctx, pi, summarizeConfig(menuResult.config, true), { config: menuResult.config });
+					} else if (menuResult.kind === "fallback") {
+						post(ctx, pi, summarizeConfig(config, false), { config });
+					}
+					return;
+				}
+
+				post(ctx, pi, summarizeConfig(config, false), { config });
 			} catch (e) {
 				const msg = e instanceof CortexError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
 				ctx.ui.notify(`nervous:config failed: ${msg}`, "error");
@@ -520,6 +536,175 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 	{ value: "dangerous_opt_in=true", label: "dangerous_opt_in=true — required with risk=disabled" },
 	{ value: 'evidence="..."', label: 'evidence="..." — audit note; required with risk=disabled' },
 ];
+
+type ConfigMenuResult =
+	| { kind: "updated"; config: CortexConfig }
+	| { kind: "cancelled" }
+	| { kind: "fallback" };
+
+interface ConfigDraft {
+	drain_mode: DrainMode;
+	risk_gate_mode: RiskGateMode;
+	default_drain_policy: DrainPolicyName;
+}
+
+function shouldOpenConfigMenu(args: string, ctx: ExtensionContext): boolean {
+	return args.trim().length === 0 && ctx.mode === "tui" && typeof ctx.ui.custom === "function";
+}
+
+async function showNervousConfigMenu(
+	store: CortexStore,
+	config: CortexConfig,
+	ctx: ExtensionContext,
+): Promise<ConfigMenuResult> {
+	const draft: ConfigDraft = {
+		drain_mode: config.drain_mode,
+		risk_gate_mode: config.risk_gate_mode,
+		default_drain_policy: config.default_drain_policy,
+	};
+
+	let selection: ConfigDraft | undefined;
+	try {
+		selection = await ctx.ui.custom<ConfigDraft | undefined>((tui, theme, _keybindings, done) => {
+			const container = new Container();
+			container.addChild(new Text(theme.fg("accent", theme.bold("NERVous CORTEX Config")), 1, 1));
+			container.addChild(
+				new Text(
+					theme.fg(
+						"dim",
+						"Edit defaults used by /nervous. Changes are staged until Save; Esc or Cancel discards them.",
+					),
+					1,
+					0,
+				),
+			);
+
+			const settingsList = new SettingsList(
+				configMenuItems(draft, config),
+				8,
+				getSettingsListTheme(),
+				(id, newValue) => {
+					if (id === "drain_mode" && (DRAIN_MODE_VALUES as readonly string[]).includes(newValue)) {
+						draft.drain_mode = newValue as DrainMode;
+					} else if (id === "risk_gate_mode" && (RISK_GATE_MODE_VALUES as readonly string[]).includes(newValue)) {
+						draft.risk_gate_mode = newValue as RiskGateMode;
+					} else if (id === "default_drain_policy" && (DRAIN_POLICY_VALUES as readonly string[]).includes(newValue)) {
+						draft.default_drain_policy = newValue as DrainPolicyName;
+					} else if (id === "save") {
+						done({ ...draft });
+					} else if (id === "cancel") {
+						done(undefined);
+					}
+				},
+				() => done(undefined),
+				{ enableSearch: true },
+			);
+			container.addChild(settingsList);
+			return {
+				render(width: number) {
+					return container.render(width);
+				},
+				invalidate() {
+					container.invalidate();
+				},
+				handleInput(data: string) {
+					settingsList.handleInput(data);
+					tui.requestRender();
+				},
+			};
+		});
+	} catch {
+		ctx.ui.notify("NERVous config menu unavailable; showing text config instead.", "warning");
+		return { kind: "fallback" };
+	}
+
+	if (!selection) return { kind: "cancelled" };
+
+	const patch = configPatch(config, selection);
+	if (!hasConfigChanges(patch)) {
+		ctx.ui.notify("NERVous config unchanged.", "info");
+		return { kind: "cancelled" };
+	}
+
+	if (patch.risk_gate_mode === "disabled") {
+		const confirmed = await ctx.ui.confirm(
+			"Enable disabled risk gate?",
+			"This is a dangerous opt-in. It requires explicit user approval and a non-empty audit evidence note.",
+		);
+		if (!confirmed) {
+			ctx.ui.notify("NERVous config unchanged; disabled risk gate was not confirmed.", "warning");
+			return { kind: "cancelled" };
+		}
+		const evidence = await ctx.ui.input("risk_gate_evidence", config.risk_gate_evidence ?? "explicit user-approved automation window");
+		if (!evidence?.trim()) {
+			ctx.ui.notify("NERVous config unchanged; risk_gate_mode=disabled requires evidence.", "error");
+			return { kind: "cancelled" };
+		}
+		patch.dangerous_opt_in = true;
+		patch.risk_gate_evidence = evidence.trim();
+	}
+
+	const { result } = await store.mutate((s) => s.setConfig(patch));
+	return { kind: "updated", config: result };
+}
+
+function configMenuItems(draft: ConfigDraft, config: CortexConfig): SettingItem[] {
+	return [
+		{
+			id: "drain_mode",
+			label: "Drain mode",
+			description: `When CORTEX drain should resume incomplete goals. ${formatInlineDescriptions(DRAIN_MODE_VALUES, DRAIN_MODE_DESCRIPTIONS)}`,
+			currentValue: draft.drain_mode,
+			values: [...DRAIN_MODE_VALUES],
+		},
+		{
+			id: "risk_gate_mode",
+			label: "Risk gate",
+			description: `How risky work is authorized. Default is auto_deliberate; hard-stop work still needs recorded MAGI/AMYGDALA evidence. ${formatInlineDescriptions(RISK_GATE_MODE_VALUES, RISK_GATE_MODE_DESCRIPTIONS)}`,
+			currentValue: draft.risk_gate_mode,
+			values: [...RISK_GATE_MODE_VALUES],
+		},
+		{
+			id: "default_drain_policy",
+			label: "Drain policy",
+			description: `Drain budget/retry posture. ${formatInlineDescriptions(DRAIN_POLICY_VALUES, DRAIN_POLICY_DESCRIPTIONS)}`,
+			currentValue: draft.default_drain_policy,
+			values: [...DRAIN_POLICY_VALUES],
+		},
+		{
+			id: "risk_gate_evidence",
+			label: "Disabled-mode evidence",
+			description: "Audit note required only when saving risk_gate_mode=disabled. The menu prompts for it when needed; token form: evidence=\"...\".",
+			currentValue: config.risk_gate_evidence ?? "(none)",
+		},
+		{
+			id: "save",
+			label: "Save and close",
+			description: "Persist the staged CORTEX config defaults.",
+			currentValue: "enter",
+			values: ["save"],
+		},
+		{
+			id: "cancel",
+			label: "Cancel",
+			description: "Discard staged changes and close the menu.",
+			currentValue: "enter",
+			values: ["cancel"],
+		},
+	];
+}
+
+function configPatch(config: CortexConfig, draft: ConfigDraft): ConfigInput {
+	const patch: ConfigInput = {};
+	if (draft.drain_mode !== config.drain_mode) patch.drain_mode = draft.drain_mode;
+	if (draft.risk_gate_mode !== config.risk_gate_mode) patch.risk_gate_mode = draft.risk_gate_mode;
+	if (draft.default_drain_policy !== config.default_drain_policy) patch.default_drain_policy = draft.default_drain_policy;
+	return patch;
+}
+
+function hasConfigChanges(patch: ConfigInput): boolean {
+	return Boolean(patch.drain_mode || patch.risk_gate_mode || patch.default_drain_policy);
+}
 
 function splitCommandArgs(input: string): string[] {
 	const tokens: string[] = [];
@@ -629,6 +814,10 @@ function formatValues(values: readonly string[]): string {
 
 function formatDescriptions<T extends string>(values: readonly T[], descriptions: Record<T, string>): string[] {
 	return values.map((value) => `  - \`${value}\`: ${descriptions[value]}`);
+}
+
+function formatInlineDescriptions<T extends string>(values: readonly T[], descriptions: Record<T, string>): string {
+	return values.map((value) => `${value}: ${descriptions[value]}`).join("; ");
 }
 
 function STATUS_HINT(status: GoalStatus): string {

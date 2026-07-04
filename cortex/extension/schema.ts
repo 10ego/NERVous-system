@@ -197,7 +197,7 @@ export interface CortexConfig {
 	/** off disables cortex drain unless force=true; on_explicit_nervous is the safe default; always is explicit opt-in. */
 	drain_mode: DrainMode;
 	default_drain_policy: DrainPolicyName;
-	/** strict is the safe default; weaker modes require durable approval/evidence before risky work proceeds. */
+	/** auto_deliberate is the default; non-strict modes require durable approval/evidence before risky work proceeds. */
 	risk_gate_mode: RiskGateMode;
 	/** Audit evidence required when risk_gate_mode=disabled. */
 	risk_gate_evidence?: string;
