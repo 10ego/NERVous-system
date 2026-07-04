@@ -135,7 +135,7 @@ cortex get_config
 cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="auto_deliberate"
 ```
 
-In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, and drain policy. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
+In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, and drain policy. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
 
 For one-off prompt invocation, include config tokens in `/nervous` arguments; the prompt instructs the agent to apply them first:
 

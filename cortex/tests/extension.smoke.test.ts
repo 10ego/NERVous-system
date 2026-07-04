@@ -2,6 +2,7 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { initTheme } from "@earendil-works/pi-coding-agent";
 import { describe, it } from "vitest";
 import factory, { summarizeConfig } from "../extension/index.ts";
 
@@ -12,6 +13,7 @@ interface Captured {
 }
 
 function stubPi(): { pi: any; captured: Captured } {
+	initTheme("dark");
 	const captured: Captured = { tools: [], commands: [], messages: [] };
 	const pi: any = {
 		registerTool(def: Record<string, unknown>) {
@@ -59,6 +61,15 @@ function commandCtx(dir: string, overrides: Record<string, unknown> = {}): any {
 	};
 }
 
+const testTheme = {
+	fg: (_name: string, text: string) => text,
+	bold: (text: string) => text,
+};
+
+async function settleUiWork(): Promise<void> {
+	await new Promise((resolve) => setTimeout(resolve, 30));
+}
+
 describe("cortex extension factory", () => {
 	it("registers the cortex tool and /cortex* commands without throwing", () => {
 		const { pi, captured } = stubPi();
@@ -93,14 +104,21 @@ describe("cortex extension factory", () => {
 			false,
 		);
 
+		assert.match(output, /## Current defaults/);
+		assert.match(output, /\| `risk_gate_mode` \| `auto_deliberate` \|/);
+		assert.match(output, /## Usage/);
 		assert.match(output, /## Options/);
-		assert.match(output, /`drain` \/ `drain_mode`/);
-		assert.match(output, /`always`: default to draining\/resuming actionable incomplete goals/);
-		assert.match(output, /`risk` \/ `risk_gate` \/ `risk_gate_mode`/);
-		assert.match(output, /`auto_deliberate`: allow risky work only with recorded MAGI\/AMYGDALA approval evidence/);
-		assert.match(output, /`policy` \/ `default_drain_policy`/);
-		assert.match(output, /`aggressive`: larger, more proactive drain budgets/);
-		assert.match(output, /`dangerous_opt_in=true`/);
+		assert.match(output, /### Drain mode/);
+		assert.match(output, /Aliases: `drain`, `drain_mode`/);
+		assert.match(output, /\| `always` \| default to draining\/resuming actionable incomplete goals \|/);
+		assert.match(output, /### Risk gate/);
+		assert.match(output, /Aliases: `risk`, `risk_gate`, `risk_gate_mode`/);
+		assert.match(output, /\| `auto_deliberate` \| allow risky work only with recorded MAGI\/AMYGDALA approval evidence \|/);
+		assert.match(output, /### Drain policy/);
+		assert.match(output, /Aliases: `policy`, `default_drain_policy`/);
+		assert.match(output, /\| `aggressive` \| larger, more proactive drain budgets \|/);
+		assert.match(output, /### Advanced disabled risk gate/);
+		assert.match(output, /Requires exact `dangerous_opt_in=true`/);
 		assert.match(output, /risk=disabled dangerous_opt_in=true evidence=/);
 	});
 
@@ -124,14 +142,15 @@ describe("cortex extension factory", () => {
 			await command.handler("", commandCtx(dir));
 		});
 
-		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 	});
 
-	it("opens a TUI config menu on empty args and saves staged values", async () => {
+	it("opens a TUI config menu on empty args and applies selected values immediately", async () => {
 		const { pi, captured } = stubPi();
 		factory(pi);
 		const command = nervousConfigCommand(captured);
 		let openedMenu = false;
+		let rendered = "";
 
 		await withTempCortex(async (dir) => {
 			await command.handler(
@@ -142,21 +161,25 @@ describe("cortex extension factory", () => {
 						notify() {},
 						confirm: async () => false,
 						input: async () => undefined,
-						custom: async () => {
+						custom: async (factoryFn: any) => {
 							openedMenu = true;
-							return { drain_mode: "always", risk_gate_mode: "strict", default_drain_policy: "aggressive" };
+							const component = factoryFn({ requestRender() {} }, testTheme, {}, () => undefined);
+							rendered = component.render(120).join("\n");
+							component.handleInput(" "); // Drain mode: on_explicit_nervous -> always.
+							await settleUiWork();
+							return undefined;
 						},
 					},
 				}),
 			);
+			await command.handler("show", commandCtx(dir));
 		});
 
 		assert.equal(openedMenu, true);
+		assert.doesNotMatch(rendered, /Save and close/);
+		assert.doesNotMatch(rendered, /Cancel/);
 		const output = String(captured.messages[0]?.content ?? "");
-		assert.match(output, /NERVous CORTEX config updated/);
-		assert.match(output, /\*\*drain_mode:\*\* always/);
-		assert.match(output, /\*\*risk_gate_mode:\*\* strict/);
-		assert.match(output, /\*\*default_drain_policy:\*\* aggressive/);
+		assert.match(output, /\| `drain_mode` \| `always` \|/);
 	});
 
 	it("falls back to markdown when the TUI menu is unavailable", async () => {
@@ -183,7 +206,7 @@ describe("cortex extension factory", () => {
 		});
 
 		assert.match(notifications.join("\n"), /menu unavailable/);
-		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 	});
 
 	it("keeps explicit show/get behavior as markdown in TUI", async () => {
@@ -209,7 +232,7 @@ describe("cortex extension factory", () => {
 		});
 
 		assert.equal(openedMenu, false);
-		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 	});
 
 	it("rejects malformed dangerous opt-in values for disabled risk config", async () => {
@@ -234,7 +257,7 @@ describe("cortex extension factory", () => {
 			});
 
 			assert.match(notifications.join("\n"), /Invalid NERVous config/);
-			assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
+			assert.match(String(captured.messages[0]?.content ?? ""), /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 		}
 	});
 
@@ -252,8 +275,8 @@ describe("cortex extension factory", () => {
 
 		const output = String(captured.messages[0]?.content ?? "");
 		assert.match(output, /NERVous CORTEX config updated/);
-		assert.match(output, /\*\*risk_gate_mode:\*\* disabled/);
-		assert.match(output, /\*\*risk_gate_evidence:\*\* explicit user-approved automation window/);
+		assert.match(output, /\| `risk_gate_mode` \| `disabled` \|/);
+		assert.match(output, /\| `risk_gate_evidence` \| explicit user-approved automation window \|/);
 	});
 
 	it("does not allow disabled risk gate from the menu without confirmation", async () => {
@@ -263,6 +286,8 @@ describe("cortex extension factory", () => {
 		const notifications: string[] = [];
 
 		await withTempCortex(async (dir) => {
+			await command.handler("risk=user_accepted", commandCtx(dir));
+			captured.messages.length = 0;
 			await command.handler(
 				"",
 				commandCtx(dir, {
@@ -273,11 +298,13 @@ describe("cortex extension factory", () => {
 						},
 						confirm: async () => false,
 						input: async () => "should-not-be-used",
-						custom: async () => ({
-							drain_mode: "on_explicit_nervous",
-							risk_gate_mode: "disabled",
-							default_drain_policy: "default",
-						}),
+						custom: async (factoryFn: any) => {
+							const component = factoryFn({ requestRender() {} }, testTheme, {}, () => undefined);
+							for (const ch of "risk") component.handleInput(ch);
+							component.handleInput(" "); // Risk gate: user_accepted -> disabled; should be rejected and reverted.
+							await settleUiWork();
+							return undefined;
+						},
 					},
 				}),
 			);
@@ -285,6 +312,6 @@ describe("cortex extension factory", () => {
 		});
 
 		assert.match(notifications.join("\n"), /disabled risk gate was not confirmed/);
-		assert.match(String(captured.messages[0]?.content ?? ""), /\*\*risk_gate_mode:\*\* auto_deliberate/);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\| `risk_gate_mode` \| `user_accepted` \|/);
 	});
 });

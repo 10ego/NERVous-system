@@ -168,7 +168,7 @@ The dashboard opens a modal overlay with tabs for CORTEX, MAGI, AXON, SYNAPSE, L
 CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized:
 
 ```text
-/nervous:config                                    # open TUI settings menu; falls back to text outside TUI
+/nervous:config                                    # open TUI settings menu; selected values apply immediately
 /nervous:config show                               # show persistent defaults as markdown
 /nervous:config drain=always risk=auto_deliberate  # set defaults used by /nervous
 /nervous risk=user_accepted implement the migration # one invocation can ask the agent to apply config first
