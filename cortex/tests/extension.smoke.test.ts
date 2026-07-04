@@ -279,6 +279,52 @@ describe("cortex extension factory", () => {
 		assert.match(output, /\| `risk_gate_evidence` \| explicit user-approved automation window \|/);
 	});
 
+	it("confirms disabled risk gate in-menu without opening nested dialogs", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+		const notifications: string[] = [];
+		let warning = "";
+
+		await withTempCortex(async (dir) => {
+			await command.handler("risk=user_accepted", commandCtx(dir));
+			captured.messages.length = 0;
+			await command.handler(
+				"",
+				commandCtx(dir, {
+					mode: "tui",
+					ui: {
+						notify(message: string) {
+							notifications.push(message);
+						},
+						confirm: async () => {
+							throw new Error("nested confirm should not open");
+						},
+						input: async () => {
+							throw new Error("nested input should not open");
+						},
+						custom: async (factoryFn: any) => {
+							const component = factoryFn({ requestRender() {} }, testTheme, {}, () => undefined);
+							for (const ch of "risk") component.handleInput(ch);
+							component.handleInput(" "); // Risk gate: user_accepted -> disabled; opens in-menu warning.
+							await settleUiWork();
+							warning = component.render(120).join("\n");
+							component.handleInput("y");
+							await settleUiWork();
+							return undefined;
+						},
+					},
+				}),
+			);
+			await command.handler("show", commandCtx(dir));
+		});
+
+		assert.match(warning, /Enable disabled risk gate/);
+		assert.doesNotMatch(notifications.join("\n"), /menu unavailable/);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\| `risk_gate_mode` \| `disabled` \|/);
+		assert.match(String(captured.messages[0]?.content ?? ""), /approved via \/nervous:config TUI/);
+	});
+
 	it("does not allow disabled risk gate from the menu without confirmation", async () => {
 		const { pi, captured } = stubPi();
 		factory(pi);
@@ -301,7 +347,9 @@ describe("cortex extension factory", () => {
 						custom: async (factoryFn: any) => {
 							const component = factoryFn({ requestRender() {} }, testTheme, {}, () => undefined);
 							for (const ch of "risk") component.handleInput(ch);
-							component.handleInput(" "); // Risk gate: user_accepted -> disabled; should be rejected and reverted.
+							component.handleInput(" "); // Risk gate: user_accepted -> disabled; opens in-menu warning.
+							await settleUiWork();
+							component.handleInput("n"); // Reject and revert.
 							await settleUiWork();
 							return undefined;
 						},
