@@ -1,6 +1,6 @@
 import * as assert from "node:assert";
 import { describe, it } from "vitest";
-import factory from "../extension/index.ts";
+import factory, { summarizeConfig } from "../extension/index.ts";
 
 interface Captured {
 	tools: Array<Record<string, unknown>>;
@@ -41,5 +41,39 @@ describe("cortex extension factory", () => {
 		assert.ok(names.includes("cortex:goals"), "/cortex:goals registered");
 		assert.ok(names.includes("cortex:resume"), "/cortex:resume registered");
 		assert.ok(names.includes("nervous:config"), "/nervous:config registered");
+	});
+
+	it("shows detailed /nervous:config hints", () => {
+		const output = summarizeConfig(
+			{
+				drain_mode: "on_explicit_nervous",
+				default_drain_policy: "default",
+				risk_gate_mode: "strict",
+				updated_at: "2026-07-03T00:00:00.000Z",
+			},
+			false,
+		);
+
+		assert.match(output, /## Options/);
+		assert.match(output, /`drain` \/ `drain_mode`/);
+		assert.match(output, /`always`: default to draining\/resuming actionable incomplete goals/);
+		assert.match(output, /`risk` \/ `risk_gate` \/ `risk_gate_mode`/);
+		assert.match(output, /`auto_deliberate`: allow risky work only with recorded MAGI\/AMYGDALA approval evidence/);
+		assert.match(output, /`policy` \/ `default_drain_policy`/);
+		assert.match(output, /`aggressive`: larger, more proactive drain budgets/);
+		assert.match(output, /`dangerous_opt_in=true`/);
+		assert.match(output, /risk=disabled dangerous_opt_in=true evidence=/);
+	});
+
+	it("labels /nervous:config completions with option meanings", () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = captured.commands.find((c) => c.name === "nervous:config");
+		assert.ok(command, "/nervous:config registered");
+
+		const complete = command.options.getArgumentCompletions as (prefix: string) => Array<{ value: string; label: string }> | null;
+		const completions = complete("risk=auto") ?? [];
+		assert.deepEqual(completions.map((item) => item.value), ["risk=auto_deliberate"]);
+		assert.match(completions[0]?.label ?? "", /MAGI\/AMYGDALA approval evidence/);
 	});
 });

@@ -452,22 +452,9 @@ export default function (pi: ExtensionAPI) {
 			}
 		},
 		getArgumentCompletions(prefix: string) {
-			const items = [
-				"drain=off",
-				"drain=on_explicit_nervous",
-				"drain=always",
-				"risk=strict",
-				"risk=auto_deliberate",
-				"risk=user_accepted",
-				"risk=disabled",
-				"policy=default",
-				"policy=conservative",
-				"policy=aggressive",
-				"dangerous_opt_in=true",
-				"evidence=\"...\"",
-			];
-			const filtered = items.filter((value) => value.startsWith(prefix));
-			return filtered.length ? filtered.map((value) => ({ value, label: value })) : null;
+			const normalized = prefix.toLowerCase();
+			const filtered = CONFIG_COMPLETIONS.filter((item) => item.value.toLowerCase().startsWith(normalized));
+			return filtered.length ? filtered : null;
 		},
 	});
 
@@ -506,6 +493,33 @@ export default function (pi: ExtensionAPI) {
 const DRAIN_MODE_VALUES = ["off", "on_explicit_nervous", "always"] as const;
 const RISK_GATE_MODE_VALUES = ["strict", "auto_deliberate", "user_accepted", "disabled"] as const;
 const DRAIN_POLICY_VALUES = ["default", "conservative", "aggressive"] as const;
+
+const DRAIN_MODE_DESCRIPTIONS: Record<DrainMode, string> = {
+	off: "disable automatic drain; only explicit forced drain can run",
+	on_explicit_nervous: "drain when /nervous is explicitly invoked",
+	always: "default to draining/resuming actionable incomplete goals",
+};
+
+const RISK_GATE_MODE_DESCRIPTIONS: Record<RiskGateMode, string> = {
+	strict: "block or escalate risky work unless explicit evidence is recorded elsewhere",
+	auto_deliberate: "allow risky work only with recorded MAGI/AMYGDALA approval evidence",
+	user_accepted: "allow risky work only with scoped user acceptance evidence",
+	disabled: "dangerous opt-in; requires dangerous_opt_in=true and non-empty evidence",
+};
+
+const DRAIN_POLICY_DESCRIPTIONS: Record<DrainPolicyName, string> = {
+	default: "balanced drain budgets and retry/replan limits",
+	conservative: "smaller, safer drain budgets",
+	aggressive: "larger, more proactive drain budgets",
+};
+
+const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
+	...DRAIN_MODE_VALUES.map((value) => ({ value: `drain=${value}`, label: `drain=${value} — ${DRAIN_MODE_DESCRIPTIONS[value]}` })),
+	...RISK_GATE_MODE_VALUES.map((value) => ({ value: `risk=${value}`, label: `risk=${value} — ${RISK_GATE_MODE_DESCRIPTIONS[value]}` })),
+	...DRAIN_POLICY_VALUES.map((value) => ({ value: `policy=${value}`, label: `policy=${value} — ${DRAIN_POLICY_DESCRIPTIONS[value]}` })),
+	{ value: "dangerous_opt_in=true", label: "dangerous_opt_in=true — required with risk=disabled" },
+	{ value: 'evidence="..."', label: 'evidence="..." — audit note; required with risk=disabled' },
+];
 
 function splitCommandArgs(input: string): string[] {
 	const tokens: string[] = [];
@@ -580,17 +594,41 @@ function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges:
 	return { patch, hasChanges: Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode), errors };
 }
 
-function summarizeConfig(config: CortexConfig, changed: boolean): string {
+export function summarizeConfig(config: CortexConfig, changed: boolean): string {
 	const lines = [
 		`# NERVous CORTEX config${changed ? " updated" : ""}`,
 		"",
+		"## Current defaults",
 		`- **drain_mode:** ${config.drain_mode}`,
 		`- **risk_gate_mode:** ${config.risk_gate_mode}`,
 		`- **default_drain_policy:** ${config.default_drain_policy}`,
 	];
 	if (config.risk_gate_evidence) lines.push(`- **risk_gate_evidence:** ${config.risk_gate_evidence}`);
-	lines.push("", "Use `/nervous:config risk=strict drain=on_explicit_nervous policy=default` to change defaults.");
+	lines.push(
+		"",
+		"## Options",
+		`- \`drain\` / \`drain_mode\` (${formatValues(DRAIN_MODE_VALUES)}): when CORTEX drain should resume incomplete goals.`,
+		...formatDescriptions(DRAIN_MODE_VALUES, DRAIN_MODE_DESCRIPTIONS),
+		`- \`risk\` / \`risk_gate\` / \`risk_gate_mode\` (${formatValues(RISK_GATE_MODE_VALUES)}): how risky work is authorized.`,
+		...formatDescriptions(RISK_GATE_MODE_VALUES, RISK_GATE_MODE_DESCRIPTIONS),
+		`- \`policy\` / \`default_drain_policy\` (${formatValues(DRAIN_POLICY_VALUES)}): drain budget/retry posture.`,
+		...formatDescriptions(DRAIN_POLICY_VALUES, DRAIN_POLICY_DESCRIPTIONS),
+		'- `evidence` / `risk_gate_evidence`: audit note; required when setting `risk=disabled`.',
+		'- `dangerous_opt_in=true`: explicit confirmation required when setting `risk=disabled`.',
+		"",
+		"## Examples",
+		"- `/nervous:config drain=always risk=auto_deliberate policy=default`",
+		'- `/nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"`',
+	);
 	return lines.join("\n");
+}
+
+function formatValues(values: readonly string[]): string {
+	return values.map((value) => `\`${value}\``).join(" | ");
+}
+
+function formatDescriptions<T extends string>(values: readonly T[], descriptions: Record<T, string>): string[] {
+	return values.map((value) => `  - \`${value}\`: ${descriptions[value]}`);
 }
 
 function STATUS_HINT(status: GoalStatus): string {
