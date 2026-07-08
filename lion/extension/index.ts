@@ -28,17 +28,21 @@ const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 type LionEventKind = "started" | "progress" | "completed" | "blocked" | "failed";
 
 function emitLionEvent(pi: ExtensionAPI, kind: LionEventKind, run: LionRun, progress?: LionProgressSnapshot): void {
-	(pi as { events?: { emit(event: string, payload: unknown): void } }).events?.emit(`nervous:lion:${kind}`, {
-		component: "lion",
-		event: kind,
-		run_id: run.id,
-		agent_id: run.agent_id,
-		task_id: run.task_id,
-		status: run.status,
-		objective: run.objective,
-		progress: progress ?? run.progress ?? null,
-		updated_at: run.updated_at,
-	});
+	try {
+		(pi as { events?: { emit(event: string, payload: unknown): void } }).events?.emit(`nervous:lion:${kind}`, {
+			component: "lion",
+			event: kind,
+			run_id: run.id,
+			agent_id: run.agent_id,
+			task_id: run.task_id,
+			status: run.status,
+			objective: run.objective,
+			progress: progress ?? run.progress ?? null,
+			updated_at: run.updated_at,
+		});
+	} catch (err) {
+		console.warn(`[nervous-system/lion] event emission failed for ${run.id}/${kind}:`, err);
+	}
 }
 
 function startedProgress(): LionProgressSnapshot {
@@ -141,7 +145,11 @@ export default function (pi: ExtensionAPI) {
 					let progressChain = Promise.resolve();
 					const enqueueProgress = (progress: LionProgressSnapshot) => {
 						const preview = { ...run, progress, updated_at: progress.last_event_at } satisfies LionRun;
-						onUpdate?.({ content: [{ type: "text", text: `${run.id}/${run.agent_id}: ${progress.activity}` }], details: { action, run: preview } });
+						try {
+							onUpdate?.({ content: [{ type: "text", text: `${run.id}/${run.agent_id}: ${progress.activity}` }], details: { action, run: preview } });
+						} catch (err) {
+							console.warn(`[nervous-system/lion] progress update callback failed for ${run.id}:`, err);
+						}
 						progressChain = progressChain.then(async () => {
 							const updated = await store.mutate((l) => l.updateProgress(run.id, progress));
 							run = updated.result;
