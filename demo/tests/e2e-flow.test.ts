@@ -12,6 +12,32 @@ import { CerebelStore } from "../../cerebel/extension/backend.ts";
 import { GanglionStore } from "../../ganglion/extension/backend.ts";
 import { AmygdalaStore } from "../../amygdala/extension/backend.ts";
 
+const COMPONENT_PATH_ENVS = [
+	"AMYGDALA_PATH",
+	"AXON_LEDGER_PATH",
+	"CEREBEL_PATH",
+	"CORTEX_PATH",
+	"GANGLION_PATH",
+	"LION_RUNS_PATH",
+	"MAGI_HISTORY_PATH",
+	"SYNAPSE_PATH",
+] as const;
+
+function snapshotEnv(keys: readonly string[]): Map<string, string | undefined> {
+	return new Map(keys.map((key) => [key, process.env[key]]));
+}
+
+function clearEnv(keys: readonly string[]): void {
+	for (const key of keys) delete process.env[key];
+}
+
+function restoreEnv(snapshot: Map<string, string | undefined>): void {
+	for (const [key, value] of snapshot) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+}
+
 /**
  * Full NERVous System deterministic demo.
  *
@@ -27,9 +53,11 @@ describe("NERVous System final end-to-end demo flow", () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT;
 		const oldProject = process.env.NERVOUS_PROJECT;
 		const oldContext = process.env.NERVOUS_CONTEXT;
+		const oldComponentPaths = snapshotEnv(COMPONENT_PATH_ENVS);
 		process.env.NERVOUS_STATE_ROOT = path.join(cwd, "global-state");
 		process.env.NERVOUS_PROJECT = "demo";
 		process.env.NERVOUS_CONTEXT = "e2e";
+		clearEnv(COMPONENT_PATH_ENVS);
 		try {
 			const cortex = CortexStore.fromCwd(cwd);
 			const axon = AxonStore.fromCwd(cwd);
@@ -221,6 +249,7 @@ describe("NERVous System final end-to-end demo flow", () => {
 			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
 			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
 			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+			restoreEnv(oldComponentPaths);
 			fs.rmSync(cwd, { recursive: true, force: true });
 		}
 	});
