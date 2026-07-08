@@ -7,10 +7,13 @@
  */
 
 import {
+	LION_PROGRESS_EVENTS,
 	LION_RUN_STATUSES,
 	LionError,
 	type LionFile,
 	type LionModelRole,
+	type LionProgressEvent,
+	type LionProgressSnapshot,
 	type LionReport,
 	type LionRun,
 	type LionRunStatus,
@@ -20,6 +23,8 @@ import {
 const VERSION = 1;
 
 const STATUS_SET = new Set<string>(LION_RUN_STATUSES);
+const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
+const MAX_PROGRESS_TEXT = 1000;
 
 function now(): string {
 	return new Date().toISOString();
@@ -58,6 +63,10 @@ export interface FinishRunInput {
 	error?: string | null;
 }
 
+export type UpdateProgressInput = Partial<Omit<LionProgressSnapshot, "last_event_at">> & {
+	last_event_at?: string;
+};
+
 export interface ListFilter {
 	status?: LionRunStatus;
 	agent_id?: string;
@@ -95,6 +104,7 @@ export class LionLedger {
 			duration_ms: null,
 			output: null,
 			report: null,
+			progress: null,
 			error: null,
 		};
 		this.runsById.set(id, run);
@@ -119,6 +129,27 @@ export class LionLedger {
 		r.finished_at = ts;
 		r.updated_at = ts;
 		r.duration_ms = Math.max(0, Date.parse(ts) - Date.parse(r.started_at));
+		return clone(r);
+	}
+
+	updateProgress(id: string, input: UpdateProgressInput): LionRun {
+		const r = this.require(id);
+		if (r.status !== "running" && r.status !== "queued") {
+			throw new LionError("invalid_transition", `cannot update progress for ${r.id} while ${r.status}`);
+		}
+		const previous = r.progress ?? defaultProgress();
+		const ts = input.last_event_at ?? now();
+		r.progress = {
+			event: isProgressEvent(input.event) ? input.event : previous.event,
+			activity: trimText(input.activity ?? previous.activity),
+			active_tools: input.active_tools ? normalizeStringList(input.active_tools) : previous.active_tools,
+			tool_uses: typeof input.tool_uses === "number" ? Math.max(0, Math.floor(input.tool_uses)) : previous.tool_uses,
+			turn_count: typeof input.turn_count === "number" ? Math.max(0, Math.floor(input.turn_count)) : previous.turn_count,
+			token_total: typeof input.token_total === "number" ? Math.max(0, Math.floor(input.token_total)) : (input.token_total === null ? null : previous.token_total),
+			last_text: typeof input.last_text === "string" ? trimText(input.last_text) : (input.last_text === null ? null : previous.last_text),
+			last_event_at: ts,
+		};
+		r.updated_at = ts;
 		return clone(r);
 	}
 
@@ -213,6 +244,27 @@ function isModelRole(value: unknown): value is LionModelRole {
 	return value === "implementation" || value === "review" || value === "default";
 }
 
+function isProgressEvent(value: unknown): value is LionProgressEvent {
+	return typeof value === "string" && PROGRESS_EVENT_SET.has(value);
+}
+
+function trimText(value: string): string {
+	return value.length > MAX_PROGRESS_TEXT ? value.slice(-MAX_PROGRESS_TEXT) : value;
+}
+
+function defaultProgress(): LionProgressSnapshot {
+	return {
+		event: "heartbeat",
+		activity: "running…",
+		active_tools: [],
+		tool_uses: 0,
+		turn_count: 0,
+		token_total: null,
+		last_text: null,
+		last_event_at: now(),
+	};
+}
+
 function coerceRun(id: string, value: unknown): LionRun | null {
 	if (!isObject(value)) return null;
 	const status = typeof value.status === "string" && STATUS_SET.has(value.status) ? (value.status as LionRunStatus) : "failed";
@@ -234,6 +286,7 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 		duration_ms: typeof value.duration_ms === "number" ? value.duration_ms : null,
 		output: typeof value.output === "string" ? value.output : null,
 		report: coerceReport(value.report),
+		progress: coerceProgress(value.progress),
 		error: typeof value.error === "string" ? value.error : null,
 	};
 }
@@ -251,6 +304,20 @@ function coerceReport(value: unknown): LionReport | null {
 		blockers: normalizeStringList(value.blockers),
 		next_steps: normalizeStringList(value.next_steps),
 		notes: typeof value.notes === "string" ? value.notes : undefined,
+	};
+}
+
+function coerceProgress(value: unknown): LionProgressSnapshot | null {
+	if (!isObject(value)) return null;
+	return {
+		event: isProgressEvent(value.event) ? value.event : "heartbeat",
+		activity: typeof value.activity === "string" ? trimText(value.activity) : "running…",
+		active_tools: normalizeStringList(value.active_tools),
+		tool_uses: typeof value.tool_uses === "number" ? Math.max(0, Math.floor(value.tool_uses)) : 0,
+		turn_count: typeof value.turn_count === "number" ? Math.max(0, Math.floor(value.turn_count)) : 0,
+		token_total: typeof value.token_total === "number" ? Math.max(0, Math.floor(value.token_total)) : null,
+		last_text: typeof value.last_text === "string" ? trimText(value.last_text) : null,
+		last_event_at: typeof value.last_event_at === "string" ? value.last_event_at : now(),
 	};
 }
 

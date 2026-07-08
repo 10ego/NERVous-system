@@ -26,6 +26,7 @@ const COLOR: Record<LionRunStatus, string> = {
 export function summarizeRun(r: LionRun): string {
 	const lines = [`# ${r.id} — ${r.agent_id}`, ""];
 	lines.push(`**status:** ${r.status}${r.task_id ? ` · **AXON:** \`${r.task_id}\`` : ""}${r.model ? ` · **model:** ${r.model}` : ""}`);
+	if (r.progress) lines.push(`**progress:** ${formatProgress(r)}`);
 	lines.push("");
 	lines.push(`## Objective\n${r.objective || "_(none)_"}`);
 	if (r.context) lines.push("", `## Context\n${r.context}`);
@@ -48,13 +49,13 @@ export function summarizeList(runs: LionRun[]): string {
 	return [
 		"# LION runs",
 		"",
-		...runs.map((r) => `${ICON[r.status]} \`${r.id}\` **${r.agent_id}** _${r.status}_ ${r.task_id ? `→ \`${r.task_id}\`` : ""} — ${truncate(r.objective, 80)}`),
+		...runs.map((r) => `${ICON[r.status]} \`${r.id}\` **${r.agent_id}** _${r.status}_ ${r.task_id ? `→ \`${r.task_id}\`` : ""} — ${truncate(r.progress?.activity || r.objective, 80)}`),
 	].join("\n");
 }
 
 export function summarizeSummary(s: LionSummary): string {
 	const counts = Object.entries(s.by_status).map(([k, v]) => `${k}:${v}`).join(" · ") || "none";
-	return [`# LION summary`, "", `**${s.total}** run(s) · ${counts}`, "", ...s.recent.map((r) => `${ICON[r.status]} \`${r.id}\` ${r.agent_id} — ${truncate(r.objective, 70)}`)].join("\n");
+	return [`# LION summary`, "", `**${s.total}** run(s) · ${counts}`, "", ...s.recent.map((r) => `${ICON[r.status]} \`${r.id}\` ${r.agent_id} — ${truncate(r.progress?.activity || r.objective, 70)}`)].join("\n");
 }
 
 export function renderLionCall(args: { action: string; id?: string; task_id?: string; objective?: string }, theme: AnyTheme): Text {
@@ -80,6 +81,17 @@ export function renderLionResult(
 	else if (details?.summary) c.addChild(new Markdown(summarizeSummary(details.summary), 0, 0, getMarkdownTheme()));
 	else c.addChild(new Text(`${theme.fg("success", "✓")} ${theme.fg("dim", result.content[0]?.text ?? "ok")}`, 0, 0));
 	return c;
+}
+
+function formatProgress(r: LionRun): string {
+	const p = r.progress;
+	if (!p) return "—";
+	const bits = [p.activity];
+	if (p.active_tools.length) bits.push(`tools:${p.active_tools.join(",")}`);
+	if (p.tool_uses > 0) bits.push(`${p.tool_uses} tool use${p.tool_uses === 1 ? "" : "s"}`);
+	if (p.turn_count > 0) bits.push(`turns:${p.turn_count}`);
+	if (typeof p.token_total === "number" && p.token_total > 0) bits.push(`tokens:${p.token_total}`);
+	return bits.join(" · ");
 }
 
 function truncate(s: string, n: number): string {

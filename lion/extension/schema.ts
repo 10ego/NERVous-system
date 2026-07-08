@@ -26,6 +26,17 @@ export type LionRunStatus = (typeof LION_RUN_STATUSES)[number];
 export const LION_OUTCOMES = ["completed", "blocked", "failed", "partial"] as const;
 export type LionOutcome = (typeof LION_OUTCOMES)[number];
 
+export const LION_PROGRESS_EVENTS = [
+	"started",
+	"heartbeat",
+	"tool_start",
+	"tool_end",
+	"message",
+	"message_end",
+	"turn_end",
+] as const;
+export type LionProgressEvent = (typeof LION_PROGRESS_EVENTS)[number];
+
 export const LION_ACTIONS = ["run", "get", "list", "summary", "delete"] as const;
 export type LionAction = (typeof LION_ACTIONS)[number];
 
@@ -44,6 +55,24 @@ export interface LionReport {
 	blockers: string[];
 	next_steps: string[];
 	notes?: string;
+}
+
+/**
+ * Opportunistic live progress snapshot from a LION subprocess.
+ *
+ * All fields are optional/additive at the ledger level via LionRun.progress so
+ * older ledgers remain valid. The text tail is intentionally bounded by the
+ * writer to avoid turning progress into an unbounded transcript.
+ */
+export interface LionProgressSnapshot {
+	event: LionProgressEvent;
+	activity: string;
+	active_tools: string[];
+	tool_uses: number;
+	turn_count: number;
+	token_total?: number | null;
+	last_text?: string | null;
+	last_event_at: string;
 }
 
 export interface LionRun {
@@ -66,6 +95,8 @@ export interface LionRun {
 	output?: string | null;
 	/** Parsed WORKER_REPORT JSON if present. */
 	report?: LionReport | null;
+	/** Latest bounded live progress snapshot, when the subprocess emitted usable events. */
+	progress?: LionProgressSnapshot | null;
 	error?: string | null;
 }
 

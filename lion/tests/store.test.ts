@@ -55,6 +55,29 @@ describe("LionLedger", () => {
 		assert.equal(l.all().length, 1);
 	});
 
+	it("updates and round-trips bounded live progress snapshots", () => {
+		const l = new LionLedger();
+		const r = l.create({ objective: "stream" });
+		const progress = l.updateProgress(r.id, {
+			event: "tool_start",
+			activity: "running command",
+			active_tools: ["bash"],
+			tool_uses: 1,
+			turn_count: 2,
+			token_total: 1234,
+			last_text: "hello",
+			last_event_at: "2026-01-01T00:00:00.000Z",
+		});
+		assert.equal(progress.progress?.event, "tool_start");
+		assert.deepEqual(progress.progress?.active_tools, ["bash"]);
+		assert.equal(progress.updated_at, "2026-01-01T00:00:00.000Z");
+
+		const back = LionLedger.fromJSON(l.toJSON());
+		assert.equal(back.get(r.id)?.progress?.activity, "running command");
+		l.finish(r.id, { output: "ok", report: null });
+		assert.throws(() => l.updateProgress(r.id, { activity: "late" }), LionError);
+	});
+
 	it("round-trips through JSON and coerces bad values", () => {
 		const l = new LionLedger("p");
 		const r = l.create({ objective: "x", tools: ["read", "bash"] });
@@ -62,9 +85,12 @@ describe("LionLedger", () => {
 		const back = LionLedger.fromJSON(l.toJSON());
 		assert.equal(back.get(r.id)?.report?.outcome, "partial");
 		assert.deepEqual(back.get(r.id)?.tools, ["read", "bash"]);
+		assert.equal(back.get(r.id)?.progress, null);
 
-		const bad = LionLedger.fromJSON({ runs: { "run-x": { status: "wat", agent_id: 123, objective: 5 } } });
+		const bad = LionLedger.fromJSON({ runs: { "run-x": { status: "wat", agent_id: 123, objective: 5, progress: { event: "nope", activity: 7, active_tools: ["read", 1], tool_uses: 2.8 } } } });
 		assert.equal(bad.get("run-x")?.status, "failed");
 		assert.equal(bad.get("run-x")?.agent_id, "lion-unknown");
+		assert.equal(bad.get("run-x")?.progress?.event, "heartbeat");
+		assert.deepEqual(bad.get("run-x")?.progress?.active_tools, ["read"]);
 	});
 });
