@@ -15,8 +15,9 @@
  */
 
 import * as path from "node:path";
-import { getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Container, Key, matchesKey, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { getSelectListTheme, getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Container, fuzzyFilter, getKeybindings, Input, Key, matchesKey, type SelectItem, SelectList, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
+import { applyNervousModelPatch, getNervousModel, loadNervousConfig, readUserNervousConfig, resolveNervousModel, writeUserNervousConfig, type NervousConfigResolution, type NervousModelKey } from "@nervous-system/state";
 import { CortexStore } from "./backend.ts";
 import {
 	type CortexAction,
@@ -434,7 +435,7 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("nervous:config", {
-		description: "Show or set persistent CORTEX drain/risk-gate config used by /nervous",
+		description: "Show or set persistent NERVous drain/risk/model defaults used by /nervous and subagents",
 		handler: async (args, ctx) => {
 			const store = CortexStore.fromCwd(ctx.cwd);
 			const rawArgs = args ?? "";
@@ -444,20 +445,32 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			try {
-				if (parsed.hasChanges) {
+				let config: CortexConfig;
+				if (parsed.hasCortexChanges) {
 					const { result } = await store.mutate((s) => s.setConfig(parsed.patch));
-					post(ctx, pi, summarizeConfig(result, true), { config: result });
+					config = result;
+				} else {
+					const { result } = await store.query((s) => s.getConfig());
+					config = result;
+				}
+				if (parsed.hasModelChanges) {
+					const next = applyNervousModelPatch(readUserNervousConfig(), parsed.modelPatch);
+					writeUserNervousConfig(next);
+				}
+				const modelConfig = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false });
+				if (parsed.hasChanges) {
+					post(ctx, pi, summarizeConfig(config, true, modelConfig), { config, nervous_config: modelConfig });
 					return;
 				}
 
-				const { result: config } = await store.query((s) => s.getConfig());
 				if (shouldOpenConfigMenu(rawArgs, ctx)) {
-					const menuResult = await showNervousConfigMenu(store, config, ctx);
-					if (menuResult.kind === "fallback") post(ctx, pi, summarizeConfig(config, false), { config });
+					const available = await availableModelSpecs(ctx);
+					const menuResult = await showNervousConfigMenu(store, config, modelConfig, ctx, available);
+					if (menuResult.kind === "fallback") post(ctx, pi, summarizeConfig(config, false, modelConfig), { config, nervous_config: modelConfig });
 					return;
 				}
 
-				post(ctx, pi, summarizeConfig(config, false), { config });
+				post(ctx, pi, summarizeConfig(config, false, modelConfig), { config, nervous_config: modelConfig });
 			} catch (e) {
 				const msg = e instanceof CortexError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
 				ctx.ui.notify(`nervous:config failed: ${msg}`, "error");
@@ -505,6 +518,8 @@ export default function (pi: ExtensionAPI) {
 const DRAIN_MODE_VALUES = ["off", "on_explicit_nervous", "always"] as const;
 const RISK_GATE_MODE_VALUES = ["strict", "auto_deliberate", "user_accepted", "disabled"] as const;
 const DRAIN_POLICY_VALUES = ["default", "conservative", "aggressive"] as const;
+const MODEL_UNSET = "(unset — pi default)";
+const MODEL_SETTING_IDS = ["lion.default", "magi.councillorDefault", "magi.synthesisDefault"] as const satisfies readonly NervousModelKey[];
 
 const DRAIN_MODE_DESCRIPTIONS: Record<DrainMode, string> = {
 	off: "disable automatic drain; only explicit forced drain can run",
@@ -525,10 +540,53 @@ const DRAIN_POLICY_DESCRIPTIONS: Record<DrainPolicyName, string> = {
 	aggressive: "larger, more proactive drain budgets",
 };
 
+const MODEL_DESCRIPTIONS: Record<NervousModelKey, string> = {
+	"lion.default": "default model for LION worker subprocesses when lion run omits model",
+	"magi.councillorDefault": "default model for MAGI councillors whose council config omits model",
+	"magi.synthesisDefault": "separate default model for MAGI synthesis when no synthesis/synthesizer model is explicit",
+};
+
+const MODEL_ALIASES: Record<string, NervousModelKey> = {
+	"lion": "lion.default",
+	"lion_model": "lion.default",
+	"lion-model": "lion.default",
+	"lion.default": "lion.default",
+	"model.lion": "lion.default",
+	"model.lion.default": "lion.default",
+	"models.lion.default": "lion.default",
+	"magi": "magi.councillorDefault",
+	"magi_model": "magi.councillorDefault",
+	"magi-model": "magi.councillorDefault",
+	"magi.default": "magi.councillorDefault",
+	"magi.councillor": "magi.councillorDefault",
+	"magi.councillor_default": "magi.councillorDefault",
+	"magi.councillor-default": "magi.councillorDefault",
+	"magi.councillordefault": "magi.councillorDefault",
+	"model.magi": "magi.councillorDefault",
+	"model.magi.councillor": "magi.councillorDefault",
+	"model.magi.councillordefault": "magi.councillorDefault",
+	"models.magi.councillordefault": "magi.councillorDefault",
+	"magi_synthesis": "magi.synthesisDefault",
+	"magi-synthesis": "magi.synthesisDefault",
+	"magi_synthesis_model": "magi.synthesisDefault",
+	"magi-synthesis-model": "magi.synthesisDefault",
+	"magi.synthesis": "magi.synthesisDefault",
+	"magi.synthesis_default": "magi.synthesisDefault",
+	"magi.synthesis-default": "magi.synthesisDefault",
+	"magi.synthesisdefault": "magi.synthesisDefault",
+	"model.magi.synthesis": "magi.synthesisDefault",
+	"model.magi.synthesisdefault": "magi.synthesisDefault",
+	"models.magi.synthesisdefault": "magi.synthesisDefault",
+};
+
 const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 	...DRAIN_MODE_VALUES.map((value) => ({ value: `drain=${value}`, label: `drain=${value} — ${DRAIN_MODE_DESCRIPTIONS[value]}` })),
 	...RISK_GATE_MODE_VALUES.map((value) => ({ value: `risk=${value}`, label: `risk=${value} — ${RISK_GATE_MODE_DESCRIPTIONS[value]}` })),
 	...DRAIN_POLICY_VALUES.map((value) => ({ value: `policy=${value}`, label: `policy=${value} — ${DRAIN_POLICY_DESCRIPTIONS[value]}` })),
+	{ value: "lion_model=", label: `lion_model=<model> — ${MODEL_DESCRIPTIONS["lion.default"]}` },
+	{ value: "magi_model=", label: `magi_model=<model> — ${MODEL_DESCRIPTIONS["magi.councillorDefault"]}` },
+	{ value: "magi_synthesis_model=", label: `magi_synthesis_model=<model> — ${MODEL_DESCRIPTIONS["magi.synthesisDefault"]}` },
+	{ value: "lion_model=unset", label: "lion_model=unset — clear the LION model default" },
 	{ value: "dangerous_opt_in=true", label: "dangerous_opt_in=true — required with risk=disabled" },
 	{ value: 'evidence="..."', label: 'evidence="..." — audit note; required with risk=disabled' },
 ];
@@ -540,6 +598,7 @@ interface ConfigDraft {
 	risk_gate_mode: RiskGateMode;
 	default_drain_policy: DrainPolicyName;
 	risk_gate_evidence?: string;
+	models: Partial<Record<NervousModelKey, string>>;
 }
 
 function shouldOpenConfigMenu(args: string, ctx: ExtensionContext): boolean {
@@ -549,13 +608,16 @@ function shouldOpenConfigMenu(args: string, ctx: ExtensionContext): boolean {
 async function showNervousConfigMenu(
 	store: CortexStore,
 	config: CortexConfig,
+	modelConfig: NervousConfigResolution,
 	ctx: ExtensionContext,
+	availableModels: string[],
 ): Promise<ConfigMenuResult> {
 	const current: ConfigDraft = {
 		drain_mode: config.drain_mode,
 		risk_gate_mode: config.risk_gate_mode,
 		default_drain_policy: config.default_drain_policy,
 		risk_gate_evidence: config.risk_gate_evidence,
+		models: draftModelsFromUser(modelConfig),
 	};
 
 	try {
@@ -574,12 +636,18 @@ async function showNervousConfigMenu(
 				settingsList.updateValue("risk_gate_mode", current.risk_gate_mode);
 				settingsList.updateValue("default_drain_policy", current.default_drain_policy);
 				settingsList.updateValue("risk_gate_evidence", current.risk_gate_evidence ?? "(none)");
+				for (const id of MODEL_SETTING_IDS) settingsList.updateValue(id, configValueForId(current, id));
 			};
 
 			const revert = (previous: ConfigDraft, id: string) => {
-				Object.assign(current, previous);
+				current.drain_mode = previous.drain_mode;
+				current.risk_gate_mode = previous.risk_gate_mode;
+				current.default_drain_policy = previous.default_drain_policy;
+				current.risk_gate_evidence = previous.risk_gate_evidence;
+				current.models = { ...previous.models };
 				settingsList.updateValue(id, configValueForId(previous, id));
 				settingsList.updateValue("risk_gate_evidence", previous.risk_gate_evidence ?? "(none)");
+				for (const modelId of MODEL_SETTING_IDS) settingsList.updateValue(modelId, configValueForId(previous, modelId));
 				tui.requestRender();
 			};
 
@@ -601,7 +669,23 @@ async function showNervousConfigMenu(
 			};
 
 			const applyChange = (id: string, newValue: string) => {
-				const previous = { ...current };
+				const previous = cloneDraft(current);
+				if (isModelSettingId(id)) {
+					const value = newValue === "__unset__" || newValue === MODEL_UNSET ? null : newValue;
+					try {
+						const next = applyNervousModelPatch(readUserNervousConfig(), { [id]: value });
+						writeUserNervousConfig(next);
+						if (value) current.models[id] = value;
+						else delete current.models[id];
+						updateSettingsList();
+						ctx.ui.notify(`NERVous config updated: ${id}=${configValueForId(current, id)}`, "info");
+					} catch (e) {
+						revert(previous, id);
+						ctx.ui.notify(`nervous:config failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+					}
+					tui.requestRender();
+					return;
+				}
 				let patch: ConfigInput | undefined;
 				if (id === "drain_mode" && (DRAIN_MODE_VALUES as readonly string[]).includes(newValue)) {
 					patch = { drain_mode: newValue as DrainMode };
@@ -649,8 +733,8 @@ async function showNervousConfigMenu(
 			};
 
 			settingsList = new SettingsList(
-				configMenuItems(current),
-				6,
+				configMenuItems(current, availableModels),
+				9,
 				getSettingsListTheme(),
 				(id, newValue) => applyChange(id, newValue),
 				() => done(undefined),
@@ -686,7 +770,14 @@ async function showNervousConfigMenu(
 	return { kind: "closed" };
 }
 
-function configMenuItems(current: ConfigDraft): SettingItem[] {
+function configMenuItems(current: ConfigDraft, availableModels: string[]): SettingItem[] {
+	const modelItems: SettingItem[] = MODEL_SETTING_IDS.map((id) => ({
+		id,
+		label: modelLabel(id),
+		description: `${MODEL_DESCRIPTIONS[id]}. ${availableModels.length ? "Press Enter to pick a model." : "Set directly with key=value if the model picker is unavailable."}`,
+		currentValue: configValueForId(current, id),
+		...(availableModels.length ? { submenu: buildModelSubmenu(availableModels, current.models[id]) } : {}),
+	}));
 	return [
 		{
 			id: "drain_mode",
@@ -709,6 +800,7 @@ function configMenuItems(current: ConfigDraft): SettingItem[] {
 			currentValue: current.default_drain_policy,
 			values: [...DRAIN_POLICY_VALUES],
 		},
+		...modelItems,
 		{
 			id: "risk_gate_evidence",
 			label: "Disabled evidence",
@@ -723,7 +815,91 @@ function configValueForId(config: ConfigDraft, id: string): string {
 	if (id === "risk_gate_mode") return config.risk_gate_mode;
 	if (id === "default_drain_policy") return config.default_drain_policy;
 	if (id === "risk_gate_evidence") return config.risk_gate_evidence ?? "(none)";
+	if (isModelSettingId(id)) return config.models[id] ?? MODEL_UNSET;
 	return "";
+}
+
+const MODEL_LIST_ROWS = 10;
+
+function buildModelSubmenu(available: string[], currentSpec: string | undefined) {
+	return (_currentValue: string, done: (selectedValue?: string) => void) => {
+		const allItems: SelectItem[] = [
+			{ value: "__unset__", label: MODEL_UNSET, description: "Do not pass --model; use the current pi default behavior." },
+			...available.map((spec) => ({ value: spec, label: spec })),
+		];
+		const theme = getSelectListTheme();
+		const search = new Input();
+		const makeList = (items: SelectItem[], selectValue?: string): SelectList => {
+			const list = new SelectList(items, MODEL_LIST_ROWS, theme);
+			if (selectValue) {
+				const idx = items.findIndex((i) => i.value === selectValue);
+				if (idx >= 0) list.setSelectedIndex(idx);
+			}
+			list.onSelect = (item) => done(item.value);
+			list.onCancel = () => done();
+			return list;
+		};
+		let list = makeList(allItems, currentSpec ?? "__unset__");
+		const applyQuery = (query: string) => {
+			const filtered = query.trim() ? fuzzyFilter(allItems, query, (i) => i.label) : allItems;
+			list = makeList(filtered);
+		};
+		const navKeys = ["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"];
+		return {
+			render(width: number): string[] {
+				return [...search.render(width), ...list.render(width)];
+			},
+			invalidate(): void {
+				search.invalidate?.();
+				list.invalidate();
+			},
+			handleInput(data: string): void {
+				const kb = getKeybindings();
+				if (navKeys.some((k) => kb.matches(data, k))) {
+					list.handleInput(data);
+					return;
+				}
+				if (data.startsWith("\x1b")) return;
+				const sanitized = data.replace(/ /g, "");
+				if (!sanitized) return;
+				search.handleInput(sanitized);
+				applyQuery(search.getValue());
+			},
+		};
+	};
+}
+
+function modelLabel(id: NervousModelKey): string {
+	switch (id) {
+		case "lion.default": return "LION default model";
+		case "magi.councillorDefault": return "MAGI councillor model";
+		case "magi.synthesisDefault": return "MAGI synthesis model";
+	}
+}
+
+function draftModelsFromUser(modelConfig: NervousConfigResolution): Partial<Record<NervousModelKey, string>> {
+	const models: Partial<Record<NervousModelKey, string>> = {};
+	for (const id of MODEL_SETTING_IDS) {
+		const model = getNervousModel(modelConfig.user, id);
+		if (model) models[id] = model;
+	}
+	return models;
+}
+
+function cloneDraft(current: ConfigDraft): ConfigDraft {
+	return { ...current, models: { ...current.models } };
+}
+
+function isModelSettingId(id: string): id is NervousModelKey {
+	return (MODEL_SETTING_IDS as readonly string[]).includes(id);
+}
+
+async function availableModelSpecs(ctx: ExtensionContext): Promise<string[]> {
+	try {
+		return (await ctx.modelRegistry.getAvailable()).map((m) => `${m.provider}/${m.id}`).sort();
+	} catch {
+		return [];
+	}
 }
 
 function renderDisabledRiskPrompt(width: number, theme: any, evidence: string, applying: boolean): string[] {
@@ -791,8 +967,18 @@ function splitCommandArgs(input: string): string[] {
 	return tokens;
 }
 
-function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges: boolean; errors: string[] } {
+interface ParsedNervousConfigArgs {
+	patch: ConfigInput;
+	modelPatch: Partial<Record<NervousModelKey, string | null>>;
+	hasCortexChanges: boolean;
+	hasModelChanges: boolean;
+	hasChanges: boolean;
+	errors: string[];
+}
+
+function parseNervousConfigArgs(args: string): ParsedNervousConfigArgs {
 	const patch: ConfigInput = {};
+	const modelPatch: Partial<Record<NervousModelKey, string | null>> = {};
 	const errors: string[] = [];
 	const tokens = splitCommandArgs(args).filter((token) => !["show", "get", "current"].includes(token.toLowerCase()));
 	const takeValue = (i: number, key: string): { value?: string; next: number } => {
@@ -811,6 +997,16 @@ function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges:
 		const token = tokens[i]!;
 		const rawKey = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
 		const key = rawKey.replace(/^--?/, "").toLowerCase();
+		const modelKey = MODEL_ALIASES[key];
+		if (modelKey) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			if (value !== undefined) {
+				const trimmed = value.trim();
+				modelPatch[modelKey] = trimmed === "" || trimmed.toLowerCase() === "unset" ? null : trimmed;
+			}
+			continue;
+		}
 		if (["drain", "drain_mode"].includes(key)) {
 			const { value, next } = takeValue(i, key);
 			i = next;
@@ -850,14 +1046,16 @@ function parseNervousConfigArgs(args: string): { patch: ConfigInput; hasChanges:
 		}
 		errors.push(`unknown option "${rawKey}"`);
 	}
-	return { patch, hasChanges: Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode), errors };
+	const hasCortexChanges = Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode);
+	const hasModelChanges = Object.keys(modelPatch).length > 0;
+	return { patch, modelPatch, hasCortexChanges, hasModelChanges, hasChanges: hasCortexChanges || hasModelChanges, errors };
 }
 
-export function summarizeConfig(config: CortexConfig, changed: boolean): string {
+export function summarizeConfig(config: CortexConfig, changed: boolean, modelConfig?: NervousConfigResolution): string {
 	const lines = [
-		`# NERVous CORTEX config${changed ? " updated" : ""}`,
+		`# NERVous config${changed ? " updated" : ""}`,
 		"",
-		"## Current defaults",
+		"## Current CORTEX defaults",
 		"| Setting | Current | Meaning |",
 		"|---|---|---|",
 		`| \`drain_mode\` | \`${config.drain_mode}\` | When drain resumes incomplete goals. |`,
@@ -865,12 +1063,25 @@ export function summarizeConfig(config: CortexConfig, changed: boolean): string 
 		`| \`default_drain_policy\` | \`${config.default_drain_policy}\` | Drain budget/retry posture. |`,
 	];
 	if (config.risk_gate_evidence) lines.push(`| \`risk_gate_evidence\` | ${config.risk_gate_evidence} | Audit evidence for disabled risk gate mode. |`);
+	lines.push("", "## Current model defaults", "| Model key | User setting | Effective | Source | Used for |", "|---|---|---|---|---|");
+	for (const key of MODEL_SETTING_IDS) {
+		const user = modelConfig ? getNervousModel(modelConfig.user, key) : undefined;
+		const resolved = modelConfig ? resolveNervousModel(modelConfig, key) : { source: "default" as const };
+		lines.push(`| \`${key}\` | ${formatModelCell(user, "_unset_")} | ${formatModelCell(resolved.model, "_pi default_")} | ${resolved.source} | ${MODEL_DESCRIPTIONS[key]} |`);
+	}
+	if (modelConfig) {
+		lines.push("", `User model config: \`${modelConfig.userPath}\``);
+		if (modelConfig.projectLoaded) lines.push(`Project model overlay (trusted): \`${modelConfig.projectPath}\``);
+		else if (!modelConfig.projectTrusted) lines.push(`Project model overlay ignored until project is trusted: \`${modelConfig.projectPath}\``);
+	}
 	lines.push(
 		"",
 		"## Usage",
 		"- Open the TUI menu: `/nervous:config`",
 		"- Print this help: `/nervous:config show`",
-		"- Set values directly: `/nervous:config drain=always risk=auto_deliberate policy=default`",
+		"- Set CORTEX defaults: `/nervous:config drain=always risk=auto_deliberate policy=default`",
+		"- Set model defaults: `/nervous:config lion_model=provider/model magi_model=provider/model magi_synthesis_model=provider/model:high`",
+		"- Clear a model default: `/nervous:config lion_model=unset`",
 		"",
 		"## Options",
 		"",
@@ -887,11 +1098,20 @@ export function summarizeConfig(config: CortexConfig, changed: boolean): string 
 		"Aliases: `policy`, `default_drain_policy`",
 		...formatOptionTable(DRAIN_POLICY_VALUES, DRAIN_POLICY_DESCRIPTIONS),
 		"",
+		"### Model defaults",
+		"Aliases: `lion_model`, `magi_model`, `magi_synthesis_model` (also exact keys like `model.lion.default`).",
+		"A `<model>` is any pi model spec (`provider/model` or `provider/model:thinking`). Unset means NERVous passes no `--model`, preserving the current pi default behavior.",
+		...formatOptionTable(MODEL_SETTING_IDS, MODEL_DESCRIPTIONS),
+		"",
 		"### Advanced disabled risk gate",
 		"- Requires exact `dangerous_opt_in=true` plus non-empty `evidence` / `risk_gate_evidence`.",
 		'- Example: `/nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"`',
 	);
 	return lines.join("\n");
+}
+
+function formatModelCell(model: string | undefined, fallback: string): string {
+	return model ? `\`${model}\`` : fallback;
 }
 
 function formatOptionTable<T extends string>(values: readonly T[], descriptions: Record<T, string>): string[] {

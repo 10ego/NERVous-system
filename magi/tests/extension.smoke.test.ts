@@ -1,6 +1,9 @@
 import * as assert from "node:assert";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "vitest";
-import factory from "../extension/index.ts";
+import factory, { applyNervousModelDefaults } from "../extension/index.ts";
 
 interface Captured {
 	tools: Array<Record<string, unknown>>;
@@ -37,5 +40,70 @@ describe("extension factory", () => {
 		const names = captured.commands.map((c) => c.name);
 		assert.ok(names.includes("magi"), "/magi command registered");
 		assert.ok(names.includes("magi:council"), "/magi:council command registered");
+	});
+
+	it("fills missing MAGI models from NERVous defaults without overriding explicit council models", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "magi-config-test-"));
+		const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CODING_AGENT_DIR = path.join(dir, "agent");
+		fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
+		fs.writeFileSync(
+			path.join(process.env.PI_CODING_AGENT_DIR, "nervous.json"),
+			JSON.stringify({ version: 1, models: { magi: { councillorDefault: "provider/balanced", synthesisDefault: "provider/strong" } } }),
+		);
+		try {
+			const config = applyNervousModelDefaults(
+				{
+					version: 1,
+					synthesizer: "hand",
+					councillors: [
+						{ id: "mind", name: "Mind", role: "think" },
+						{ id: "hand", name: "Hand", role: "act", model: "provider/explicit" },
+					],
+				},
+				dir,
+				false,
+			);
+			assert.equal(config.councillors.find((c) => c.id === "mind")?.model, "provider/balanced");
+			assert.equal(config.councillors.find((c) => c.id === "hand")?.model, "provider/explicit");
+			assert.equal(config.synthesis_model, undefined, "explicit synthesizer model remains the synthesis fallback");
+
+			const noExplicitSynth = applyNervousModelDefaults(
+				{
+					version: 1,
+					synthesizer: "hand",
+					councillors: [
+						{ id: "mind", name: "Mind", role: "think" },
+						{ id: "hand", name: "Hand", role: "act" },
+					],
+				},
+				dir,
+				false,
+			);
+			assert.equal(noExplicitSynth.councillors.find((c) => c.id === "hand")?.model, "provider/balanced");
+			assert.equal(noExplicitSynth.synthesis_model, "provider/strong");
+
+			fs.writeFileSync(
+				path.join(process.env.PI_CODING_AGENT_DIR, "nervous.json"),
+				JSON.stringify({ version: 1, models: { magi: { councillorDefault: "provider/balanced" } } }),
+			);
+			const councillorOnly = applyNervousModelDefaults(
+				{
+					version: 1,
+					synthesizer: "hand",
+					councillors: [
+						{ id: "mind", name: "Mind", role: "think" },
+						{ id: "hand", name: "Hand", role: "act" },
+					],
+				},
+				dir,
+				false,
+			);
+			assert.equal(councillorOnly.synthesis_model, undefined);
+			assert.equal(councillorOnly.councillors.find((c) => c.id === "hand")?.model, "provider/balanced", "synthesis inherits MAGI's synthesizer-model fallback when no synthesis default is configured");
+		} finally {
+			if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+			else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+		}
 	});
 });

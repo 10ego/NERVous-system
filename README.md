@@ -163,18 +163,20 @@ For a read-only state browser, install/load the dashboard package and run:
 
 The dashboard opens a modal overlay with tabs for CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, and AMYGDALA; use arrow keys/tab to navigate, enter for details, `r` to refresh, and `q`/escape to close.
 
-### CORTEX drain and risk gates
+### NERVous config: drain, risk gates, and model defaults
 
-CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized:
+CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized, and optionally set default models for NERVous subprocess systems:
 
 ```text
-/nervous:config                                    # open TUI settings menu; selected values apply immediately
-/nervous:config show                               # show persistent defaults as markdown
-/nervous:config drain=always risk=auto_deliberate  # set defaults used by /nervous
-/nervous risk=user_accepted implement the migration # one invocation can ask the agent to apply config first
+/nervous:config                                                       # open TUI settings menu; selected values apply immediately
+/nervous:config show                                                  # show persistent defaults as markdown
+/nervous:config drain=always risk=auto_deliberate                     # set defaults used by /nervous
+/nervous:config lion_model=provider/fast magi_model=provider/balanced # set subagent/council model defaults
+/nervous:config lion_model=unset                                      # clear a model default back to pi default
+/nervous risk=user_accepted implement the migration                   # one invocation can ask the agent to apply drain/risk tokens first
 ```
 
-`auto_deliberate` is the default and proceeds only with recorded MAGI/AMYGDALA approval evidence. `strict` always blocks hard-stop risk for review, `user_accepted` requires scoped user acceptance evidence, and `disabled` requires an explicit dangerous opt-in plus audit evidence. Failed work is recorded with retryability via `cortex record_failure`; skipped/blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.
+`auto_deliberate` is the default and proceeds only with recorded MAGI/AMYGDALA approval evidence. `strict` always blocks hard-stop risk for review, `user_accepted` requires scoped user acceptance evidence, and `disabled` requires an explicit dangerous opt-in plus audit evidence. Model defaults are stored in `~/.pi/agent/nervous.json` with trusted project overlay `.pi/nervous.json`; unset model keys preserve the current behavior (NERVous passes no `--model`, so pi uses the session/default model). Failed work is recorded with retryability via `cortex record_failure`; skipped/blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.
 
 ## Why pi packages?
 

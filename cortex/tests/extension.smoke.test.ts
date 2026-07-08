@@ -37,13 +37,17 @@ function nervousConfigCommand(captured: Captured): any {
 
 async function withTempCortex<T>(fn: (dir: string) => Promise<T>): Promise<T> {
 	const old = process.env.CORTEX_PATH;
+	const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cortex-command-test-"));
 	process.env.CORTEX_PATH = path.join(dir, "cortex.json");
+	process.env.PI_CODING_AGENT_DIR = path.join(dir, "agent");
 	try {
 		return await fn(dir);
 	} finally {
 		if (old === undefined) delete process.env.CORTEX_PATH;
 		else process.env.CORTEX_PATH = old;
+		if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
 	}
 }
 
@@ -104,7 +108,7 @@ describe("cortex extension factory", () => {
 			false,
 		);
 
-		assert.match(output, /## Current defaults/);
+		assert.match(output, /## Current CORTEX defaults/);
 		assert.match(output, /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 		assert.match(output, /## Usage/);
 		assert.match(output, /## Options/);
@@ -131,6 +135,9 @@ describe("cortex extension factory", () => {
 		const completions = complete("risk=auto") ?? [];
 		assert.deepEqual(completions.map((item) => item.value), ["risk=auto_deliberate"]);
 		assert.match(completions[0]?.label ?? "", /MAGI\/AMYGDALA approval evidence/);
+		const modelCompletions = complete("lion_model=") ?? [];
+		assert.ok(modelCompletions.some((item) => item.value === "lion_model="));
+		assert.match(modelCompletions[0]?.label ?? "", /LION worker/);
 	});
 
 	it("prints markdown config with the auto_deliberate default outside TUI", async () => {
@@ -235,6 +242,23 @@ describe("cortex extension factory", () => {
 		assert.match(String(captured.messages[0]?.content ?? ""), /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 	});
 
+	it("sets and clears shared model defaults", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+
+		await withTempCortex(async (dir) => {
+			await command.handler("lion_model=provider/fast magi_model=provider/balanced magi_synthesis_model=provider/strong:high", commandCtx(dir));
+			await command.handler("lion_model=unset", commandCtx(dir));
+		});
+
+		const setOutput = String(captured.messages[0]?.content ?? "");
+		assert.match(setOutput, /\| `lion.default` \| `provider\/fast` \| `provider\/fast` \| user \|/);
+		assert.match(setOutput, /\| `magi.councillorDefault` \| `provider\/balanced` \| `provider\/balanced` \| user \|/);
+		const clearOutput = String(captured.messages[1]?.content ?? "");
+		assert.match(clearOutput, /\| `lion.default` \| _unset_ \| _pi default_ \| default \|/);
+	});
+
 	it("rejects malformed dangerous opt-in values for disabled risk config", async () => {
 		for (const badValue of ["maybe", ""]) {
 			const { pi, captured } = stubPi();
@@ -274,7 +298,7 @@ describe("cortex extension factory", () => {
 		});
 
 		const output = String(captured.messages[0]?.content ?? "");
-		assert.match(output, /NERVous CORTEX config updated/);
+		assert.match(output, /NERVous config updated/);
 		assert.match(output, /\| `risk_gate_mode` \| `disabled` \|/);
 		assert.match(output, /\| `risk_gate_evidence` \| explicit user-approved automation window \|/);
 	});

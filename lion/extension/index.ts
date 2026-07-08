@@ -6,6 +6,7 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { loadNervousConfig, resolveNervousModel } from "@nervous-system/state";
 import { LionStore } from "./backend.ts";
 import { LionError, LionToolParams, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
@@ -77,6 +78,11 @@ export default function (pi: ExtensionAPI) {
 			switch (action) {
 				case "run": {
 					if (!p.objective && !p.task_id) return fail(action, "run requires `objective` or `task_id`.");
+					const configuredModel = resolveNervousModel(
+						loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false }),
+						"lion.default",
+					).model;
+					const model = p.model?.trim() || configuredModel;
 					let run: LionRun;
 					const created = await store.mutate((l) =>
 						l.create({
@@ -84,7 +90,7 @@ export default function (pi: ExtensionAPI) {
 							task_id: p.task_id ?? null,
 							objective: p.objective ?? "",
 							context: p.context,
-							model: p.model,
+							model,
 							tools: p.tools,
 							start: !p.dry_run,
 						}),

@@ -17,12 +17,13 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { loadNervousConfig, resolveNervousModel } from "@nervous-system/state";
 import { deliberate, type DeliberateStatus } from "./council.ts";
 import { createSubprocessRunner } from "./subprocess.ts";
 import { resolveCouncil } from "./config.ts";
 import { MagiHistoryStore } from "./history.ts";
 import { formatStatus, formatStatusWidget, renderMagiCall, renderMagiResult, summarizeOutput } from "./render.ts";
-import { MagiToolParams, type MagiInput, type MagiOutput, type MagiToolInput } from "./schema.ts";
+import { MagiToolParams, type CouncilConfig, type MagiInput, type MagiOutput, type MagiToolInput } from "./schema.ts";
 
 const EXT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const BUNDLED_CONFIG_DIR = path.resolve(EXT_DIR, "..", "config");
@@ -32,12 +33,13 @@ async function runMagi(args: {
 	councilSpec?: string;
 	critiqueOverride?: boolean;
 	cwd: string;
+	isProjectTrusted?: boolean | (() => boolean);
 	signal?: AbortSignal;
 	onStatusText?: (text: string) => void;
 	onStatus?: (status: DeliberateStatus) => void;
 }): Promise<{ output: MagiOutput; source: string }> {
 	const resolved = resolveCouncil(args.councilSpec, { cwd: args.cwd, bundledConfigDir: BUNDLED_CONFIG_DIR });
-	const config = { ...resolved.config };
+	const config = applyNervousModelDefaults({ ...resolved.config, councillors: resolved.config.councillors.map((c) => ({ ...c })) }, args.cwd, args.isProjectTrusted);
 	if (args.critiqueOverride !== undefined) config.critique = args.critiqueOverride;
 
 	const generate = createSubprocessRunner({ cwd: args.cwd });
@@ -55,6 +57,27 @@ async function runMagi(args: {
 }
 
 type MagiDetails = MagiOutput & { source: string };
+
+export function applyNervousModelDefaults(
+	config: CouncilConfig,
+	cwd: string,
+	isProjectTrusted: boolean | (() => boolean) | undefined,
+): CouncilConfig {
+	const resolution = loadNervousConfig({ cwd, isProjectTrusted });
+	const councillorDefault = resolveNervousModel(resolution, "magi.councillorDefault").model;
+	const synthesisDefault = resolveNervousModel(resolution, "magi.synthesisDefault").model;
+	const synthesizerId = config.synthesizer ?? config.councillors[config.councillors.length - 1]?.id;
+	const synthesizerHadModel = Boolean(config.councillors.find((c) => c.id === synthesizerId)?.model?.trim());
+	if (councillorDefault) {
+		for (const councillor of config.councillors) {
+			if (!councillor.model?.trim()) councillor.model = councillorDefault;
+		}
+	}
+	if (synthesisDefault && !config.synthesis_model?.trim() && !synthesizerHadModel) {
+		config.synthesis_model = synthesisDefault;
+	}
+	return config;
+}
 
 export default function (pi: ExtensionAPI) {
 	/* ----------------------------- magi tool ------------------------------ */
@@ -90,6 +113,7 @@ export default function (pi: ExtensionAPI) {
 					councilSpec: params.council,
 					critiqueOverride: params.critique,
 					cwd: ctx.cwd,
+					isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false,
 					signal,
 					onStatusText: onUpdate
 						? (text) => {
@@ -200,6 +224,7 @@ async function deliberateCommand(
 		const { output, source } = await runMagi({
 			input,
 			cwd: ctx.cwd,
+			isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false,
 			onStatusText: ctx.hasUI ? (text) => ctx.ui.setStatus("magi", text) : undefined,
 			onStatus: ctx.hasUI ? (status) => ctx.ui.setWidget("magi", formatStatusWidget(status, input.issue)) : undefined,
 		});

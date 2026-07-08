@@ -74,13 +74,13 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `
 - **`/cortex`** — current goal.
 - **`/cortex:goals`** — all goals.
 - **`/cortex:resume`** — current goal + a "what's next" hint.
-- **`/nervous:config`** — open a TUI menu or show/set persistent drain/risk defaults used by `/nervous`.
+- **`/nervous:config`** — open a TUI menu or show/set persistent drain/risk defaults and shared NERVous model defaults.
 
 ### Skill + prompt template
 
 - `/skill:cortex` — force-load the workflow skill.
 - **`/cortex <request>`** — run the full CORTEX workflow end-to-end.
-- **`/nervous [drain=...] [risk=...] [policy=...] <request>`** — run the drain workflow and optionally ask the agent to apply invocation config first.
+- **`/nervous [drain=...] [risk=...] [policy=...] <request>`** — run the drain workflow and optionally ask the agent to apply invocation drain/risk config first.
 
 ---
 
@@ -122,7 +122,7 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `
 
 For explicit NERVous activation, CORTEX supports a bounded, policy-driven drain mode via `cortex drain`. A drain run snapshots incomplete goals in the active context, separates normal actionable goals from due revisits (`blocked`, `needs_amygdala` whose `next_revisit_at` is due), retryable/needs-classification failures, and waiting goals, then records durable run evidence/budgets.
 
-Drain mode is togglable with persistent CORTEX config. Users can set it directly via the tool or with the slash command before invoking `/nervous`:
+Drain mode is togglable with persistent CORTEX config. `/nervous:config` also manages shared model defaults for NERVous subprocess systems:
 
 ```text
 /nervous:config
@@ -130,12 +130,14 @@ Drain mode is togglable with persistent CORTEX config. Users can set it directly
 /nervous:config drain=on_explicit_nervous risk=auto_deliberate policy=default
 /nervous:config drain=always risk=strict policy=conservative
 /nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"
+/nervous:config lion_model=provider/fast magi_model=provider/balanced magi_synthesis_model=provider/strong:high
+/nervous:config lion_model=unset
 
 cortex get_config
 cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="auto_deliberate"
 ```
 
-In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, and drain policy. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
+In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, drain policy, and model defaults. When pi's model registry is available, model rows open a searchable picker. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
 
 For one-off prompt invocation, include config tokens in `/nervous` arguments; the prompt instructs the agent to apply them first:
 
@@ -158,6 +160,13 @@ Risk gate modes:
 - `auto_deliberate` — default; risky work may proceed only after MAGI/AMYGDALA approval is recorded with `cortex accept_risk ... risk_gate_mode="auto_deliberate"`.
 - `user_accepted` — risky work may proceed only after scoped user acceptance evidence is recorded with `cortex accept_risk`.
 - `disabled` — dangerous explicit opt-in; requires `dangerous_opt_in=true` and `risk_gate_evidence`, and drain records accepted-risk evidence instead of silently bypassing gates.
+
+Model defaults:
+
+- Stored in `~/.pi/agent/nervous.json`, with trusted project overlay from `<repo>/.pi/nervous.json`.
+- Keys: `models.lion.default`, `models.magi.councillorDefault`, `models.magi.synthesisDefault`.
+- Runtime precedence preserves explicit choices: `lion run model=...` beats the configured LION default; MAGI council `model` / `synthesis_model` beats configured MAGI defaults. If only `magi.councillorDefault` is set, synthesis follows MAGI's existing synthesizer-model fallback.
+- Unset keys preserve the previous behavior: NERVous passes no `--model`, so the subprocess uses pi's current/default model.
 
 Safety/recovery semantics:
 

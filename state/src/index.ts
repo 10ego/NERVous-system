@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, realpathSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import * as path from "node:path";
 
@@ -10,6 +10,46 @@ export interface NervousStateInfo {
 	context: string;
 	component: string;
 	filePath: string;
+}
+
+const PI_CONFIG_DIR_NAME = ".pi";
+const PI_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
+const NERVOUS_CONFIG_FILENAME = "nervous.json";
+
+export const NERVOUS_MODEL_KEYS = [
+	"lion.default",
+	"magi.councillorDefault",
+	"magi.synthesisDefault",
+] as const;
+export type NervousModelKey = (typeof NERVOUS_MODEL_KEYS)[number];
+export type NervousModelValue = string | null;
+
+export interface NervousModelConfig {
+	lion?: { default?: NervousModelValue };
+	magi?: { councillorDefault?: NervousModelValue; synthesisDefault?: NervousModelValue };
+}
+
+export interface NervousConfig {
+	version: number;
+	models: NervousModelConfig;
+}
+
+export interface NervousConfigResolution {
+	user: NervousConfig;
+	project: NervousConfig;
+	effective: NervousConfig;
+	userPath: string;
+	projectPath: string;
+	projectTrusted: boolean;
+	projectLoaded: boolean;
+}
+
+export interface LoadNervousConfigOptions {
+	cwd: string;
+	/** Overrides the default ~/.pi/agent lookup; useful in tests. */
+	agentDir?: string;
+	/** Project config is read only when trusted. Accepts a boolean or a lazy trust check. */
+	isProjectTrusted?: boolean | (() => boolean);
 }
 
 export function resolveNervousStateFile(
@@ -33,7 +73,117 @@ export function resolveNervousStateInfo(cwd: string, component: string, filename
 
 export function resolveRoot(): string {
 	const configured = process.env.NERVOUS_STATE_ROOT;
-	return configured ? path.resolve(configured) : path.join(homedir(), ".pi", "nervous");
+	return configured ? path.resolve(configured) : path.join(homedir(), PI_CONFIG_DIR_NAME, "nervous");
+}
+
+export function getPiAgentDir(): string {
+	const configured = process.env[PI_AGENT_DIR_ENV];
+	return configured ? expandTilde(configured) : path.join(homedir(), PI_CONFIG_DIR_NAME, "agent");
+}
+
+export function userNervousConfigPath(agentDir = getPiAgentDir()): string {
+	return path.join(agentDir, NERVOUS_CONFIG_FILENAME);
+}
+
+export function projectNervousConfigPath(cwd: string): string {
+	return path.join(resolveProjectConfigRoot(cwd), PI_CONFIG_DIR_NAME, NERVOUS_CONFIG_FILENAME);
+}
+
+export function resolveProjectConfigRoot(cwd: string): string {
+	return git(cwd, ["rev-parse", "--show-toplevel"]) ?? canonicalPath(cwd);
+}
+
+export function emptyNervousConfig(): NervousConfig {
+	return { version: 1, models: { lion: {}, magi: {} } };
+}
+
+export function readNervousConfigFile(filePath: string): NervousConfig {
+	try {
+		if (!existsSync(filePath)) return emptyNervousConfig();
+		return normalizeNervousConfig(JSON.parse(readFileSync(filePath, "utf8")));
+	} catch {
+		return emptyNervousConfig();
+	}
+}
+
+export function readUserNervousConfig(agentDir?: string): NervousConfig {
+	return readNervousConfigFile(userNervousConfigPath(agentDir));
+}
+
+export function writeUserNervousConfig(config: NervousConfig, agentDir?: string): string {
+	const filePath = userNervousConfigPath(agentDir);
+	mkdirSync(path.dirname(filePath), { recursive: true });
+	writeFileSync(filePath, `${JSON.stringify(normalizeNervousConfig(config), null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+	return filePath;
+}
+
+export function loadNervousConfig(opts: LoadNervousConfigOptions): NervousConfigResolution {
+	const userPath = userNervousConfigPath(opts.agentDir);
+	const projectPath = projectNervousConfigPath(opts.cwd);
+	const user = readNervousConfigFile(userPath);
+	const projectTrusted = trusted(opts.isProjectTrusted);
+	const projectLoaded = projectTrusted && existsSync(projectPath);
+	const project = projectLoaded ? readNervousConfigFile(projectPath) : emptyNervousConfig();
+	return {
+		user,
+		project,
+		effective: mergeNervousConfigs(user, projectLoaded ? project : emptyNervousConfig()),
+		userPath,
+		projectPath,
+		projectTrusted,
+		projectLoaded,
+	};
+}
+
+export function normalizeNervousConfig(raw: unknown): NervousConfig {
+	const out = emptyNervousConfig();
+	if (!isPlainObject(raw)) return out;
+	if (typeof raw.version === "number" && Number.isFinite(raw.version)) out.version = Math.floor(raw.version);
+	const models = isPlainObject(raw.models) ? raw.models : {};
+	for (const key of NERVOUS_MODEL_KEYS) {
+		const value = readModelValue(models, key);
+		if (value !== undefined) setModelValue(out.models, key, value);
+	}
+	return out;
+}
+
+export function mergeNervousConfigs(base: NervousConfig, overlay: NervousConfig): NervousConfig {
+	const next = normalizeNervousConfig(base);
+	const o = normalizeNervousConfig(overlay);
+	for (const key of NERVOUS_MODEL_KEYS) {
+		if (!hasModelKey(o.models, key)) continue;
+		const value = readModelValue(o.models, key);
+		if (typeof value === "string") setModelValue(next.models, key, value);
+		else clearModelValue(next.models, key);
+	}
+	return next;
+}
+
+export function getNervousModel(config: NervousConfig, key: NervousModelKey): string | undefined {
+	const value = readModelValue(normalizeNervousConfig(config).models, key);
+	return typeof value === "string" ? value : undefined;
+}
+
+export function resolveNervousModel(resolution: NervousConfigResolution, key: NervousModelKey): { model?: string; source: "project" | "user" | "default"; path?: string } {
+	const projectModel = resolution.projectLoaded ? getNervousModel(resolution.project, key) : undefined;
+	if (projectModel) return { model: projectModel, source: "project", path: resolution.projectPath };
+	const userModel = getNervousModel(resolution.user, key);
+	if (userModel && !projectExplicitlyUnsets(resolution, key)) return { model: userModel, source: "user", path: resolution.userPath };
+	return { source: "default" };
+}
+
+export function applyNervousModelPatch(
+	base: NervousConfig,
+	patch: Partial<Record<NervousModelKey, string | null | undefined>>,
+): NervousConfig {
+	const next = normalizeNervousConfig(base);
+	for (const key of NERVOUS_MODEL_KEYS) {
+		if (!(key in patch)) continue;
+		const value = patch[key];
+		if (typeof value === "string" && value.trim()) setModelValue(next.models, key, value.trim());
+		else clearModelValue(next.models, key);
+	}
+	return next;
 }
 
 export function resolveProjectSlug(cwd: string): string {
@@ -67,6 +217,86 @@ export function slug(input: string, fallback: string): string {
 function canonicalPath(cwd: string): string {
 	const resolved = path.resolve(cwd);
 	return existsSync(resolved) ? realpathSync(resolved) : resolved;
+}
+
+function trusted(check: boolean | (() => boolean) | undefined): boolean {
+	try {
+		return typeof check === "function" ? Boolean(check()) : Boolean(check);
+	} catch {
+		return false;
+	}
+}
+
+function expandTilde(input: string): string {
+	return input === "~" || input.startsWith(`~${path.sep}`) ? path.join(homedir(), input.slice(2)) : path.resolve(input);
+}
+
+function modelValue(raw: unknown): NervousModelValue | undefined {
+	if (raw === null) return null;
+	if (typeof raw !== "string") return undefined;
+	const trimmed = raw.trim();
+	return trimmed ? trimmed : null;
+}
+
+function readModelValue(models: NervousModelConfig | Record<string, unknown>, key: NervousModelKey): NervousModelValue | undefined {
+	switch (key) {
+		case "lion.default":
+			return modelValue(isPlainObject(models.lion) ? models.lion.default : undefined);
+		case "magi.councillorDefault":
+			return modelValue(isPlainObject(models.magi) ? models.magi.councillorDefault : undefined);
+		case "magi.synthesisDefault":
+			return modelValue(isPlainObject(models.magi) ? models.magi.synthesisDefault : undefined);
+	}
+}
+
+function hasModelKey(models: NervousModelConfig, key: NervousModelKey): boolean {
+	switch (key) {
+		case "lion.default":
+			return Object.prototype.hasOwnProperty.call(models.lion ?? {}, "default");
+		case "magi.councillorDefault":
+			return Object.prototype.hasOwnProperty.call(models.magi ?? {}, "councillorDefault");
+		case "magi.synthesisDefault":
+			return Object.prototype.hasOwnProperty.call(models.magi ?? {}, "synthesisDefault");
+	}
+}
+
+function setModelValue(models: NervousModelConfig, key: NervousModelKey, value: NervousModelValue): void {
+	switch (key) {
+		case "lion.default":
+			models.lion ??= {};
+			models.lion.default = value;
+			return;
+		case "magi.councillorDefault":
+			models.magi ??= {};
+			models.magi.councillorDefault = value;
+			return;
+		case "magi.synthesisDefault":
+			models.magi ??= {};
+			models.magi.synthesisDefault = value;
+			return;
+	}
+}
+
+function clearModelValue(models: NervousModelConfig, key: NervousModelKey): void {
+	switch (key) {
+		case "lion.default":
+			if (models.lion) delete models.lion.default;
+			return;
+		case "magi.councillorDefault":
+			if (models.magi) delete models.magi.councillorDefault;
+			return;
+		case "magi.synthesisDefault":
+			if (models.magi) delete models.magi.synthesisDefault;
+			return;
+	}
+}
+
+function projectExplicitlyUnsets(resolution: NervousConfigResolution, key: NervousModelKey): boolean {
+	return resolution.projectLoaded && hasModelKey(resolution.project.models, key) && !getNervousModel(resolution.project, key);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function hash(value: string): string {
