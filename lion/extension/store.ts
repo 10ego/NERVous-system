@@ -10,6 +10,7 @@ import {
 	LION_RUN_STATUSES,
 	LionError,
 	type LionFile,
+	type LionModelRole,
 	type LionReport,
 	type LionRun,
 	type LionRunStatus,
@@ -45,6 +46,7 @@ export interface CreateRunInput {
 	objective: string;
 	context?: string;
 	model?: string | null;
+	model_role?: LionModelRole | null;
 	tools?: string[] | null;
 	start?: boolean;
 }
@@ -85,6 +87,7 @@ export class LionLedger {
 			objective: objective || `Work AXON task ${input.task_id}`,
 			context: input.context ?? "",
 			model: input.model ?? null,
+			model_role: input.model_role ?? null,
 			tools: input.tools ? [...input.tools] : null,
 			started_at: ts,
 			updated_at: ts,
@@ -206,6 +209,10 @@ function statusFromReport(report: LionReport | null | undefined, error?: string 
 	return "failed";
 }
 
+function isModelRole(value: unknown): value is LionModelRole {
+	return value === "implementation" || value === "review" || value === "default";
+}
+
 function coerceRun(id: string, value: unknown): LionRun | null {
 	if (!isObject(value)) return null;
 	const status = typeof value.status === "string" && STATUS_SET.has(value.status) ? (value.status as LionRunStatus) : "failed";
@@ -219,6 +226,7 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 		objective: typeof value.objective === "string" ? value.objective : "",
 		context: typeof value.context === "string" ? value.context : "",
 		model: typeof value.model === "string" ? value.model : null,
+		model_role: isModelRole(value.model_role) ? value.model_role : null,
 		tools: Array.isArray(value.tools) ? normalizeStringList(value.tools) : null,
 		started_at: started,
 		updated_at: updated,

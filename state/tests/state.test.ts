@@ -69,6 +69,8 @@ describe("NERVous model config", () => {
 		const agentDir = path.join(dir, "agent");
 		const user = applyNervousModelPatch(readUserNervousConfig(agentDir), {
 			"lion.default": "openai/gpt-fast",
+			"lion.implementationDefault": "openai/gpt-implement",
+			"lion.reviewDefault": "anthropic/claude-review",
 			"magi.councillorDefault": "anthropic/claude-balanced",
 		});
 		writeUserNervousConfig(user, agentDir);
@@ -85,6 +87,8 @@ describe("NERVous model config", () => {
 		const trusted = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: true });
 		assert.equal(resolveNervousModel(trusted, "lion.default").model, "anthropic/claude-project");
 		assert.equal(resolveNervousModel(trusted, "lion.default").source, "project");
+		assert.equal(resolveNervousModel(trusted, "lion.implementationDefault").model, "openai/gpt-implement");
+		assert.equal(resolveNervousModel(trusted, "lion.reviewDefault").model, "anthropic/claude-review");
 		assert.equal(resolveNervousModel(trusted, "magi.councillorDefault").model, "anthropic/claude-balanced");
 	});
 

@@ -519,7 +519,7 @@ const DRAIN_MODE_VALUES = ["off", "on_explicit_nervous", "always"] as const;
 const RISK_GATE_MODE_VALUES = ["strict", "auto_deliberate", "user_accepted", "disabled"] as const;
 const DRAIN_POLICY_VALUES = ["default", "conservative", "aggressive"] as const;
 const MODEL_UNSET = "(unset — pi default)";
-const MODEL_SETTING_IDS = ["lion.default", "magi.councillorDefault", "magi.synthesisDefault"] as const satisfies readonly NervousModelKey[];
+const MODEL_SETTING_IDS = ["lion.default", "lion.implementationDefault", "lion.reviewDefault", "magi.councillorDefault", "magi.synthesisDefault"] as const satisfies readonly NervousModelKey[];
 
 const DRAIN_MODE_DESCRIPTIONS: Record<DrainMode, string> = {
 	off: "disable automatic drain; only explicit forced drain can run",
@@ -541,7 +541,9 @@ const DRAIN_POLICY_DESCRIPTIONS: Record<DrainPolicyName, string> = {
 };
 
 const MODEL_DESCRIPTIONS: Record<NervousModelKey, string> = {
-	"lion.default": "default model for LION worker subprocesses when lion run omits model",
+	"lion.default": "generic fallback model for LION workers when no role-specific model is set",
+	"lion.implementationDefault": "default model for LION implementation workers",
+	"lion.reviewDefault": "default model for LION review/QA workers",
 	"magi.councillorDefault": "default model for MAGI councillors whose council config omits model",
 	"magi.synthesisDefault": "separate default model for MAGI synthesis when no synthesis/synthesizer model is explicit",
 };
@@ -554,6 +556,26 @@ const MODEL_ALIASES: Record<string, NervousModelKey> = {
 	"model.lion": "lion.default",
 	"model.lion.default": "lion.default",
 	"models.lion.default": "lion.default",
+	"lion_implementation": "lion.implementationDefault",
+	"lion-implementation": "lion.implementationDefault",
+	"lion_implementation_model": "lion.implementationDefault",
+	"lion-implementation-model": "lion.implementationDefault",
+	"lion_impl_model": "lion.implementationDefault",
+	"lion-impl-model": "lion.implementationDefault",
+	"lion.implementation": "lion.implementationDefault",
+	"lion.implementationdefault": "lion.implementationDefault",
+	"model.lion.implementation": "lion.implementationDefault",
+	"model.lion.implementationdefault": "lion.implementationDefault",
+	"models.lion.implementationdefault": "lion.implementationDefault",
+	"lion_review": "lion.reviewDefault",
+	"lion-review": "lion.reviewDefault",
+	"lion_review_model": "lion.reviewDefault",
+	"lion-review-model": "lion.reviewDefault",
+	"lion.review": "lion.reviewDefault",
+	"lion.reviewdefault": "lion.reviewDefault",
+	"model.lion.review": "lion.reviewDefault",
+	"model.lion.reviewdefault": "lion.reviewDefault",
+	"models.lion.reviewdefault": "lion.reviewDefault",
 	"magi": "magi.councillorDefault",
 	"magi_model": "magi.councillorDefault",
 	"magi-model": "magi.councillorDefault",
@@ -584,9 +606,13 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 	...RISK_GATE_MODE_VALUES.map((value) => ({ value: `risk=${value}`, label: `risk=${value} — ${RISK_GATE_MODE_DESCRIPTIONS[value]}` })),
 	...DRAIN_POLICY_VALUES.map((value) => ({ value: `policy=${value}`, label: `policy=${value} — ${DRAIN_POLICY_DESCRIPTIONS[value]}` })),
 	{ value: "lion_model=", label: `lion_model=<model> — ${MODEL_DESCRIPTIONS["lion.default"]}` },
+	{ value: "lion_implementation_model=", label: `lion_implementation_model=<model> — ${MODEL_DESCRIPTIONS["lion.implementationDefault"]}` },
+	{ value: "lion_review_model=", label: `lion_review_model=<model> — ${MODEL_DESCRIPTIONS["lion.reviewDefault"]}` },
 	{ value: "magi_model=", label: `magi_model=<model> — ${MODEL_DESCRIPTIONS["magi.councillorDefault"]}` },
 	{ value: "magi_synthesis_model=", label: `magi_synthesis_model=<model> — ${MODEL_DESCRIPTIONS["magi.synthesisDefault"]}` },
-	{ value: "lion_model=unset", label: "lion_model=unset — clear the LION model default" },
+	{ value: "lion_model=unset", label: "lion_model=unset — clear the generic LION fallback model" },
+	{ value: "lion_implementation_model=unset", label: "lion_implementation_model=unset — clear the LION implementation model default" },
+	{ value: "lion_review_model=unset", label: "lion_review_model=unset — clear the LION review model default" },
 	{ value: "dangerous_opt_in=true", label: "dangerous_opt_in=true — required with risk=disabled" },
 	{ value: 'evidence="..."', label: 'evidence="..." — audit note; required with risk=disabled' },
 ];
@@ -871,7 +897,9 @@ function buildModelSubmenu(available: string[], currentSpec: string | undefined)
 
 function modelLabel(id: NervousModelKey): string {
 	switch (id) {
-		case "lion.default": return "LION default model";
+		case "lion.default": return "LION fallback model";
+		case "lion.implementationDefault": return "LION implementation model";
+		case "lion.reviewDefault": return "LION review model";
 		case "magi.councillorDefault": return "MAGI councillor model";
 		case "magi.synthesisDefault": return "MAGI synthesis model";
 	}
@@ -1080,8 +1108,8 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 		"- Open the TUI menu: `/nervous:config`",
 		"- Print this help: `/nervous:config show`",
 		"- Set CORTEX defaults: `/nervous:config drain=always risk=auto_deliberate policy=default`",
-		"- Set model defaults: `/nervous:config lion_model=provider/model magi_model=provider/model magi_synthesis_model=provider/model:high`",
-		"- Clear a model default: `/nervous:config lion_model=unset`",
+		"- Set model defaults: `/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong magi_model=provider/model`",
+		"- Clear a model default: `/nervous:config lion_review_model=unset`",
 		"",
 		"## Options",
 		"",
@@ -1099,7 +1127,7 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 		...formatOptionTable(DRAIN_POLICY_VALUES, DRAIN_POLICY_DESCRIPTIONS),
 		"",
 		"### Model defaults",
-		"Aliases: `lion_model`, `magi_model`, `magi_synthesis_model` (also exact keys like `model.lion.default`).",
+		"Aliases: `lion_model`, `lion_implementation_model`, `lion_review_model`, `magi_model`, `magi_synthesis_model` (also exact keys like `model.lion.review`).",
 		"A `<model>` is any pi model spec (`provider/model` or `provider/model:thinking`). Unset means NERVous passes no `--model`, preserving the current pi default behavior.",
 		...formatOptionTable(MODEL_SETTING_IDS, MODEL_DESCRIPTIONS),
 		"",

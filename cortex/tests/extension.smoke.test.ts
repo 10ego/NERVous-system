@@ -137,7 +137,9 @@ describe("cortex extension factory", () => {
 		assert.match(completions[0]?.label ?? "", /MAGI\/AMYGDALA approval evidence/);
 		const modelCompletions = complete("lion_model=") ?? [];
 		assert.ok(modelCompletions.some((item) => item.value === "lion_model="));
-		assert.match(modelCompletions[0]?.label ?? "", /LION worker/);
+		assert.match(modelCompletions[0]?.label ?? "", /LION/);
+		const reviewCompletions = complete("lion_review_model=") ?? [];
+		assert.ok(reviewCompletions.some((item) => item.value === "lion_review_model="));
 	});
 
 	it("prints markdown config with the auto_deliberate default outside TUI", async () => {
@@ -248,15 +250,17 @@ describe("cortex extension factory", () => {
 		const command = nervousConfigCommand(captured);
 
 		await withTempCortex(async (dir) => {
-			await command.handler("lion_model=provider/fast magi_model=provider/balanced magi_synthesis_model=provider/strong:high", commandCtx(dir));
-			await command.handler("lion_model=unset", commandCtx(dir));
+			await command.handler("lion_model=provider/fast lion_implementation_model=provider/implement lion_review_model=provider/review magi_model=provider/balanced magi_synthesis_model=provider/strong:high", commandCtx(dir));
+			await command.handler("lion_review_model=unset", commandCtx(dir));
 		});
 
 		const setOutput = String(captured.messages[0]?.content ?? "");
 		assert.match(setOutput, /\| `lion.default` \| `provider\/fast` \| `provider\/fast` \| user \|/);
+		assert.match(setOutput, /\| `lion.implementationDefault` \| `provider\/implement` \| `provider\/implement` \| user \|/);
+		assert.match(setOutput, /\| `lion.reviewDefault` \| `provider\/review` \| `provider\/review` \| user \|/);
 		assert.match(setOutput, /\| `magi.councillorDefault` \| `provider\/balanced` \| `provider\/balanced` \| user \|/);
 		const clearOutput = String(captured.messages[1]?.content ?? "");
-		assert.match(clearOutput, /\| `lion.default` \| _unset_ \| _pi default_ \| default \|/);
+		assert.match(clearOutput, /\| `lion.reviewDefault` \| _unset_ \| _pi default_ \| default \|/);
 	});
 
 	it("rejects malformed dangerous opt-in values for disabled risk config", async () => {

@@ -50,13 +50,19 @@ The worker receives a LION system prompt and must finish with a parseable `WORKE
 
 ### Model selection
 
-`lion run model="provider/model"` remains the highest-precedence per-run override. When `model` is omitted, LION reads the shared NERVous model config (`~/.pi/agent/nervous.json`, overlaid by trusted `<repo>/.pi/nervous.json`) and uses `models.lion.default` if set. If that key is unset, LION preserves the previous behavior and passes no `--model`, letting pi use its current/default model.
+`lion run model="provider/model"` remains the highest-precedence per-run override. When `model` is omitted, LION reads the shared NERVous model config (`~/.pi/agent/nervous.json`, overlaid by trusted `<repo>/.pi/nervous.json`) and selects by `model_role`:
 
-Set or clear the default through CORTEX's config command:
+- `model_role="implementation"` (default) → `models.lion.implementationDefault`, then `models.lion.default`.
+- `model_role="review"` → `models.lion.reviewDefault`, then `models.lion.default`.
+- `model_role="default"` → `models.lion.default` only.
+
+If the selected keys are unset, LION preserves the previous behavior and passes no `--model`, letting pi use its current/default model.
+
+Set or clear defaults through CORTEX's config command:
 
 ```text
-/nervous:config lion_model=provider/fast
-/nervous:config lion_model=unset
+/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong
+/nervous:config lion_review_model=unset
 ```
 
 ---

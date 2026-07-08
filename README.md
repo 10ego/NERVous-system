@@ -171,8 +171,8 @@ CORTEX drain mode can keep progressing through the active context while preservi
 /nervous:config                                                       # open TUI settings menu; selected values apply immediately
 /nervous:config show                                                  # show persistent defaults as markdown
 /nervous:config drain=always risk=auto_deliberate                     # set defaults used by /nervous
-/nervous:config lion_model=provider/fast magi_model=provider/balanced # set subagent/council model defaults
-/nervous:config lion_model=unset                                      # clear a model default back to pi default
+/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong # set LION role model defaults
+/nervous:config lion_review_model=unset                                             # clear a model default back to pi default
 /nervous risk=user_accepted implement the migration                   # one invocation can ask the agent to apply drain/risk tokens first
 ```
 

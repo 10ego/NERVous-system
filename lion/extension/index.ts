@@ -6,9 +6,9 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadNervousConfig, resolveNervousModel } from "@nervous-system/state";
+import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
 import { LionStore } from "./backend.ts";
-import { LionError, LionToolParams, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
+import { LionError, LionToolParams, type LionModelRole, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createLionRunner } from "./subprocess.ts";
 
@@ -30,6 +30,20 @@ function ok(action: string, text: string, details: Omit<LionDetails, "action"> =
 }
 function fail(action: string, message: string): ToolResult {
 	return { content: [{ type: "text", text: message }], details: { action, error: message }, isError: true };
+}
+
+function modelKeyForRole(role: LionModelRole): NervousModelKey {
+	if (role === "review") return "lion.reviewDefault";
+	if (role === "implementation") return "lion.implementationDefault";
+	return "lion.default";
+}
+
+function resolveConfiguredLionModel(ctx: ExtensionContext, role: LionModelRole): string | undefined {
+	const config = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false });
+	const roleModel = resolveNervousModel(config, modelKeyForRole(role)).model;
+	if (roleModel) return roleModel;
+	if (role !== "default") return resolveNervousModel(config, "lion.default").model;
+	return undefined;
 }
 
 async function runQuery(store: LionStore, action: string, op: (l: import("./store.ts").LionLedger) => ToolResult): Promise<ToolResult> {
@@ -64,6 +78,7 @@ export default function (pi: ExtensionAPI) {
 		promptGuidelines: [
 			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use lion run when a self-contained coding task should be delegated to an isolated subagent.",
+			"Set model_role='review' for implementation review/QA assignments so review workers can use the configured review model; implementation work defaults to model_role='implementation'.",
 			"Give each LION a narrow objective and enough context/acceptance criteria; avoid broad ambiguous assignments.",
 			"Pass an AXON task id when available so the worker can update durable task state if the axon tool is available.",
 			"Read the LION worker report before marking orchestration work complete; blocked/failed reports should feed AXON/AMYGDALA.",
@@ -78,11 +93,8 @@ export default function (pi: ExtensionAPI) {
 			switch (action) {
 				case "run": {
 					if (!p.objective && !p.task_id) return fail(action, "run requires `objective` or `task_id`.");
-					const configuredModel = resolveNervousModel(
-						loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false }),
-						"lion.default",
-					).model;
-					const model = p.model?.trim() || configuredModel;
+					const modelRole = (p.model_role as LionModelRole | undefined) ?? "implementation";
+					const model = p.model?.trim() || resolveConfiguredLionModel(ctx, modelRole);
 					let run: LionRun;
 					const created = await store.mutate((l) =>
 						l.create({
@@ -91,6 +103,7 @@ export default function (pi: ExtensionAPI) {
 							objective: p.objective ?? "",
 							context: p.context,
 							model,
+							model_role: modelRole,
 							tools: p.tools,
 							start: !p.dry_run,
 						}),
