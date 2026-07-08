@@ -1,15 +1,12 @@
 {
   "name": "nervous-system",
   "version": "0.1.0",
+  "private": true,
   "description": "NERVous System — a modular multi-agent coding-agent extension framework for pi.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/10ego/NERVous-system.git"
-  },
-  "homepage": "https://github.com/10ego/NERVous-system#readme",
-  "bugs": {
-    "url": "https://github.com/10ego/NERVous-system/issues"
+    "url": "git+ssh://git@github.com/10ego/NERVous-system.git"
   },
   "keywords": [
     "pi-package",
@@ -17,53 +14,6 @@
     "multi-agent",
     "coding-agent",
     "pi-extension"
-  ],
-  "files": [
-    "README.md",
-    "assets/",
-    "amygdala/extension/",
-    "amygdala/prompts/",
-    "amygdala/skills/",
-    "amygdala/package.json",
-    "amygdala/README.md",
-    "axon/config/",
-    "axon/extension/",
-    "axon/skills/",
-    "axon/package.json",
-    "axon/README.md",
-    "cerebel/extension/",
-    "cerebel/prompts/",
-    "cerebel/skills/",
-    "cerebel/package.json",
-    "cerebel/README.md",
-    "cortex/extension/",
-    "cortex/prompts/",
-    "cortex/skills/",
-    "cortex/package.json",
-    "cortex/README.md",
-    "dashboard/extension/",
-    "dashboard/package.json",
-    "dashboard/README.md",
-    "ganglion/extension/",
-    "ganglion/prompts/",
-    "ganglion/skills/",
-    "ganglion/package.json",
-    "ganglion/README.md",
-    "lion/extension/",
-    "lion/prompts/",
-    "lion/skills/",
-    "lion/package.json",
-    "lion/README.md",
-    "magi/config/",
-    "magi/extension/",
-    "magi/prompts/",
-    "magi/skills/",
-    "magi/package.json",
-    "magi/README.md",
-    "synapse/extension/",
-    "synapse/skills/",
-    "synapse/package.json",
-    "synapse/README.md"
   ],
   "workspaces": [
     "magi",
@@ -123,9 +73,6 @@
     "test:dashboard": "vitest run --dir dashboard",
     "test:state": "vitest run --dir state",
     "test:e2e": "vitest run demo/tests/e2e-flow.test.ts"
-  },
-  "dependencies": {
-    "@nervous-system/state": "0.1.0"
   },
   "devDependencies": {
     "@earendil-works/pi-agent-core": "*",
