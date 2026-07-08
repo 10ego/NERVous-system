@@ -12,7 +12,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import type { LionReport, LionRun } from "./schema.ts";
+import type { LionProgressSnapshot, LionReport, LionRun } from "./schema.ts";
+
+const MAX_PROGRESS_TEXT = 1000;
+const TEXT_PROGRESS_THROTTLE_MS = 1000;
 
 export interface LionRunnerOptions {
 	cwd: string;
@@ -24,6 +27,8 @@ export interface LionRunRequest {
 	run: Pick<LionRun, "id" | "agent_id" | "task_id" | "objective" | "context" | "model" | "tools">;
 	signal?: AbortSignal;
 	timeout_ms?: number;
+	/** Optional live progress callback. Called opportunistically and defensively. */
+	onProgress?: (progress: LionProgressSnapshot) => void;
 }
 
 export interface LionRunOutput {
@@ -62,6 +67,110 @@ export function getFinalOutput(messages: Message[]): string {
 		for (const part of msg.content) if (part.type === "text") return part.text;
 	}
 	return "";
+}
+
+export interface LionProgressState {
+	activeTools: string[];
+	toolUses: number;
+	turnCount: number;
+	tokenTotal: number | null;
+	currentText: string;
+	lastTextEmitAt: number;
+}
+
+export function createLionProgressState(): LionProgressState {
+	return { activeTools: [], toolUses: 0, turnCount: 0, tokenTotal: null, currentText: "", lastTextEmitAt: 0 };
+}
+
+export function progressFromEvent(raw: unknown, state: LionProgressState = createLionProgressState(), nowMs = Date.now()): LionProgressSnapshot | null {
+	if (!isObject(raw) || typeof raw.type !== "string") return null;
+	const eventType = raw.type;
+	if (eventType === "tool_execution_start") {
+		const tool = stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? "tool";
+		if (!state.activeTools.includes(tool)) state.activeTools.push(tool);
+		return snapshot(state, "tool_start", `running ${tool}…`);
+	}
+	if (eventType === "tool_execution_end") {
+		const tool = stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? state.activeTools[0] ?? "tool";
+		state.activeTools = state.activeTools.filter((name) => name !== tool);
+		state.toolUses++;
+		return snapshot(state, "tool_end", state.activeTools.length ? activityFromTools(state.activeTools) : `finished ${tool}`);
+	}
+	if (eventType === "message_update") {
+		const delta = textDelta(raw);
+		if (delta) state.currentText = tail(state.currentText + delta);
+		if (nowMs - state.lastTextEmitAt < TEXT_PROGRESS_THROTTLE_MS) return null;
+		state.lastTextEmitAt = nowMs;
+		return snapshot(state, "message", summarizeText(state.currentText) || "responding…");
+	}
+	if (eventType === "message_end") {
+		addUsage(state, raw.message);
+		const text = isObject(raw.message) ? extractMessageText(raw.message) : "";
+		if (text) state.currentText = tail(text);
+		return snapshot(state, "message_end", state.activeTools.length ? activityFromTools(state.activeTools) : "message complete");
+	}
+	if (eventType === "turn_end") {
+		state.turnCount++;
+		return snapshot(state, "turn_end", state.activeTools.length ? activityFromTools(state.activeTools) : `turn ${state.turnCount} complete`);
+	}
+	return null;
+}
+
+function snapshot(state: LionProgressState, event: LionProgressSnapshot["event"], activity: string): LionProgressSnapshot {
+	return {
+		event,
+		activity,
+		active_tools: [...state.activeTools],
+		tool_uses: state.toolUses,
+		turn_count: state.turnCount,
+		token_total: state.tokenTotal,
+		last_text: state.currentText || null,
+		last_event_at: new Date().toISOString(),
+	};
+}
+
+function activityFromTools(tools: string[]): string {
+	return tools.length === 1 ? `running ${tools[0]}…` : `running ${tools.length} tools…`;
+}
+
+function textDelta(raw: Record<string, unknown>): string {
+	const assistantEvent = raw.assistantMessageEvent;
+	if (isObject(assistantEvent) && assistantEvent.type === "text_delta" && typeof assistantEvent.delta === "string") return assistantEvent.delta;
+	return typeof raw.delta === "string" ? raw.delta : "";
+}
+
+function addUsage(state: LionProgressState, message: unknown): void {
+	if (!isObject(message) || !isObject(message.usage)) return;
+	const usage = message.usage;
+	const total = numberProp(usage, "total") ?? numberProp(usage, "totalTokens") ?? (numberProp(usage, "input") ?? 0) + (numberProp(usage, "output") ?? 0) + (numberProp(usage, "cacheWrite") ?? 0);
+	if (total > 0) state.tokenTotal = (state.tokenTotal ?? 0) + total;
+}
+
+function extractMessageText(message: Record<string, unknown>): string {
+	const content = message.content;
+	if (!Array.isArray(content)) return "";
+	return content.map((part) => isObject(part) && part.type === "text" && typeof part.text === "string" ? part.text : "").join("");
+}
+
+function summarizeText(text: string): string {
+	return truncateSingleLine(text, 120);
+}
+
+function tail(text: string): string {
+	return text.length > MAX_PROGRESS_TEXT ? text.slice(-MAX_PROGRESS_TEXT) : text;
+}
+
+function truncateSingleLine(text: string, max: number): string {
+	const flat = text.replace(/\s+/g, " ").trim();
+	return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+function stringProp(obj: Record<string, unknown>, key: string): string | undefined {
+	return typeof obj[key] === "string" ? obj[key] as string : undefined;
+}
+
+function numberProp(obj: Record<string, unknown>, key: string): number | undefined {
+	return typeof obj[key] === "number" ? obj[key] as number : undefined;
 }
 
 export function buildLionSystemPrompt(run: LionRunRequest["run"]): string {
@@ -185,7 +294,7 @@ async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<
 		args.push("--append-system-prompt", tmpPath);
 		args.push(buildLionUserPrompt(req.run));
 
-		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms);
+		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress);
 		const text = getFinalOutput(messages);
 		return { text, report: parseLionReport(text) };
 	} finally {
@@ -209,6 +318,7 @@ function collectMessages(
 	opts: LionRunnerOptions,
 	signal?: AbortSignal,
 	timeout_ms = 10 * 60_000,
+	onProgress?: (progress: LionProgressSnapshot) => void,
 ): Promise<Message[]> {
 	return new Promise((resolve, reject) => {
 		const invocation = getPiInvocation([...args, ...(opts.extraArgs ?? [])], { forceBinary: opts.forcePiBinary });
@@ -223,6 +333,7 @@ function collectMessages(
 		let stderr = "";
 		let aborted = false;
 		let settled = false;
+		const progressState = createLionProgressState();
 
 		const done = (fn: () => void) => {
 			if (settled) return;
@@ -235,6 +346,8 @@ function collectMessages(
 			if (!line.trim()) return;
 			try {
 				const event = JSON.parse(line) as { type?: string; message?: Message };
+				const progress = progressFromEvent(event, progressState);
+				if (progress) onProgress?.(progress);
 				if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) messages.push(event.message);
 			} catch {
 				/* ignore non-json line */

@@ -1,6 +1,6 @@
 import * as assert from "node:assert";
 import { describe, it } from "vitest";
-import { buildLionSystemPrompt, buildLionUserPrompt, getFinalOutput, getPiInvocation, parseLionReport } from "../extension/subprocess.ts";
+import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, getFinalOutput, getPiInvocation, parseLionReport, progressFromEvent } from "../extension/subprocess.ts";
 import type { Message } from "@earendil-works/pi-ai";
 
 const run = {
@@ -49,6 +49,30 @@ describe("LION subprocess helpers", () => {
 			{ role: "assistant", content: [{ type: "text", text: "final" }] },
 		] as Message[];
 		assert.equal(getFinalOutput(messages), "final");
+	});
+
+	it("derives bounded progress snapshots from pi JSON events", () => {
+		const state = createLionProgressState();
+		const start = progressFromEvent({ type: "tool_execution_start", toolName: "bash" }, state)!;
+		assert.equal(start.event, "tool_start");
+		assert.deepEqual(start.active_tools, ["bash"]);
+		const end = progressFromEvent({ type: "tool_execution_end", toolName: "bash" }, state)!;
+		assert.equal(end.event, "tool_end");
+		assert.equal(end.tool_uses, 1);
+		assert.deepEqual(end.active_tools, []);
+		const msg = progressFromEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Working on it" } }, state, 2000)!;
+		assert.equal(msg.event, "message");
+		assert.match(msg.activity, /Working/);
+		const done = progressFromEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Done" }], usage: { input: 10, output: 5 } } }, state)!;
+		assert.equal(done.event, "message_end");
+		assert.equal(done.token_total, 15);
+	});
+
+	it("throttles text progress snapshots", () => {
+		const state = createLionProgressState();
+		assert.ok(progressFromEvent({ type: "message_update", delta: "first" }, state, 2000));
+		assert.equal(progressFromEvent({ type: "message_update", delta: "second" }, state, 2500), null);
+		assert.ok(progressFromEvent({ type: "message_update", delta: "third" }, state, 3100));
 	});
 
 	it("resolves pi invocation without throwing", () => {
