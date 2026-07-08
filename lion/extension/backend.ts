@@ -113,6 +113,25 @@ export class FileBackend {
 	}
 
 	async load(): Promise<LoadResult> {
+		return this.loadUnlocked();
+	}
+
+	async save(ledger: LionLedger): Promise<void> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		await withLock(this.lockPath, async () => this.saveUnlocked(ledger));
+	}
+
+	async mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T; warnings: string[] }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { ledger, warnings } = await this.loadUnlocked();
+			const result = fn(ledger);
+			await this.saveUnlocked(ledger);
+			return { result, warnings };
+		});
+	}
+
+	private async loadUnlocked(): Promise<LoadResult> {
 		let raw: string;
 		try {
 			raw = await fs.readFile(this.location.runsPath, "utf8");
@@ -141,19 +160,16 @@ export class FileBackend {
 		}
 	}
 
-	async save(ledger: LionLedger): Promise<void> {
-		await fs.mkdir(this.location.dir, { recursive: true });
-		await withLock(this.lockPath, async () => {
-			const data = JSON.stringify(ledger.toJSON(), null, 2);
-			try {
-				await fs.copyFile(this.location.runsPath, this.bakPath);
-			} catch (err) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") throw err;
-			}
-			await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
-			await fs.rename(this.tmpPath, this.location.runsPath);
-		});
+	private async saveUnlocked(ledger: LionLedger): Promise<void> {
+		const data = JSON.stringify(ledger.toJSON(), null, 2);
+		try {
+			await fs.copyFile(this.location.runsPath, this.bakPath);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") throw err;
+		}
+		await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
+		await fs.rename(this.tmpPath, this.location.runsPath);
 	}
 }
 
@@ -174,9 +190,6 @@ export class LionStore {
 	}
 
 	async mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T; warnings: string[] }> {
-		const { ledger, warnings } = await this.backend.load();
-		const result = fn(ledger);
-		await this.backend.save(ledger);
-		return { result, warnings };
+		return this.backend.mutate(fn);
 	}
 }

@@ -347,7 +347,9 @@ function collectMessages(
 			try {
 				const event = JSON.parse(line) as { type?: string; message?: Message };
 				const progress = progressFromEvent(event, progressState);
-				if (progress) onProgress?.(progress);
+				if (progress) {
+					try { onProgress?.(progress); } catch { /* progress callbacks must not break message collection */ }
+				}
 				if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) messages.push(event.message);
 			} catch {
 				/* ignore non-json line */

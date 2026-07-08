@@ -53,6 +53,18 @@ describe("FileBackend", () => {
 		assert.ok(await exists(`${backend.location.runsPath}.bak`));
 	});
 
+	it("serializes concurrent mutate load-write transactions", async () => {
+		const { store } = await tmpStore();
+		await Promise.all([
+			store.mutate((l) => l.create({ objective: "a" })),
+			store.mutate((l) => l.create({ objective: "b" })),
+			store.mutate((l) => l.create({ objective: "c" })),
+		]);
+		const { result } = await store.query((l) => l.all());
+		assert.equal(result.length, 3);
+		assert.deepEqual(new Set(result.map((r) => r.id)), new Set(["run-001", "run-002", "run-003"]));
+	});
+
 	it("recovers corrupt files", async () => {
 		const { backend, dir } = await tmpStore();
 		await fs.writeFile(backend.location.runsPath, "{ broken", "utf8");
