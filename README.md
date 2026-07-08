@@ -93,6 +93,16 @@ nervous-system/
 
 ## Installation
 
+### Install from npm / pi.dev package gallery
+
+Install the full NERVous System pi package from npm:
+
+```bash
+pi install npm:nervous-system
+```
+
+This is the gallery-facing package for pi.dev and enables all NERVous extensions, skills, and prompt templates.
+
 ### Install from GitHub
 
 Install the full NERVous System pi package with SSH:

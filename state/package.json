@@ -3,9 +3,24 @@
   "version": "0.1.0",
   "description": "Shared NERVous state path resolver for global project/context namespaced persistence.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/10ego/NERVous-system.git",
+    "directory": "state"
+  },
+  "homepage": "https://github.com/10ego/NERVous-system/tree/main/state#readme",
+  "bugs": {
+    "url": "https://github.com/10ego/NERVous-system/issues"
+  },
   "type": "module",
   "exports": {
     ".": "./src/index.ts"
+  },
+  "files": [
+    "src/"
+  ],
+  "publishConfig": {
+    "access": "public"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
