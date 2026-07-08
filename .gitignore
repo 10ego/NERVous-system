@@ -8,3 +8,4 @@ coverage/
 
 # pi/NERVous runtime state
 .pi/
+.auto/
