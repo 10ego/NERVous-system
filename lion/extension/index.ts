@@ -97,7 +97,7 @@ export default function (pi: ExtensionAPI) {
 		label: "LION",
 		description: [
 			"Local Intelligence Operations Node: launch one isolated pi coding subagent for a concrete assignment.",
-			"A run persists to the active NERVous state namespace with status, output, and parsed WORKER_REPORT.",
+			"A run persists to the active NERVous state namespace with status, bounded live progress, output, and parsed WORKER_REPORT.",
 			"Use it as CEREBEL's worker abstraction: task_id/objective in, worker report out.",
 			"Actions: run, get, list, summary, delete.",
 		].join(" "),
@@ -108,7 +108,7 @@ export default function (pi: ExtensionAPI) {
 			"Set model_role='review' for implementation review/QA assignments so review workers can use the configured review model; implementation work defaults to model_role='implementation'.",
 			"Give each LION a narrow objective and enough context/acceptance criteria; avoid broad ambiguous assignments.",
 			"Pass an AXON task id when available so the worker can update durable task state if the axon tool is available.",
-			"Read the LION worker report before marking orchestration work complete; blocked/failed reports should feed AXON/AMYGDALA.",
+			"Read LION progress when a worker is active, then read the final worker report before marking orchestration work complete; blocked/failed reports should feed AXON/AMYGDALA.",
 		],
 		parameters: LionToolParams,
 

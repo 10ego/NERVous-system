@@ -12,7 +12,7 @@ A modular multi-agent coding-agent extension framework for [pi](https://pi.dev),
 | **MAGI** | Configurable deliberation council (≤3 councillors) | ✅ [`magi/`](./magi) |
 | **AXON** | Persistent task ledger (survives compaction/restart) | ✅ [`axon/`](./axon) |
 | **CEREBEL** | Orchestration controller for LION worker waves | ✅ [`cerebel/`](./cerebel) |
-| **LION** | Local Intelligence Operations Node — an isolated coding subagent | ✅ [`lion/`](./lion) |
+| **LION** | Local Intelligence Operations Node — an isolated coding subagent with durable live progress telemetry | ✅ [`lion/`](./lion) |
 | **GANGLION** | Working-group roster/capability allocator for LIONs | ✅ [`ganglion/`](./ganglion) |
 | **SYNAPSE** | Transient shared coordination scratchpad | ✅ [`synapse/`](./synapse) |
 | **AMYGDALA** | Risk escalation and safety triage | ✅ [`amygdala/`](./amygdala) |
@@ -30,6 +30,8 @@ LIONs complete → update AXON → CEREBEL assigns more → … → CORTEX check
 ```
 
 **Key principle:** AXON is durable state; SYNAPSE is transient coordination. Interrupted work resumes from AXON without the original context window.
+
+LION runs also expose optional bounded live progress snapshots and `nervous:lion:*` lifecycle/progress events, creating a durable foundation for future FleetView/dashboard-style orchestration UI without coupling the components.
 
 ## State isolation
 

@@ -48,6 +48,20 @@ lion run \
 
 The worker receives a LION system prompt and must finish with a parseable `WORKER_REPORT` JSON block.
 
+### Live progress telemetry
+
+While a run is active, LION now records a bounded `progress` snapshot in the run ledger and emits best-effort lifecycle events when `pi.events` is available:
+
+- `nervous:lion:started`
+- `nervous:lion:progress`
+- `nervous:lion:completed`
+- `nervous:lion:blocked`
+- `nervous:lion:failed`
+
+Progress is derived defensively from headless `pi --mode json` events such as tool start/end, text deltas, message end, and turn end. It is optional and backward-compatible: old ledgers without `progress` still load, malformed/missing subprocess events are ignored, and retained text is bounded so progress does not become an unbounded transcript.
+
+This PR intentionally does **not** add FleetView/widget UI, CEREBEL auto-dispatch/grouped notifications, steering, or subprocess cancellation. Those can consume the durable/evented progress contract in follow-up work.
+
 ### Model selection
 
 `lion run model="provider/model"` remains the highest-precedence per-run override. When `model` is omitted, LION reads the shared NERVous model config (`~/.pi/agent/nervous.json`, overlaid by trusted `<repo>/.pi/nervous.json`) and selects by `model_role`:
@@ -95,7 +109,8 @@ Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed
 
 | Aspect | Behavior |
 |--------|----------|
-| Location | `<cwd>/.pi/lion/runs.json` (override with `LION_RUNS_PATH`) |
+| Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`) |
+| Progress | Optional bounded `progress` snapshot is persisted while running and shown in summaries when present |
 | Atomicity | Write to `runs.json.tmp` then rename |
 | Backup | Previous file copied to `runs.json.bak` |
 | Concurrency | Advisory lock (`runs.json.lock`) with stale-lock detection |
