@@ -51,8 +51,10 @@ function scopeKey(scope: ActiveRunScope): string {
 }
 
 export function beginActiveRun(scope: ActiveRunScope, runnerMode?: LionRunnerMode | null): ActiveRunOwner {
+	const key = scopeKey(scope);
+	if (activeRuns.has(key)) throw new Error(`active LION owner already exists for ${scope.runId} in ${scope.namespaceId}`);
 	const owner: ActiveRunOwner = { ...scope, ownerId: randomUUID() };
-	activeRuns.set(scopeKey(scope), {
+	activeRuns.set(key, {
 		...owner,
 		runnerMode,
 		registeredAt: new Date().toISOString(),

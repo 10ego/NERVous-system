@@ -49,6 +49,16 @@ describe("namespace-scoped active LION ownership", () => {
 		finishActiveRun(ownerB);
 	});
 
+	it("rejects reused run ids while an owner remains active in the same namespace", async () => {
+		const store = await makeStore("reuse");
+		const scope = { namespaceId: store.namespaceId, runId: "run-001" };
+		const owner = beginActiveRun(scope, "json");
+		assert.throws(() => beginActiveRun(scope, "json"), /owner already exists/);
+		finishActiveRun(owner);
+		const replacement = beginActiveRun(scope, "json");
+		finishActiveRun(replacement);
+	});
+
 	it("replays and coalesces cancellation recorded before process attachment", async () => {
 		const store = await makeStore("replay");
 		const run = (await store.mutate((l) => l.create({ objective: "cancel me" }))).result;
