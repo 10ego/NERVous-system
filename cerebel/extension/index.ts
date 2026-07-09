@@ -239,7 +239,7 @@ export default function (pi: ExtensionAPI) {
 					try {
 						const adapter = await createLionAdapter(ctx, p, signal, onUpdate);
 						try { onUpdate?.({ content: [{ type: "text", text: RUN_WAVE_DASHBOARD_HINT.replace(/`/g, "") }], details: { action: "run_wave", hint: "dashboard" } }); } catch { /* dashboard hint is best-effort */ }
-						const result = await runWave(store, adapter, { wave_id: p.wave_id, max_parallel: p.max_parallel });
+						const result = await runWave(store, adapter, { wave_id: p.wave_id, max_parallel: p.max_parallel, signal });
 						const ganglionMessages: string[] = [];
 						for (const r of result.assignment_results) {
 							if (r.outcome === "skipped") continue;

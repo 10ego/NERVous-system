@@ -17,6 +17,7 @@ export interface RunWaveOptions {
 	wave_id?: string;
 	max_parallel?: number;
 	reservation_stale_ms?: number;
+	signal?: AbortSignal;
 }
 
 export interface RunWaveAssignmentResult {
@@ -49,7 +50,7 @@ export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, 
 		if (wave.assignments.some((a) => a.status === "blocked" || a.status === "failed")) break;
 		if (!reservation.assignments.length) break;
 
-		const batch = await Promise.all(reservation.assignments.map((assignment) => createAndRunOne(store, adapter, wave.id, assignment)));
+		const batch = await Promise.all(reservation.assignments.map((assignment) => createAndRunOne(store, adapter, wave.id, assignment, options.signal)));
 		results.push(...batch);
 		wave = await loadWave(store, wave.id);
 	}
@@ -81,7 +82,7 @@ async function reservePlannedAssignments(store: CerebelStore, waveId: string, ma
 	return result;
 }
 
-async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment): Promise<RunWaveAssignmentResult> {
+async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
 	let run: LionRun | undefined;
 	let linkedAssignment: Assignment | undefined;
 	try {
@@ -100,14 +101,18 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 		const message = err instanceof Error ? err.message : String(err);
 		const summary = run ? `LION run setup failed: ${message}` : `LION run creation failed: ${message}`;
 		if (run) {
-			await adapter.finishRun(run.id, { output: "", report: null, status: "failed", error: `CEREBEL dispatch/link failed after run creation: ${message}` }).catch(() => undefined);
+			try {
+				await adapter.finishRun(run.id, { output: "", report: null, status: "failed", error: `CEREBEL dispatch/link failed after run creation: ${message}` });
+			} catch (cleanupErr) {
+				throw new Error(`LION cleanup failed for unlinked ${run.id}: ${cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr)}; setup failure: ${message}`, { cause: cleanupErr });
+			}
 		}
 		const recovery = await recoverSetupFailure(store, waveId, assignment, run, summary, message);
 		if (recovery.superseded) return supersededResult(assignment, run?.id, recovery.assignment, summary);
 		return { assignment_id: assignment.id, lion_run_id: run?.id, outcome: "failed", summary, blockers: [message] };
 	}
 	if (!run || !linkedAssignment) throw new Error(`LION run setup did not produce a linked run for ${assignment.id}`);
-	return runOne(store, adapter, waveId, linkedAssignment, run);
+	return runOne(store, adapter, waveId, linkedAssignment, run, signal);
 }
 
 async function recoverSetupFailure(store: CerebelStore, waveId: string, assignment: Assignment, run: LionRun | undefined, summary: string, message: string): Promise<{ superseded: boolean; assignment: Assignment }> {
@@ -131,7 +136,7 @@ async function recoverSetupFailure(store: CerebelStore, waveId: string, assignme
 	return result;
 }
 
-async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun): Promise<RunWaveAssignmentResult> {
+async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
 	const progress = createProgressUpdater((snapshot) => adapter.updateProgress?.(run.id, snapshot) ?? Promise.resolve());
 	let out: { text: string; report: LionReport | null };
 	try {
@@ -139,7 +144,7 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		await progress.drain();
 	} catch (err) {
 		await progress.drain().catch(() => undefined);
-		return recordWorkerError(store, adapter, waveId, assignment, run, err);
+		return recordWorkerError(store, adapter, waveId, assignment, run, err, signal);
 	}
 
 	const missingReport = !out.report;
@@ -151,10 +156,10 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		report: out.report,
 		status: missingReport ? "failed" : undefined,
 		error: missingReport ? "missing WORKER_REPORT" : null,
-	}).catch(() => undefined);
-	const outcome = assignmentStatusFromReport(out.report, finished?.status ?? intendedStatus);
-	const summary = out.report?.summary ?? (finished?.error ? `failed: ${finished.error}` : "failed: missing WORKER_REPORT");
-	const blockers = out.report?.blockers ?? (finished?.error ? [finished.error] : ["missing WORKER_REPORT"]);
+	});
+	const outcome = assignmentStatusFromReport(out.report, finished.status ?? intendedStatus);
+	const summary = out.report?.summary ?? (finished.error ? `failed: ${finished.error}` : "failed: missing WORKER_REPORT");
+	const blockers = out.report?.blockers ?? (finished.error ? [finished.error] : ["missing WORKER_REPORT"]);
 	return recordOwnedResult(store, waveId, assignment, run.id, {
 		assignment_id: assignment.id,
 		lion_run_id: run.id,
@@ -169,17 +174,20 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 	});
 }
 
-async function recordWorkerError(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun, err: unknown): Promise<RunWaveAssignmentResult> {
+async function recordWorkerError(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun, err: unknown, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
 	const message = err instanceof Error ? err.message : String(err);
 	const current = await adapter.getRun?.(run.id).catch(() => undefined);
-	const cancelled = Boolean(current?.control?.cancel_requested_at);
+	const durableCancellation = Boolean(current?.control?.cancel_requested_at);
+	const hostAborted = Boolean(signal?.aborted);
+	const cancelled = durableCancellation || hostAborted;
 	const finishStatus = cancelled ? "aborted" : "failed";
 	const outcome: AssignmentStatus = cancelled ? "cancelled" : "failed";
-	const summary = cancelled
+	const summary = durableCancellation
 		? `LION run cancelled${current?.control?.cancel_reason ? `: ${current.control.cancel_reason}` : ""}`
-		: `LION run failed: ${message}`;
+		: hostAborted ? "LION run host aborted" : `LION run failed: ${message}`;
 	const blockers = cancelled ? [] : [message];
-	await adapter.finishRun(run.id, { output: "", report: null, status: finishStatus, error: cancelled ? (current?.control?.cancel_reason ?? "Cancelled") : message }).catch(() => undefined);
+	const finishError = durableCancellation ? (current?.control?.cancel_reason ?? "Cancelled") : hostAborted ? "Host aborted run_wave" : message;
+	await adapter.finishRun(run.id, { output: "", report: null, status: finishStatus, error: finishError });
 	return recordOwnedResult(store, waveId, assignment, run.id, {
 		assignment_id: assignment.id,
 		lion_run_id: run.id,

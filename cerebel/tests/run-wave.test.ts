@@ -123,6 +123,52 @@ describe("runWave", () => {
 		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
 	});
 
+	it("stops without recording completion when LION finalization rejects", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("local done") });
+		adapter.finishRun = async () => { throw new Error("LION finalization lock timeout"); };
+		await assert.rejects(() => runWave(store, adapter, { wave_id: wave.id }), /finalization lock timeout/);
+		const current = (await store.query((l) => l.get(wave.id))).result!;
+		assert.equal(current.assignments[0]?.status, "dispatched");
+		assert.equal(current.assignments[0]?.lion_run_id, "run-001");
+		assert.equal(current.assignments[0]?.outcome_summary, null);
+	});
+
+	it("stops without recording failure when worker-error finalization rejects", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({});
+		adapter.run = async () => { throw new Error("worker crashed"); };
+		adapter.finishRun = async () => { throw new Error("LION error finalization failed"); };
+		await assert.rejects(() => runWave(store, adapter, { wave_id: wave.id }), /error finalization failed/);
+		const current = (await store.query((l) => l.get(wave.id))).result!;
+		assert.equal(current.assignments[0]?.status, "dispatched");
+		assert.equal(current.assignments[0]?.lion_run_id, "run-001");
+	});
+
+	it("records a host-aborted worker as aborted and cancelled", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const controller = new AbortController();
+		const adapter = fakeAdapter({});
+		let finishStatus: string | undefined;
+		adapter.run = async () => {
+			controller.abort();
+			throw new Error("LION subprocess was aborted or timed out");
+		};
+		adapter.getRun = async (runId) => ({ id: runId, agent_id: "lion-a", status: "running", task_id: null, objective: "A", context: "", started_at: new Date().toISOString(), updated_at: new Date().toISOString(), control: null } as LionRun);
+		adapter.finishRun = async (runId, result) => {
+			finishStatus = result.status;
+			return { id: runId, agent_id: "lion", status: result.status ?? "failed", task_id: null, objective: "", context: "", started_at: new Date().toISOString(), updated_at: new Date().toISOString(), report: result.report, error: result.error ?? null } as LionRun;
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id, signal: controller.signal });
+		assert.equal(finishStatus, "aborted");
+		assert.equal(result.assignment_results[0]?.outcome, "cancelled");
+		assert.match(result.assignment_results[0]?.summary ?? "", /host aborted/i);
+		assert.equal(result.wave.status, "cancelled");
+	});
+
 	it("records cancelled LION runs as aborted and cancelled assignments", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
@@ -303,6 +349,24 @@ describe("runWave", () => {
 		assert.equal(result.assignment_results[0]?.outcome, "skipped");
 		assert.equal(result.wave.status, "cancelled");
 		assert.equal(result.wave.assignments[0]?.status, "cancelled");
+	});
+
+	it("surfaces cleanup failure for a created but unlinked LION run", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({});
+		const baseCreateRun = adapter.createRun.bind(adapter);
+		adapter.createRun = async (assignment) => {
+			const run = await baseCreateRun(assignment);
+			await store.mutate((l) => l.record(wave.id, { assignment_id: assignment.id, outcome: "failed", summary: "foreign terminal" }));
+			return run;
+		};
+		adapter.finishRun = async () => { throw new Error("cleanup write failed"); };
+		await assert.rejects(() => runWave(store, adapter, { wave_id: wave.id }), /cleanup write failed/);
+		const current = (await store.query((l) => l.get(wave.id))).result!;
+		assert.equal(current.assignments[0]?.status, "failed");
+		assert.equal(current.assignments[0]?.lion_run_id, null);
+		assert.equal(current.assignments[0]?.outcome_summary, "foreign terminal");
 	});
 
 	it("records createRun failures against reserved assignments", async () => {
