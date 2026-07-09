@@ -101,7 +101,7 @@ export class CerebelLedger {
 
 	dispatch(waveId: string, input: DispatchInput = {}): Wave {
 		const w = this.require(waveId);
-		if (w.status !== "planned" && w.status !== "needs_replan") throw new CerebelError("invalid_transition", `cannot dispatch ${w.id} from ${w.status}`);
+		if (!["planned", "needs_replan", "dispatched", "collecting"].includes(w.status)) throw new CerebelError("invalid_transition", `cannot dispatch ${w.id} from ${w.status}`);
 		const links = input.links ?? [];
 		for (const link of links) {
 			const a = requireAssignment(w, link.assignment_id);
@@ -117,7 +117,7 @@ export class CerebelLedger {
 				a.updated_at = now();
 			}
 		}
-		this.transition(w, "dispatched");
+		if (w.status === "planned" || w.status === "needs_replan") this.transition(w, "dispatched");
 		w.decision = this.computeDecision(w);
 		w.updated_at = now();
 		return clone(w);

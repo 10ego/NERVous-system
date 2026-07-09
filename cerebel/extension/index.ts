@@ -1,11 +1,14 @@
 /** CEREBEL — pi extension entry point. */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
 import { CerebelStore } from "./backend.ts";
 import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
 import { renderCerebelCall, renderCerebelResult, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
+import { runWave, type RunWaveLionAdapter } from "./run-wave.ts";
+import type { LionModelRole, LionProgressSnapshot, LionRun } from "../../lion/extension/schema.ts";
 
-interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; error?: string }
+interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; run_wave?: import("./run-wave.ts").RunWaveResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: CerebelDetails; isError?: boolean };
 
 function ok(action: string, text: string, details: Omit<CerebelDetails, "action"> = {}): ToolResult {
@@ -25,6 +28,22 @@ async function runQuery(store: CerebelStore, action: string, op: (l: import("./s
 function waveId(l: import("./store.ts").CerebelLedger, id?: string): string | undefined {
 	if (!id || id === "current" || id === "latest") return l.current_wave_id ?? l.current()?.id;
 	return id;
+}
+
+const DEFAULT_RUN_WAVE_TIMEOUT_MS = 10 * 60_000;
+
+function modelKeyForRole(role: LionModelRole): NervousModelKey {
+	if (role === "review") return "lion.reviewDefault";
+	if (role === "implementation") return "lion.implementationDefault";
+	return "lion.default";
+}
+
+function resolveConfiguredLionModel(ctx: ExtensionContext, role: LionModelRole): string | undefined {
+	const config = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false });
+	const roleModel = resolveNervousModel(config, modelKeyForRole(role)).model;
+	if (roleModel) return roleModel;
+	if (role !== "default") return resolveNervousModel(config, "lion.default").model;
+	return undefined;
 }
 
 function isTerminalAssignment(status: AssignmentStatus): boolean { return ["completed", "partial", "blocked", "failed", "cancelled"].includes(status); }
@@ -47,27 +66,74 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 	}
 }
 
+async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined): Promise<RunWaveLionAdapter> {
+	try {
+		const [{ LionStore }, { createLionRunner }] = await Promise.all([
+			import("../../lion/extension/backend.ts"),
+			import("../../lion/extension/subprocess.ts"),
+		]);
+		const lionStore = LionStore.fromCwd(ctx.cwd);
+		const runner = createLionRunner({ cwd: ctx.cwd });
+		const modelRole = (p.model_role as LionModelRole | undefined) ?? "implementation";
+		const model = p.model?.trim() || resolveConfiguredLionModel(ctx, modelRole);
+		return {
+			async createRun(assignment) {
+				const { result } = await lionStore.mutate((l) => l.create({
+					agent_id: assignment.agent_id,
+					task_id: assignment.task_id,
+					objective: assignment.objective,
+					context: assignment.context,
+					model,
+					model_role: modelRole,
+					tools: p.tools,
+					start: true,
+				}));
+				return result;
+			},
+			async run(run: LionRun, _assignment, onProgress) {
+				return runner({
+					run,
+					signal,
+					timeout_ms: p.timeout_ms ?? DEFAULT_RUN_WAVE_TIMEOUT_MS,
+					onProgress: (progress: LionProgressSnapshot) => {
+						try { onUpdate?.({ content: [{ type: "text", text: `${run.id}/${run.agent_id}: ${progress.activity}` }], details: { action: "run_wave", run } }); } catch { /* progress display is best-effort */ }
+						onProgress(progress);
+					},
+				});
+			},
+			async finishRun(runId, result) {
+				return (await lionStore.mutate((l) => l.finish(runId, result))).result;
+			},
+			async updateProgress(runId, progress) {
+				await lionStore.mutate((l) => l.updateProgress(runId, progress));
+			},
+		};
+	} catch (e) {
+		throw new Error(`cerebel run_wave requires the LION package/runtime: ${e instanceof Error ? e.message : String(e)}`);
+	}
+}
+
 export default function (pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "cerebel",
 		label: "CEREBEL",
 		description: [
 			"Orchestration controller for LION worker waves. Forms assignments from ready AXON tasks,",
-			"records LION run outcomes, and decides whether to dispatch, wait, complete, replan, or escalate.",
-			"State persists in the active NERVous project/context namespace. Actions: plan_wave, dispatch, record, decide, complete_wave, cancel, get, list, summary.",
+			"records LION run outcomes, can run planned waves through LION with run_wave, and decides whether to dispatch, wait, complete, replan, or escalate.",
+			"State persists in the active NERVous project/context namespace. Actions: plan_wave, dispatch, record, decide, complete_wave, cancel, run_wave, get, list, summary.",
 		].join(" "),
 		promptSnippet: "Orchestrate ready AXON tasks into LION worker waves and record outcomes",
 		promptGuidelines: [
 			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use cerebel after CORTEX has planned work into AXON and ready AXON tasks exist.",
 			"First read axon list/summary, then pass ready task briefs into cerebel plan_wave.",
-			"For each ready assignment, call lion run with task_id/objective/context/agent_id, then cerebel dispatch/record the LION run id and outcome.",
+			"For manual control, call lion run with task_id/objective/context/agent_id, then cerebel dispatch/record the LION run id and outcome. For bounded active execution, use cerebel run_wave on an already planned wave.",
 			"When assignments come from GANGLION, include ganglion_id and ganglion_allocation_id on the CEREBEL assignment/dispatch/record so CEREBEL releases member capacity on terminal outcomes.",
 			"After blocked/failed results: cerebel record/decide, update AXON, post a SYNAPSE risk/blocker note, then use AMYGDALA or replan; never silently continue.",
 		],
 		parameters: CerebelToolParams,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(_toolCallId, params, signal, onUpdate, ctx) {
 			const store = CerebelStore.fromCwd(ctx.cwd);
 			const p = params as CerebelToolInput;
 			const action = p.action;
@@ -124,6 +190,24 @@ export default function (pi: ExtensionAPI) {
 						const wave = l.cancel(id);
 						return ok(action, `Cancelled ${wave.id}.`, { wave });
 					});
+				}
+				case "run_wave": {
+					try {
+						const adapter = await createLionAdapter(ctx, p, signal, onUpdate);
+						const result = await runWave(store, adapter, { wave_id: p.wave_id, max_parallel: p.max_parallel });
+						const ganglionMessages: string[] = [];
+						for (const r of result.assignment_results) {
+							if (r.outcome === "skipped") continue;
+							const assignment = result.wave.assignments.find((a) => a.id === r.assignment_id);
+							if (!assignment) continue;
+							const msg = await recordLinkedGanglion(ctx.cwd, assignment, { ...p, lion_run_id: r.lion_run_id, summary: r.summary } as CerebelToolInput, r.outcome as AssignmentStatus);
+							if (msg) ganglionMessages.push(msg);
+						}
+						const suffix = ganglionMessages.length ? ` ${ganglionMessages.join(" ")}` : "";
+						return ok(action, `Ran ${result.summary}.${suffix}`, { wave: result.wave, run_wave: result });
+					} catch (e) {
+						return fail(action, `cerebel run_wave failed: ${e instanceof Error ? e.message : String(e)}`);
+					}
 				}
 				case "get": {
 					return runQuery(store, action, (l) => {

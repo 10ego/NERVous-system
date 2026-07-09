@@ -22,7 +22,7 @@ export type WaveStatus = (typeof WAVE_STATUSES)[number];
 export const ORCHESTRATION_DECISIONS = ["dispatch", "wait", "continue", "complete", "replan", "escalate_to_amygdala", "cancelled"] as const;
 export type OrchestrationDecision = (typeof ORCHESTRATION_DECISIONS)[number];
 
-export const CEREBEL_ACTIONS = ["plan_wave", "dispatch", "record", "decide", "complete_wave", "cancel", "get", "list", "summary"] as const;
+export const CEREBEL_ACTIONS = ["plan_wave", "dispatch", "record", "decide", "complete_wave", "cancel", "run_wave", "get", "list", "summary"] as const;
 export type CerebelAction = (typeof CEREBEL_ACTIONS)[number];
 
 export interface AxonTaskBrief {
@@ -124,7 +124,7 @@ const DispatchLinkSchema = Type.Object({
 });
 
 export const CerebelToolParams = Type.Object({
-	action: StringEnum(CEREBEL_ACTIONS, { description: "What to do. plan_wave/dispatch/record/decide/complete_wave/cancel/get/list/summary." }),
+	action: StringEnum(CEREBEL_ACTIONS, { description: "What to do. plan_wave/dispatch/record/decide/complete_wave/cancel/run_wave/get/list/summary." }),
 	wave_id: Type.Optional(Type.String({ description: "Wave id. Use current/latest when omitted for most actions." })),
 	goal_id: Type.Optional(Type.String({ description: "Optional CORTEX goal id this wave serves." })),
 	max_parallel: Type.Optional(Type.Number({ description: "Max LION assignments to run concurrently. Default 3." })),
@@ -146,6 +146,11 @@ export const CerebelToolParams = Type.Object({
 	tests_run: Type.Optional(Type.Array(Type.String())),
 	blockers: Type.Optional(Type.Array(Type.String())),
 	next_steps: Type.Optional(Type.Array(Type.String())),
+	// run_wave optional LION subprocess controls
+	timeout_ms: Type.Optional(Type.Number({ description: "Per-LION subprocess timeout for run_wave in milliseconds." })),
+	model: Type.Optional(Type.String({ description: "Explicit model for LION subprocesses launched by run_wave." })),
+	model_role: Type.Optional(StringEnum(["implementation", "review", "default"] as const)),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional pi tool allow-list for run_wave LION subprocesses." })),
 	// list/summary filters
 	status_filter: Type.Optional(WAVE_STATUS_SCHEMA),
 	limit: Type.Optional(Type.Number({ description: "Max records to return. Default 20." })),

@@ -47,6 +47,17 @@ describe("FileBackend", () => {
 		assert.ok(!(await exists(`${backend.location.cerebelPath}.tmp`)));
 		assert.ok(await exists(`${backend.location.cerebelPath}.bak`));
 	});
+	it("serializes concurrent mutate load-write transactions", async () => {
+		const { store } = await tmpStore();
+		await Promise.all([
+			store.mutate((l) => l.planWave({ tasks: [{ id: "a", title: "A" }] })),
+			store.mutate((l) => l.planWave({ tasks: [{ id: "b", title: "B" }] })),
+			store.mutate((l) => l.planWave({ tasks: [{ id: "c", title: "C" }] })),
+		]);
+		const { result } = await store.query((l) => l.all());
+		assert.equal(result.length, 3);
+		assert.deepEqual(new Set(result.map((w) => w.id)), new Set(["wave-001", "wave-002", "wave-003"]));
+	});
 	it("recovers corrupt files", async () => {
 		const { backend, dir } = await tmpStore();
 		await fs.writeFile(backend.location.cerebelPath, "{ broken", "utf8");
