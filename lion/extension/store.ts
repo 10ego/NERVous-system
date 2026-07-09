@@ -10,6 +10,7 @@ import {
 	LION_PROGRESS_EVENTS,
 	LION_RUN_STATUSES,
 	LionError,
+	LION_STEERING_STATUSES,
 	type LionFile,
 	type LionModelRole,
 	type LionProgressEvent,
@@ -27,7 +28,7 @@ const VERSION = 1;
 
 const STATUS_SET = new Set<string>(LION_RUN_STATUSES);
 const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
-const STEERING_STATUS_SET = new Set<string>(["queued", "applied", "pending_delivery", "delivering", "delivered", "delivery_failed", "rejected_running", "rejected_terminal"]);
+const STEERING_STATUS_SET = new Set<string>(LION_STEERING_STATUSES);
 const MAX_PROGRESS_TEXT = 1000;
 const DEFAULT_RECONCILE_GRACE_MS = 30_000;
 

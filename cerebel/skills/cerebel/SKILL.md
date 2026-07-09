@@ -17,15 +17,18 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
    - `axon list ready_only=true`
 2. Plan a wave:
    - `cerebel plan_wave tasks=[...] max_parallel=... context="..."`
-3. Dispatch assignments:
+3. Either run the active dispatcher:
+   - `cerebel run_wave wave_id="current" max_parallel=...`
+   - use this when CEREBEL should create/run LION workers and record grouped outcomes directly
+4. Or dispatch manually:
    - for each ready assignment, call `lion run task_id=... agent_id=... objective=... context=...`
    - call `cerebel dispatch links=[{assignment_id,lion_run_id}]`
    - if the assignment came from GANGLION, include `ganglion_id` and `ganglion_allocation_id` in the assignment or dispatch link so CEREBEL can release capacity later
-4. Record worker results:
+5. Record worker results:
    - read each LION report
    - `cerebel record assignment_id=... lion_run_id=... outcome=... summary=... blockers=[...]`
    - for linked GANGLION allocations, terminal outcomes automatically record/release the GANGLION allocation
-5. Decide:
+6. Decide:
    - `cerebel decide`
    - `dispatch` → run more LIONs
    - `wait` → collect outstanding LION runs
@@ -46,6 +49,7 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
 - `plan_wave` — create a wave from AXON task briefs or direct assignments.
 - `dispatch` — mark assignments dispatched and link LION run ids.
 - `record` — record LION outcome for one assignment.
+- `run_wave` — actively create/run linked LION workers for planned assignments and record grouped outcomes.
 - `decide` — compute the next controller decision.
 - `complete_wave` — finish a successful wave.
 - `cancel` — cancel a wave.

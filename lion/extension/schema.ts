@@ -63,8 +63,8 @@ export interface LionReport {
 /**
  * Opportunistic live progress snapshot from a LION subprocess.
  *
- * All fields are optional/additive at the ledger level via LionRun.progress so
- * older ledgers remain valid. The text tail is intentionally bounded by the
+ * The snapshot itself is fully shaped, while LionRun.progress is optional/additive
+ * at the ledger level so older ledgers remain valid. The text tail is intentionally bounded by the
  * writer to avoid turning progress into an unbounded transcript.
  */
 export interface LionProgressSnapshot {
@@ -93,15 +93,17 @@ export interface LionControlState {
 	reconciled_at?: string | null;
 }
 
-export type LionSteeringStatus =
-	| "queued"
-	| "applied"
-	| "pending_delivery"
-	| "delivering"
-	| "delivered"
-	| "delivery_failed"
-	| "rejected_running"
-	| "rejected_terminal";
+export const LION_STEERING_STATUSES = [
+	"queued",
+	"applied",
+	"pending_delivery",
+	"delivering",
+	"delivered",
+	"delivery_failed",
+	"rejected_running",
+	"rejected_terminal",
+] as const;
+export type LionSteeringStatus = (typeof LION_STEERING_STATUSES)[number];
 
 export interface LionSteeringMessage {
 	id: string;

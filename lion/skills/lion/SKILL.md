@@ -24,7 +24,7 @@ Do **not** use LION for broad ambiguous planning — use CORTEX/MAGI first.
 1. Read the relevant AXON task.
 2. Build a narrow `objective` and concise `context`.
 3. Call `lion run` with `task_id` when available.
-4. Read the returned worker report.
+4. Read progress/report with `lion get`/`lion summary` when orchestration continues after launch.
 5. Reflect the result into AXON/SYNAPSE/CORTEX:
    - completed/partial → inspect changes and run final checks;
    - blocked → update AXON blocker or escalate to AMYGDALA later;
@@ -35,6 +35,14 @@ Example:
 ```text
 lion run task_id="task-003" agent_id="lion-api-tests" objective="Add pytest coverage for the todo API endpoints." context="Success: create/update/delete/list are covered; run the project test command; avoid unrelated refactors."
 ```
+
+Useful controls:
+
+- `lion run dry_run=true ...` queues a run without launching it.
+- `lion steer id="run-001" message="..."` adds pre-start steering to queued runs.
+- `lion start id="run-001"` launches a queued run and applies queued steering.
+- `lion cancel id="run-001" reason="..."` records cancellation and only signals an actively owned live worker.
+- `runner_mode="rpc"` (or `LION_RUNNER=rpc`) opts into live mid-run steering through pi RPC; the default `json` runner rejects running steering.
 
 ## Worker contract
 

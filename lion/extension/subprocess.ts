@@ -121,35 +121,35 @@ export function progressFromEvent(raw: unknown, state: LionProgressState = creat
 	if (eventType === "tool_execution_start") {
 		const tool = stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? "tool";
 		if (!state.activeTools.includes(tool)) state.activeTools.push(tool);
-		return snapshot(state, "tool_start", `running ${tool}…`);
+		return snapshot(state, "tool_start", `running ${tool}…`, nowMs);
 	}
 	if (eventType === "tool_execution_end") {
 		const tool = stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? state.activeTools[0] ?? "tool";
 		state.activeTools = state.activeTools.filter((name) => name !== tool);
 		state.toolUses++;
-		return snapshot(state, "tool_end", state.activeTools.length ? activityFromTools(state.activeTools) : `finished ${tool}`);
+		return snapshot(state, "tool_end", state.activeTools.length ? activityFromTools(state.activeTools) : `finished ${tool}`, nowMs);
 	}
 	if (eventType === "message_update") {
 		const delta = textDelta(raw);
 		if (delta) state.currentText = tail(state.currentText + delta);
 		if (nowMs - state.lastTextEmitAt < TEXT_PROGRESS_THROTTLE_MS) return null;
 		state.lastTextEmitAt = nowMs;
-		return snapshot(state, "message", summarizeText(state.currentText) || "responding…");
+		return snapshot(state, "message", summarizeText(state.currentText) || "responding…", nowMs);
 	}
 	if (eventType === "message_end") {
 		addUsage(state, raw.message);
 		const text = isObject(raw.message) ? extractMessageText(raw.message) : "";
 		if (text) state.currentText = tail(text);
-		return snapshot(state, "message_end", state.activeTools.length ? activityFromTools(state.activeTools) : "message complete");
+		return snapshot(state, "message_end", state.activeTools.length ? activityFromTools(state.activeTools) : "message complete", nowMs);
 	}
 	if (eventType === "turn_end") {
 		state.turnCount++;
-		return snapshot(state, "turn_end", state.activeTools.length ? activityFromTools(state.activeTools) : `turn ${state.turnCount} complete`);
+		return snapshot(state, "turn_end", state.activeTools.length ? activityFromTools(state.activeTools) : `turn ${state.turnCount} complete`, nowMs);
 	}
 	return null;
 }
 
-function snapshot(state: LionProgressState, event: LionProgressSnapshot["event"], activity: string): LionProgressSnapshot {
+function snapshot(state: LionProgressState, event: LionProgressSnapshot["event"], activity: string, nowMs = Date.now()): LionProgressSnapshot {
 	return {
 		event,
 		activity,
@@ -158,7 +158,7 @@ function snapshot(state: LionProgressState, event: LionProgressSnapshot["event"]
 		turn_count: state.turnCount,
 		token_total: state.tokenTotal,
 		last_text: state.currentText || null,
-		last_event_at: new Date().toISOString(),
+		last_event_at: new Date(nowMs).toISOString(),
 	};
 }
 

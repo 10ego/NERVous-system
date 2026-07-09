@@ -4,8 +4,6 @@ import type { LionProgressSnapshot, LionReport, LionRun } from "../../lion/exten
 import type { Assignment, AssignmentStatus, Wave } from "./schema.ts";
 import { CerebelStore } from "./backend.ts";
 
-const TERMINAL_ASSIGNMENTS = new Set<AssignmentStatus>(["completed", "partial", "blocked", "failed", "cancelled"]);
-
 export interface RunWaveLionAdapter {
 	createRun(assignment: Assignment): Promise<LionRun>;
 	run(run: LionRun, assignment: Assignment, onProgress: (progress: LionProgressSnapshot) => void): Promise<{ text: string; report: LionReport | null }>;
@@ -132,8 +130,4 @@ export function summarizeRunWave(wave: Wave, results: RunWaveAssignmentResult[])
 	const planned = wave.assignments.filter((a) => a.status === "planned").length;
 	const ran = results.filter((r) => r.outcome !== "skipped").length;
 	return `${wave.id}: ${wave.status}; ran ${ran}; completed ${completed}/${wave.assignments.length}; blocked ${blocked}; failed ${failed}; planned ${planned}`;
-}
-
-export function runnableAssignments(wave: Wave): Assignment[] {
-	return wave.assignments.filter((a) => !TERMINAL_ASSIGNMENTS.has(a.status));
 }

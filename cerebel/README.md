@@ -126,7 +126,7 @@ cerebel/
 
 CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. The `run_wave` action dynamically loads the LION runtime only when invoked; if LION is unavailable, it fails clearly without affecting the rest of CEREBEL.
 
-`run_wave` does **not** implement cancellation or steering. Current LION workers are headless subprocesses without a persisted process/control channel, so those controls require a separate design for PID/process-group ownership, durable cancellation states, orphan cleanup, restart reconciliation, and a real steering channel.
+`run_wave` does **not** orchestrate cancellation or steering across a wave. LION itself now owns per-run controls: best-effort active-owner cancellation, queued/pre-start steering, and explicit opt-in RPC live steering. Use LION actions directly for per-worker control until CEREBEL has a higher-level wave control policy.
 
 ---
 

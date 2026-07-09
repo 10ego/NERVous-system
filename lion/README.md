@@ -2,7 +2,7 @@
 
 > **LION** — Local Intelligence Operations Node. A LION is one isolated pi coding subagent: one subprocess, one concrete assignment, one durable worker report.
 
-LION is the worker abstraction that lets CEREBEL/GANGLION delegate actual coding work without stuffing the main context window. It persists every run to `<cwd>/.pi/lion/runs.json` so orchestrators can inspect outcomes later.
+LION is the worker abstraction that lets CEREBEL/GANGLION delegate actual coding work without stuffing the main context window. It persists every run in the active NERVous state namespace (`lion/runs.json`, override with `LION_RUNS_PATH`) so orchestrators can inspect outcomes later.
 
 ---
 
@@ -71,7 +71,7 @@ LION stores best-effort process control metadata for running subprocesses (`pid`
 lion cancel id="run-001" reason="superseded by newer plan"
 ```
 
-Cancellation is honest but best-effort: it records the request durably, sends `SIGTERM` to the subprocess process group where supported, schedules a `SIGKILL` fallback from the current pi process, and reconciles dead/stale PIDs during `get`, `list`, and `summary`. Queued runs are aborted without launching.
+Cancellation is honest but best-effort: it records the request durably, and only the current live LION owner may deliver cancellation to its attached worker. Persisted PID/PGID values are observational metadata and are not used as authority to signal after restart or stale ledger recovery. Queued runs are aborted without launching; stale/unattached running records store the cancellation request as `not_attached` without signaling unrelated processes.
 
 Pre-start steering works for all runner modes:
 

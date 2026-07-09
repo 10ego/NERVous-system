@@ -51,7 +51,11 @@ export function summarizeList(runs: LionRun[]): string {
 	return [
 		"# LION runs",
 		"",
-		...runs.map((r) => `${ICON[r.status]} \`${r.id}\` **${r.agent_id}** _${r.status}_ ${r.task_id ? `→ \`${r.task_id}\`` : ""} — ${truncate(r.control?.cancel_requested_at ? `cancelling: ${r.control.cancel_reason ?? "requested"}` : r.progress?.activity || r.objective, 80)}`),
+		...runs.map((r) => {
+			const progress = r.control?.cancel_requested_at ? `cancelling: ${r.control.cancel_reason ?? "requested"}` : r.progress?.activity;
+			const suffix = progress && (r.status === "running" || r.status === "queued") ? `${truncate(r.objective, 48)} · ${truncate(progress, 48)}` : truncate(r.objective, 80);
+			return `${ICON[r.status]} \`${r.id}\` **${r.agent_id}** _${r.status}_ ${r.task_id ? `→ \`${r.task_id}\`` : ""} — ${suffix}`;
+		}),
 	].join("\n");
 }
 

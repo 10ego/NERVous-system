@@ -64,6 +64,7 @@ describe("LION subprocess helpers", () => {
 		assert.deepEqual(end.active_tools, []);
 		const msg = progressFromEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Working on it" } }, state, 2000)!;
 		assert.equal(msg.event, "message");
+		assert.equal(msg.last_event_at, new Date(2000).toISOString());
 		assert.match(msg.activity, /Working/);
 		const done = progressFromEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Done" }], usage: { input: 10, output: 5 } } }, state)!;
 		assert.equal(done.event, "message_end");
