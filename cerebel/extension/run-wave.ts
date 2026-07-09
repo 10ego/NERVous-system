@@ -8,6 +8,7 @@ export interface RunWaveLionAdapter {
 	createRun(assignment: Assignment): Promise<LionRun>;
 	run(run: LionRun, assignment: Assignment, onProgress: (progress: LionProgressSnapshot) => void): Promise<{ text: string; report: LionReport | null }>;
 	finishRun(runId: string, result: { output: string; report: LionReport | null; status?: "completed" | "blocked" | "failed" | "aborted"; error?: string | null }): Promise<LionRun>;
+	getRun?(runId: string): Promise<LionRun | undefined>;
 	updateProgress?(runId: string, progress: LionProgressSnapshot): Promise<void>;
 }
 
@@ -134,17 +135,25 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 	} catch (err) {
 		await progress.drain().catch(() => undefined);
 		const message = err instanceof Error ? err.message : String(err);
-		await adapter.finishRun(run.id, { output: "", report: null, status: "failed", error: message }).catch(() => undefined);
+		const current = await adapter.getRun?.(run.id).catch(() => undefined);
+		const cancelled = Boolean(current?.control?.cancel_requested_at);
+		const finishStatus = cancelled ? "aborted" : "failed";
+		const outcome: AssignmentStatus = cancelled ? "cancelled" : "failed";
+		const summary = cancelled
+			? `LION run cancelled${current?.control?.cancel_reason ? `: ${current.control.cancel_reason}` : ""}`
+			: `LION run failed: ${message}`;
+		const blockers = cancelled ? [] : [message];
+		await adapter.finishRun(run.id, { output: "", report: null, status: finishStatus, error: cancelled ? (current?.control?.cancel_reason ?? "Cancelled") : message }).catch(() => undefined);
 		await store.mutate((ledger) => ledger.record(waveId, {
 			assignment_id: assignment.id,
 			lion_run_id: run.id,
 			ganglion_id: assignment.ganglion_id,
 			ganglion_allocation_id: assignment.ganglion_allocation_id,
-			outcome: "failed",
-			summary: `LION run failed: ${message}`,
-			blockers: [message],
+			outcome,
+			summary,
+			blockers,
 		}));
-		return { assignment_id: assignment.id, lion_run_id: run.id, outcome: "failed", summary: `LION run failed: ${message}`, blockers: [message] };
+		return { assignment_id: assignment.id, lion_run_id: run.id, outcome, summary, blockers };
 	}
 }
 

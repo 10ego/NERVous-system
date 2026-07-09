@@ -330,6 +330,7 @@ function statusFromAssignments(w: Wave): WaveStatus {
 	if (statuses.every((s) => s === "completed" || s === "partial")) return "completed";
 	if (statuses.some((s) => s === "failed")) return "needs_replan";
 	if (statuses.some((s) => s === "blocked")) return "blocked";
+	if (statuses.some((s) => s === "cancelled")) return "cancelled";
 	if (statuses.some((s) => s === "dispatched")) return "collecting";
 	return w.status;
 }

@@ -11,6 +11,14 @@ import { LION_RUNNER_MODES, type LionModelRole, type LionProgressSnapshot, type 
 interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; run_wave?: import("./run-wave.ts").RunWaveResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: CerebelDetails; isError?: boolean };
 
+type LionRunner = (req: import("../../lion/extension/subprocess.ts").LionRunRequest) => Promise<{ text: string; report: import("../../lion/extension/schema.ts").LionReport | null }>;
+interface LionAdapterDeps {
+	lionStore?: { mutate<T>(fn: (ledger: import("../../lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>; query<T>(fn: (ledger: import("../../lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }> };
+	createLionRunner?: (opts: { cwd: string }) => LionRunner;
+	createLionRpcRunner?: (opts: { cwd: string; store: unknown }) => LionRunner;
+	activeRuns?: typeof import("../../lion/extension/active-runs.ts");
+}
+
 function ok(action: string, text: string, details: Omit<CerebelDetails, "action"> = {}): ToolResult {
 	return { content: [{ type: "text", text }], details: { action, ...details } };
 }
@@ -77,19 +85,23 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 	}
 }
 
-async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined): Promise<RunWaveLionAdapter> {
+export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}): Promise<RunWaveLionAdapter> {
 	try {
-		const [{ LionStore }, { createLionRunner }, { createLionRpcRunner }, activeRuns] = await Promise.all([
-			import("../../lion/extension/backend.ts"),
-			import("../../lion/extension/subprocess.ts"),
-			import("../../lion/extension/rpc-runner.ts"),
-			import("../../lion/extension/active-runs.ts"),
+		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod] = await Promise.all([
+			deps.lionStore ? Promise.resolve({ LionStore: { fromCwd: () => deps.lionStore! as never } }) : import("../../lion/extension/backend.ts"),
+			deps.createLionRunner ? Promise.resolve({ createLionRunner: deps.createLionRunner }) : import("../../lion/extension/subprocess.ts"),
+			deps.createLionRpcRunner ? Promise.resolve({ createLionRpcRunner: deps.createLionRpcRunner }) : import("../../lion/extension/rpc-runner.ts"),
+			deps.activeRuns ? Promise.resolve(deps.activeRuns) : import("../../lion/extension/active-runs.ts"),
 		]);
+		const { createLionRunner } = jsonRunnerMod;
+		const { createLionRpcRunner } = rpcRunnerMod;
+		const activeRuns = activeRunsMod;
 		const lionStore = LionStore.fromCwd(ctx.cwd);
 		const modelRole = (p.model_role as LionModelRole | undefined) ?? "implementation";
 		const model = p.model?.trim() || resolveConfiguredLionModel(ctx, modelRole);
 		const runnerMode = resolveRunnerMode(p.runner_mode);
 		const runner = runnerMode === "rpc" ? createLionRpcRunner({ cwd: ctx.cwd, store: lionStore }) : createLionRunner({ cwd: ctx.cwd });
+		const activeOwners = new Map<string, ReturnType<typeof activeRuns.beginActiveRun>>();
 		return {
 			async createRun(assignment) {
 				const { result } = await lionStore.mutate((l) => l.create({
@@ -107,27 +119,33 @@ async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, sig
 			},
 			async run(run: LionRun, _assignment, onProgress) {
 				const activeOwner = activeRuns.beginActiveRun(run.id, runnerMode);
-				try {
-					return await runner({
-						run,
-						signal,
-						timeout_ms: p.timeout_ms ?? DEFAULT_RUN_WAVE_TIMEOUT_MS,
-						onProcessStart: (info) => {
-							activeRuns.attachActiveRunProcess(activeOwner, info);
-							void lionStore.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).catch(() => undefined);
-						},
-						onProcessExit: () => activeRuns.markActiveRunExited(activeOwner),
-						onProgress: (progress: LionProgressSnapshot) => {
-							try { onUpdate?.({ content: [{ type: "text", text: `${run.id}/${run.agent_id}: ${progress.activity}` }], details: { action: "run_wave", run } }); } catch { /* progress display is best-effort */ }
-							onProgress(progress);
-						},
-					});
-				} finally {
-					activeRuns.finishActiveRun(activeOwner);
-				}
+				activeOwners.set(run.id, activeOwner);
+				return runner({
+					run,
+					signal,
+					timeout_ms: p.timeout_ms ?? DEFAULT_RUN_WAVE_TIMEOUT_MS,
+					onProcessStart: (info) => {
+						activeRuns.attachActiveRunProcess(activeOwner, info);
+						void lionStore.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).catch(() => undefined);
+					},
+					onProcessExit: () => activeRuns.markActiveRunExited(activeOwner),
+					onProgress: (progress: LionProgressSnapshot) => {
+						try { onUpdate?.({ content: [{ type: "text", text: `${run.id}/${run.agent_id}: ${progress.activity}` }], details: { action: "run_wave", run } }); } catch { /* progress display is best-effort */ }
+						onProgress(progress);
+					},
+				});
 			},
 			async finishRun(runId, result) {
-				return (await lionStore.mutate((l) => l.finish(runId, result))).result;
+				try {
+					return (await lionStore.mutate((l) => l.finish(runId, result))).result;
+				} finally {
+					const owner = activeOwners.get(runId);
+					if (owner) activeRuns.finishActiveRun(owner);
+					activeOwners.delete(runId);
+				}
+			},
+			async getRun(runId) {
+				return (await lionStore.query((l) => l.get(runId))).result;
 			},
 			async updateProgress(runId, progress) {
 				await lionStore.mutate((l) => l.updateProgress(runId, progress));

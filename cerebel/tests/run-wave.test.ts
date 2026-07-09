@@ -109,6 +109,35 @@ describe("runWave", () => {
 		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
 	});
 
+	it("records cancelled LION runs as aborted and cancelled assignments", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({});
+		let finishStatus: string | undefined;
+		adapter.run = async () => { throw new Error("runner stopped"); };
+		adapter.getRun = async (runId) => ({
+			id: runId,
+			agent_id: "lion-a",
+			status: "running",
+			task_id: null,
+			objective: "A",
+			context: "",
+			started_at: new Date().toISOString(),
+			updated_at: new Date().toISOString(),
+			control: { cancel_requested_at: new Date().toISOString(), cancel_reason: "user requested" },
+		} as LionRun);
+		adapter.finishRun = async (runId, result) => {
+			finishStatus = result.status;
+			return { id: runId, agent_id: "lion", status: result.status ?? "failed", task_id: null, objective: "", context: "", started_at: new Date().toISOString(), updated_at: new Date().toISOString(), report: result.report, error: result.error ?? null } as LionRun;
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(finishStatus, "aborted");
+		assert.equal(result.wave.status, "cancelled");
+		assert.equal(result.wave.assignments[0]?.status, "cancelled");
+		assert.equal(result.assignment_results[0]?.outcome, "cancelled");
+		assert.match(result.assignment_results[0]?.summary ?? "", /user requested/);
+	});
+
 	it("records createRun failures against reserved assignments", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
