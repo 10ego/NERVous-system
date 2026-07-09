@@ -44,6 +44,7 @@ Useful controls:
 - `lion cancel id="run-001" reason="..."` records cancellation and only signals an actively owned live worker.
 - `runner_mode="rpc"` (or `LION_RUNNER=rpc`) opts into live mid-run steering through pi RPC; the default `json` runner rejects running steering.
 - `include_progress_text=true` opts into raw assistant text tails in progress telemetry; default progress text is redacted.
+- `LION_EVENT_INCLUDE_OBJECTIVE=true` opts into raw objectives on local event payloads; default events redact objectives.
 
 ## Worker contract
 

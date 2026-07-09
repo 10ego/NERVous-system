@@ -14,6 +14,7 @@ export interface RunWaveLionAdapter {
 export interface RunWaveOptions {
 	wave_id?: string;
 	max_parallel?: number;
+	reservation_stale_ms?: number;
 }
 
 export interface RunWaveAssignmentResult {
@@ -41,7 +42,7 @@ export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, 
 	const maxParallel = clampParallel(options.max_parallel ?? wave.max_parallel);
 
 	for (;;) {
-		const reservation = await reservePlannedAssignments(store, wave.id, maxParallel);
+		const reservation = await reservePlannedAssignments(store, wave.id, maxParallel, options.reservation_stale_ms);
 		wave = reservation.wave;
 		if (wave.assignments.some((a) => a.status === "blocked" || a.status === "failed")) break;
 		if (!reservation.assignments.length) break;
@@ -60,8 +61,9 @@ export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, 
 	return { wave, assignment_results: results, summary: summarizeRunWave(wave, results) };
 }
 
-async function reservePlannedAssignments(store: CerebelStore, waveId: string, maxParallel: number): Promise<ReservationResult> {
+async function reservePlannedAssignments(store: CerebelStore, waveId: string, maxParallel: number, reservationStaleMs = 30_000): Promise<ReservationResult> {
 	const { result } = await store.mutate((ledger) => {
+		ledger.recoverOrphanedReservations(waveId, { stale_after_ms: reservationStaleMs });
 		const current = ledger.get(waveId);
 		if (!current) throw new Error(`wave ${waveId} not found`);
 		if (current.assignments.some((a) => a.status === "blocked" || a.status === "failed")) return { wave: current, assignments: [] };

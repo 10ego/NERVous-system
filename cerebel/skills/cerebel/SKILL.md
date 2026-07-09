@@ -19,6 +19,7 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
    - `cerebel plan_wave tasks=[...] max_parallel=... context="..."`
 3. Either run the active dispatcher:
    - `cerebel run_wave wave_id="current" max_parallel=...`
+   - optionally pass `runner_mode="rpc"` when live LION steering may be needed
    - use this when CEREBEL should create/run LION workers and record grouped outcomes directly
 4. Or dispatch manually:
    - for each ready assignment, call `lion run task_id=... agent_id=... objective=... context=...`
@@ -49,7 +50,7 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
 - `plan_wave` — create a wave from AXON task briefs or direct assignments.
 - `dispatch` — mark assignments dispatched and link LION run ids.
 - `record` — record LION outcome for one assignment.
-- `run_wave` — actively create/run linked LION workers for planned assignments and record grouped outcomes.
+- `run_wave` — actively reserve planned assignments, create/run linked LION workers, attach them to LION per-run controls, recover stale reservations without run ids, and record grouped outcomes.
 - `decide` — compute the next controller decision.
 - `complete_wave` — finish a successful wave.
 - `cancel` — cancel a wave.

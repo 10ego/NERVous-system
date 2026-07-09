@@ -66,9 +66,10 @@ Or use the bounded active dispatcher after planning a wave:
 
 ```text
 cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
+# optional: runner_mode="rpc" to launch LION workers with RPC live steering support
 ```
 
-`run_wave` reserves planned assignments under the CEREBEL lock before creating LION workers, creates LION run records, executes LION subprocesses up to the wave's `max_parallel` (or the supplied bounded value), dispatches assignment→run links, records completed/partial/blocked/failed outcomes, releases linked GANGLION allocations when possible, and returns a grouped wave summary. It skips already-terminal assignments, rejects terminal redispatch, treats missing/unparseable `WORKER_REPORT` output as failed, stops dispatching new batches after blocked/failed outcomes, coalesces progress writes, and keeps all state in the durable CEREBEL/LION ledgers.
+`run_wave` reserves planned assignments under the CEREBEL lock before creating LION workers, creates LION run records, executes LION subprocesses up to the wave's `max_parallel` (or the supplied bounded value), dispatches assignment→run links, records completed/partial/blocked/failed outcomes, releases linked GANGLION allocations when possible, and returns a grouped wave summary. It skips already-terminal assignments, rejects terminal redispatch, treats missing/unparseable `WORKER_REPORT` output as failed, stops dispatching new batches after blocked/failed outcomes, coalesces progress writes, recovers stale reserved assignments that never received a LION run id, and keeps all state in the durable CEREBEL/LION ledgers. Workers launched by `run_wave` are attached to LION's active-run registry for best-effort active-owner cancellation; pass `runner_mode="rpc"` when live steering should also be available through LION's RPC path.
 
 ---
 
@@ -126,7 +127,7 @@ cerebel/
 
 CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. The `run_wave` action dynamically loads the LION runtime only when invoked; if LION is unavailable, it fails clearly without affecting the rest of CEREBEL.
 
-`run_wave` does **not** orchestrate cancellation or steering across a wave. LION itself now owns per-run controls: best-effort active-owner cancellation, queued/pre-start steering, and explicit opt-in RPC live steering. Use LION actions directly for per-worker control until CEREBEL has a higher-level wave control policy.
+`run_wave` does **not** orchestrate cancellation or steering across a whole wave. LION owns per-run controls: best-effort active-owner cancellation, queued/pre-start steering, and explicit opt-in RPC live steering. `run_wave` attaches launched workers to that per-run control registry, but callers should still use LION actions directly for individual workers until CEREBEL has a higher-level wave control policy.
 
 ---
 

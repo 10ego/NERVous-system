@@ -64,6 +64,16 @@ describe("CerebelLedger", () => {
 		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
 	});
 
+	it("recovers stale dispatched reservations without LION run ids", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		l.dispatch(w.id, { links: [{ assignment_id: "assign-001" }] });
+		const recovered = l.recoverOrphanedReservations(w.id, { stale_after_ms: 0, now_ms: Date.now() + 1000 });
+		assert.equal(recovered.length, 1);
+		assert.equal(l.get(w.id)?.assignments[0]?.status, "planned");
+		assert.match(l.get(w.id)?.assignments[0]?.outcome_summary ?? "", /recovered/);
+	});
+
 	it("records completion and decides to complete", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });

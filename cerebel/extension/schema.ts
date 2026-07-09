@@ -150,6 +150,7 @@ export const CerebelToolParams = Type.Object({
 	timeout_ms: Type.Optional(Type.Number({ description: "Per-LION subprocess timeout for run_wave in milliseconds." })),
 	model: Type.Optional(Type.String({ description: "Explicit model for LION subprocesses launched by run_wave." })),
 	model_role: Type.Optional(StringEnum(["implementation", "review", "default"] as const)),
+	runner_mode: Type.Optional(StringEnum(["json", "rpc"] as const, { description: "LION runner backend for run_wave. json is default; rpc enables live steering." })),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional pi tool allow-list for run_wave LION subprocesses." })),
 	// list/summary filters
 	status_filter: Type.Optional(WAVE_STATUS_SCHEMA),

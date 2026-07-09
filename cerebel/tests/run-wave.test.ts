@@ -98,6 +98,17 @@ describe("runWave", () => {
 		assert.match(result.assignment_results[0]?.summary ?? "", /missing WORKER_REPORT/);
 	});
 
+	it("recovers stale reservations without run ids", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: "assign-001" }] }));
+		const adapter = fakeAdapter({ "assign-001": completedReport("A done") });
+		const result = await runWave(store, adapter, { wave_id: wave.id, reservation_stale_ms: 0 });
+		assert.equal(result.wave.status, "completed");
+		assert.equal(adapter.created.length, 1);
+		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
+	});
+
 	it("records createRun failures against reserved assignments", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;

@@ -51,17 +51,13 @@ export function summarizeList(runs: LionRun[]): string {
 	return [
 		"# LION runs",
 		"",
-		...runs.map((r) => {
-			const progress = r.control?.cancel_requested_at ? `cancelling: ${r.control.cancel_reason ?? "requested"}` : r.progress?.activity;
-			const suffix = progress && (r.status === "running" || r.status === "queued") ? `${truncate(r.objective, 48)} · ${truncate(progress, 48)}` : truncate(r.objective, 80);
-			return `${ICON[r.status]} \`${r.id}\` **${r.agent_id}** _${r.status}_ ${r.task_id ? `→ \`${r.task_id}\`` : ""} — ${suffix}`;
-		}),
+		...runs.map((r) => `${ICON[r.status]} \`${r.id}\` **${r.agent_id}** _${r.status}_ ${r.task_id ? `→ \`${r.task_id}\`` : ""} — ${runListSuffix(r)}`),
 	].join("\n");
 }
 
 export function summarizeSummary(s: LionSummary): string {
 	const counts = Object.entries(s.by_status).map(([k, v]) => `${k}:${v}`).join(" · ") || "none";
-	return [`# LION summary`, "", `**${s.total}** run(s) · ${counts}`, "", ...s.recent.map((r) => `${ICON[r.status]} \`${r.id}\` ${r.agent_id} — ${truncate(r.progress?.activity || r.objective, 70)}`)].join("\n");
+	return [`# LION summary`, "", `**${s.total}** run(s) · ${counts}`, "", ...s.recent.map((r) => `${ICON[r.status]} \`${r.id}\` ${r.agent_id} — ${runListSuffix(r)}`)].join("\n");
 }
 
 export function renderLionCall(args: { action: string; id?: string; task_id?: string; objective?: string }, theme: AnyTheme): Text {
@@ -87,6 +83,11 @@ export function renderLionResult(
 	else if (details?.summary) c.addChild(new Markdown(summarizeSummary(details.summary), 0, 0, getMarkdownTheme()));
 	else c.addChild(new Text(`${theme.fg("success", "✓")} ${theme.fg("dim", result.content[0]?.text ?? "ok")}`, 0, 0));
 	return c;
+}
+
+function runListSuffix(r: LionRun): string {
+	const progress = r.control?.cancel_requested_at ? `cancelling: ${r.control.cancel_reason ?? "requested"}` : r.progress?.activity;
+	return progress && (r.status === "running" || r.status === "queued") ? `${truncate(r.objective, 48)} · ${truncate(progress, 48)}` : truncate(r.objective, 80);
 }
 
 function formatProgress(r: LionRun): string {

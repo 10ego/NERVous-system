@@ -53,7 +53,7 @@ The worker receives a LION system prompt and must finish with a parseable `WORKE
 
 ### Live progress telemetry
 
-While a run is active, LION now records a bounded `progress` snapshot in the run ledger and emits best-effort lifecycle events when `pi.events` is available:
+While a run is active, LION records a bounded `progress` snapshot in the run ledger and emits best-effort lifecycle events when `pi.events` is available:
 
 - `nervous:lion:started`
 - `nervous:lion:progress`
@@ -61,7 +61,7 @@ While a run is active, LION now records a bounded `progress` snapshot in the run
 - `nervous:lion:blocked`
 - `nervous:lion:failed`
 
-Progress is derived defensively from headless `pi --mode json`/RPC events such as tool start/end, text deltas, message end, and turn end. It is optional and backward-compatible: old ledgers without `progress` still load and malformed/missing subprocess events are ignored. Raw assistant text tails are redacted by default (`last_text=null`, generic responding activity); pass `include_progress_text=true` only when retaining partial assistant text is acceptable. Durable progress writes are coalesced while UI updates remain immediate.
+Progress is derived defensively from headless `pi --mode json`/RPC events such as tool start/end, text deltas, message end, and turn end. It is optional and backward-compatible: old ledgers without `progress` still load and malformed/missing subprocess events are ignored. Raw assistant text tails are redacted by default (`last_text=null`, generic responding activity); pass `include_progress_text=true` only when retaining partial assistant text is acceptable. Event payloads also redact the raw objective by default (`objective_redacted=true`); set `LION_EVENT_INCLUDE_OBJECTIVE=true` only for trusted local diagnostics. Durable progress writes are coalesced while UI updates remain immediate.
 
 ### Cancellation and steering
 

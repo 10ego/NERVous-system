@@ -28,21 +28,34 @@ type ToolResult = { content: Array<{ type: "text"; text: string }>; details: Lio
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
 const PROGRESS_PERSIST_INTERVAL_MS = 500;
 
-type LionEventKind = "started" | "progress" | "completed" | "blocked" | "failed";
+export type LionEventKind = "started" | "progress" | "completed" | "blocked" | "failed";
+
+function includeEventObjective(): boolean {
+	return /^(1|true|yes)$/i.test(process.env.LION_EVENT_INCLUDE_OBJECTIVE ?? "");
+}
+
+export function lionEventPayload(kind: LionEventKind, run: LionRun, progress?: LionProgressSnapshot): Record<string, unknown> {
+	const payload: Record<string, unknown> = {
+		component: "lion",
+		event: kind,
+		run_id: run.id,
+		agent_id: run.agent_id,
+		task_id: run.task_id,
+		status: run.status,
+		objective_redacted: true,
+		progress: progress ?? run.progress ?? null,
+		updated_at: run.updated_at,
+	};
+	if (includeEventObjective()) {
+		payload.objective = run.objective;
+		payload.objective_redacted = false;
+	}
+	return payload;
+}
 
 function emitLionEvent(pi: ExtensionAPI, kind: LionEventKind, run: LionRun, progress?: LionProgressSnapshot): void {
 	try {
-		(pi as { events?: { emit(event: string, payload: unknown): void } }).events?.emit(`nervous:lion:${kind}`, {
-			component: "lion",
-			event: kind,
-			run_id: run.id,
-			agent_id: run.agent_id,
-			task_id: run.task_id,
-			status: run.status,
-			objective: run.objective,
-			progress: progress ?? run.progress ?? null,
-			updated_at: run.updated_at,
-		});
+		(pi as { events?: { emit(event: string, payload: unknown): void } }).events?.emit(`nervous:lion:${kind}`, lionEventPayload(kind, run, progress));
 	} catch (err) {
 		console.warn(`[nervous-system/lion] event emission failed for ${run.id}/${kind}:`, err);
 	}
