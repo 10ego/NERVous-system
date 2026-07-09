@@ -64,6 +64,22 @@ describe("CerebelLedger", () => {
 		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
 	});
 
+	it("requires an exact assignment id for guarded records", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-shared", title: "A" }, { id: "task-shared", title: "B" }] });
+		l.dispatch(w.id, { links: [
+			{ assignment_id: "assign-001", lion_run_id: "run-foreign" },
+			{ assignment_id: "assign-002", lion_run_id: "run-local" },
+		] });
+		assert.throws(() => l.recordIfOwned(w.id, "run-local", {
+			task_id: "task-shared",
+			lion_run_id: "run-local",
+			outcome: "completed",
+		} as never), /requires assignment_id/);
+		assert.equal(l.get(w.id)?.assignments[0]?.status, "dispatched");
+		assert.equal(l.get(w.id)?.assignments[1]?.status, "dispatched");
+	});
+
 	it("rejects mismatched LION provenance in guarded records", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });

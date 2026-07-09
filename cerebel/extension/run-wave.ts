@@ -199,7 +199,7 @@ async function recordWorkerError(store: CerebelStore, adapter: RunWaveLionAdapte
 	});
 }
 
-async function recordOwnedResult(store: CerebelStore, waveId: string, assignment: Assignment, runId: string, input: RecordInput): Promise<RunWaveAssignmentResult> {
+async function recordOwnedResult(store: CerebelStore, waveId: string, assignment: Assignment, runId: string, input: RecordInput & { assignment_id: string }): Promise<RunWaveAssignmentResult> {
 	const { result } = await store.mutate((ledger) => ledger.recordIfOwned(waveId, runId, input));
 	if (!result.committed) return supersededResult(assignment, runId, result.assignment, input.summary ?? "LION run result not recorded");
 	return {

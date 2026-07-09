@@ -159,13 +159,13 @@ export class CerebelLedger {
 	}
 
 	/** Atomically records an outcome only while the assignment remains linked to the expected live LION run. */
-	recordIfOwned(waveId: string, expectedLionRunId: string, input: RecordInput): RecordIfOwnedResult {
+	recordIfOwned(waveId: string, expectedLionRunId: string, input: RecordInput & { assignment_id: string }): RecordIfOwnedResult {
+		if (!input.assignment_id) throw new CerebelError("invalid_arg", "guarded record requires assignment_id");
 		if (input.lion_run_id && input.lion_run_id !== expectedLionRunId) {
 			throw new CerebelError("invalid_arg", `guarded record for ${expectedLionRunId} cannot write LION link ${input.lion_run_id}`);
 		}
 		const wave = this.require(waveId);
-		const current = input.assignment_id ? requireAssignment(wave, input.assignment_id) : findAssignment(wave, input.task_id, input.lion_run_id);
-		if (!current) throw new CerebelError("not_found", "assignment not found for guarded record");
+		const current = requireAssignment(wave, input.assignment_id);
 		if (TERMINAL_ASSIGNMENT_STATUS_SET.has(current.status) || current.lion_run_id !== expectedLionRunId) {
 			return { committed: false, wave: clone(wave), assignment: clone(current) };
 		}

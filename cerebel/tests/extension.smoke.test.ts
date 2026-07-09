@@ -2,6 +2,7 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import ts from "typescript";
 import { describe, it } from "vitest";
 import { GanglionStore } from "../../ganglion/extension/backend.ts";
 import factory from "../extension/index.ts";
@@ -12,13 +13,75 @@ function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 	return { tools, commands, pi: { registerTool(def: any) { tools.push(def); }, registerCommand(name: string, options: any) { commands.push({ name, options }); } } };
 }
 
-describe("cerebel extension factory", () => {
-	it("does not value-import LION at module load", async () => {
-		const source = await fs.readFile(path.resolve(__dirname, "../extension/index.ts"), "utf8");
-		const lionImport = /import\s+(?:type\s+)?(?:[^;]*?from\s+)?["']\.\.\/\.\.\/lion\//g;
-		for (const match of source.matchAll(lionImport)) {
-			assert.match(match[0], /^import\s+type\s+/);
+function isLionSpecifier(value: string): boolean {
+	return /(^|\/)lion(?:\/|$)/.test(value);
+}
+
+function importClauseIsTypeOnly(clause: ts.ImportClause | undefined): boolean {
+	if (!clause) return false;
+	if (clause.isTypeOnly) return true;
+	if (clause.name || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) return false;
+	return clause.namedBindings.elements.length > 0 && clause.namedBindings.elements.every((element) => element.isTypeOnly);
+}
+
+function exportClauseIsTypeOnly(node: ts.ExportDeclaration): boolean {
+	if (node.isTypeOnly) return true;
+	return Boolean(node.exportClause && ts.isNamedExports(node.exportClause) && node.exportClause.elements.length > 0 && node.exportClause.elements.every((element) => element.isTypeOnly));
+}
+
+function runtimeLionReferences(source: string, fileName = "fixture.ts"): string[] {
+	const file = ts.createSourceFile(fileName, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const violations: string[] = [];
+	const add = (node: ts.Node, kind: string) => {
+		const position = file.getLineAndCharacterOfPosition(node.getStart(file));
+		violations.push(`${fileName}:${position.line + 1}:${position.character + 1} ${kind}`);
+	};
+	const visit = (node: ts.Node): void => {
+		if (ts.isImportDeclaration(node) && ts.isStringLiteral(node.moduleSpecifier) && isLionSpecifier(node.moduleSpecifier.text)) {
+			if (!importClauseIsTypeOnly(node.importClause)) add(node, "runtime import");
+		} else if (ts.isExportDeclaration(node) && node.moduleSpecifier && ts.isStringLiteral(node.moduleSpecifier) && isLionSpecifier(node.moduleSpecifier.text)) {
+			if (!exportClauseIsTypeOnly(node)) add(node, "runtime export");
+		} else if (ts.isImportEqualsDeclaration(node) && ts.isExternalModuleReference(node.moduleReference) && node.moduleReference.expression && ts.isStringLiteral(node.moduleReference.expression) && isLionSpecifier(node.moduleReference.expression.text)) {
+			if (!node.isTypeOnly) add(node, "import equals");
+		} else if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === "require" && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0]!) && isLionSpecifier(node.arguments[0]!.text)) {
+			add(node, "static require");
 		}
+		ts.forEachChild(node, visit);
+	};
+	visit(file);
+	return violations;
+}
+
+async function extensionSources(): Promise<Array<{ path: string; source: string }>> {
+	const extensionDir = path.resolve(__dirname, "../extension");
+	const entries = await fs.readdir(extensionDir, { withFileTypes: true });
+	return Promise.all(entries.filter((entry) => entry.isFile() && entry.name.endsWith(".ts")).map(async (entry) => {
+		const filePath = path.join(extensionDir, entry.name);
+		return { path: filePath, source: await fs.readFile(filePath, "utf8") };
+	}));
+}
+
+describe("cerebel extension factory", () => {
+	it("does not statically load LION runtime modules", async () => {
+		const violations = (await extensionSources()).flatMap((file) => runtimeLionReferences(file.source, file.path));
+		assert.deepEqual(violations, []);
+	});
+
+	it("distinguishes erased type imports from runtime LION dependencies", () => {
+		assert.deepEqual(runtimeLionReferences(`
+			import type { LionRun } from "../../lion/extension/schema.ts";
+			import { type LionReport, type LionProgressSnapshot } from "../../lion/extension/schema.ts";
+			export type { LionRunStatus } from "../../lion/extension/schema.ts";
+			async function load() { return import("../../lion/extension/backend.ts"); }
+		`), []);
+		const violations = runtimeLionReferences(`
+			import/* comment */ "../../lion/extension/schema.ts";
+			import { type LionRun, LionError } from "../../lion/extension/schema.ts";
+			export { LionStore } from "../../lion/extension/backend.ts";
+			import Lion = require("../../lion/extension/backend.ts");
+			const runtime = require("../../lion/extension/store.ts");
+		`);
+		assert.equal(violations.length, 5);
 	});
 
 	it("registers the cerebel tool and commands", () => {
