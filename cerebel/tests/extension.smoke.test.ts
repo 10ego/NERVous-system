@@ -13,6 +13,11 @@ function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 }
 
 describe("cerebel extension factory", () => {
+	it("does not value-import LION at module load", async () => {
+		const source = await fs.readFile(path.join(process.cwd(), "cerebel/extension/index.ts"), "utf8");
+		assert.equal(/import\s+(?!type\b)[^;]*from\s+["']\.\.\/\.\.\/lion\//.test(source), false);
+	});
+
 	it("registers the cerebel tool and commands", () => {
 		const { pi, tools, commands } = stubPi();
 		assert.doesNotThrow(() => factory(pi));

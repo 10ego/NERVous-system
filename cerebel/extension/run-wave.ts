@@ -69,7 +69,10 @@ async function reservePlannedAssignments(store: CerebelStore, waveId: string, ma
 		if (!current) throw new Error(`wave ${waveId} not found`);
 		if (current.status === "cancelled" || current.status === "completed") return { wave: current, assignments: [] };
 		if (current.assignments.some((a) => a.status === "blocked" || a.status === "failed" || a.status === "cancelled")) return { wave: current, assignments: [] };
-		const plannedIds = current.assignments.filter((a) => a.status === "planned").slice(0, maxParallel).map((a) => a.id);
+		const dispatched = current.assignments.filter((a) => a.status === "dispatched").length;
+		const remainingCapacity = Math.max(0, maxParallel - dispatched);
+		if (remainingCapacity <= 0) return { wave: current, assignments: [] };
+		const plannedIds = current.assignments.filter((a) => a.status === "planned").slice(0, remainingCapacity).map((a) => a.id);
 		if (!plannedIds.length) return { wave: current, assignments: [] };
 		const wave = ledger.dispatch(waveId, { links: plannedIds.map((assignment_id) => ({ assignment_id })) });
 		return { wave, assignments: wave.assignments.filter((a) => plannedIds.includes(a.id)) };

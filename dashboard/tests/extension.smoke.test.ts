@@ -62,6 +62,13 @@ describe("dashboard extension factory", () => {
 		assert.equal(refresh.mock.calls.length, 1);
 	});
 
+	it("derives the auto-refresh footer label from the configured interval", () => {
+		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), vi.fn(), { autoRefreshMs: 2500 });
+		const text = dashboard.render(100).join("\n");
+		assert.match(text, /auto 2\.5s/);
+		dashboard.dispose();
+	});
+
 	it("preserves an open detail view across reloads", async () => {
 		const oldRun = { id: "run-001", agent_id: "lion-a", status: "running", task_id: null, objective: "old", context: "", started_at: "2026-07-08T12:00:00.000Z", updated_at: "2026-07-08T12:00:00.000Z" } as any;
 		const newRun = { ...oldRun, status: "completed", objective: "new", report: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } } as any;
@@ -76,6 +83,22 @@ describe("dashboard extension factory", () => {
 		assert.equal((dashboard as any).detail?.item.status, "completed");
 		assert.equal((dashboard as any).detail?.item.objective, "new");
 		assert.equal((dashboard as any).selected, 0);
+	});
+
+	it("does not reopen a detail view the user closed during refresh", async () => {
+		const oldRun = { id: "run-001", agent_id: "lion-a", status: "running", task_id: null, objective: "old", context: "", started_at: "2026-07-08T12:00:00.000Z", updated_at: "2026-07-08T12:00:00.000Z" } as any;
+		const newRun = { ...oldRun, status: "completed" } as any;
+		let resolveRefresh: ((value: any) => void) | undefined;
+		const refresh = vi.fn((): Promise<any> => new Promise((resolve) => { resolveRefresh = resolve; }));
+		const dashboard = new NervousDashboard(emptyDashboardData({ runs: [oldRun] }), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 0 });
+		(dashboard as any).tabIndex = 5; // LION tab
+		(dashboard as any).selected = 0;
+		(dashboard as any).detail = { kind: "lion", item: oldRun };
+		dashboard.handleInput("r");
+		dashboard.handleInput("\u001b");
+		resolveRefresh?.(emptyDashboardData({ runs: [newRun] }));
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal((dashboard as any).detail, null);
 	});
 
 	it("formats LION progress snapshots with activity and staleness", () => {

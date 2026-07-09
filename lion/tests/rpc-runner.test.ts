@@ -12,12 +12,14 @@ class FakeRpcClient implements LionRpcClient {
 	prompted: string | null = null;
 	steered: string[] = [];
 	throwOnSteer = false;
+	throwOnPrompt = false;
 	private idleResolve: (() => void) | null = null;
 	private listeners: Array<(event: unknown) => void> = [];
 
 	async start() { this.started = true; }
 	async stop() { this.stopped = true; }
 	async prompt(message: string) {
+		if (this.throwOnPrompt) throw new Error("prompt boom");
 		this.prompted = message;
 		this.emit({ type: "message_update", delta: "working" });
 	}
@@ -71,6 +73,17 @@ describe("createLionRpcRunner", () => {
 		const final = (await store.query((l) => l.get(run.id))).result!;
 		assert.equal(final.steering_messages?.[0]?.status, "delivered");
 		assert.equal(fake.stopped, true);
+	});
+
+	it("calls process-exit callbacks only once on RPC errors", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnPrompt = true;
+		const run = (await store.mutate((l) => l.create({ objective: "do rpc work", runner_mode: "rpc" }))).result;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, pollIntervalMs: 5, clientFactory: () => fake });
+		let exits = 0;
+		await assert.rejects(() => runner({ run, timeout_ms: 1000, onProcessExit: () => { exits++; } }), /prompt boom/);
+		assert.equal(exits, 1);
 	});
 
 	it("marks live steering delivery failures durably", async () => {

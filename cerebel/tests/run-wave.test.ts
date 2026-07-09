@@ -76,6 +76,20 @@ describe("runWave", () => {
 		assert.deepEqual(seenStatuses, ["dispatched", "dispatched"]);
 	});
 
+	it("subtracts existing dispatched assignments from reservation capacity", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 2, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }, { agent_id: "lion-c", objective: "C" }] }))).result;
+		await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-existing" }] }));
+		const adapter = fakeAdapter({ "assign-002": { outcome: "blocked", summary: "pause", changed_files: [], tests_run: [], blockers: ["manual worker still running"], next_steps: [] }, "assign-003": completedReport("should not dispatch in same batch") });
+		const result = await runWave(store, adapter, { wave_id: wave.id, max_parallel: 2 });
+		assert.deepEqual(adapter.created, ["assign-002:run-001"]);
+		assert.equal(result.wave.assignments[0]?.status, "dispatched");
+		assert.equal(result.wave.assignments[1]?.status, "blocked");
+		assert.equal(result.wave.assignments[2]?.status, "planned");
+		assert.equal(result.assignment_results.at(-1)?.assignment_id, "assign-003");
+		assert.equal(result.assignment_results.at(-1)?.outcome, "skipped");
+	});
+
 	it("records blocked and failed reports as terminal wave states", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 1, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;

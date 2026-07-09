@@ -108,6 +108,7 @@ export class CerebelLedger {
 			const a = requireAssignment(w, link.assignment_id);
 			if (TERMINAL_ASSIGNMENT_STATUS_SET.has(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch terminal assignment ${a.id} from ${a.status}`);
 			if (!["planned", "dispatched"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch assignment ${a.id} from ${a.status}`);
+			if (link.lion_run_id && a.lion_run_id && a.lion_run_id !== link.lion_run_id) throw new CerebelError("invalid_transition", `cannot replace LION link for ${a.id} from ${a.lion_run_id} to ${link.lion_run_id}`);
 			a.status = "dispatched";
 			if (link.lion_run_id) a.lion_run_id = link.lion_run_id;
 			if (link.ganglion_id) a.ganglion_id = link.ganglion_id;

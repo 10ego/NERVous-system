@@ -6,7 +6,7 @@ import { CerebelStore } from "./backend.ts";
 import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
 import { renderCerebelCall, renderCerebelResult, RUN_WAVE_DASHBOARD_HINT, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
 import { runWave, type RunWaveLionAdapter } from "./run-wave.ts";
-import { LION_RUNNER_MODES, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunnerMode } from "../../lion/extension/schema.ts";
+import type { LionModelRole, LionProgressSnapshot, LionRun, LionRunnerMode } from "../../lion/extension/schema.ts";
 
 interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; run_wave?: import("./run-wave.ts").RunWaveResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: CerebelDetails; isError?: boolean };
@@ -54,8 +54,9 @@ function resolveConfiguredLionModel(ctx: ExtensionContext, role: LionModelRole):
 	return undefined;
 }
 
+const RUNNER_MODES = new Set<string>(["json", "rpc"]);
 function isRunnerMode(value: unknown): value is LionRunnerMode {
-	return typeof value === "string" && (LION_RUNNER_MODES as readonly string[]).includes(value);
+	return typeof value === "string" && RUNNER_MODES.has(value);
 }
 
 function resolveRunnerMode(input?: string): LionRunnerMode {

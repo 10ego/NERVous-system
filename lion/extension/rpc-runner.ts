@@ -66,6 +66,12 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let pollTimer: NodeJS.Timeout | null = null;
 	let deliveryPromise: Promise<void> | null = null;
 	let stopped = false;
+	let processExitNotified = false;
+	const notifyProcessExit = () => {
+		if (processExitNotified) return;
+		processExitNotified = true;
+		try { req.onProcessExit?.(); } catch { /* best effort */ }
+	};
 	const progressState = createLionProgressState({ includeText: req.include_progress_text ?? false });
 
 	const deliverPending = async () => {
@@ -144,14 +150,14 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		const report: LionReport | null = parseLionReport(text);
 		return { text, report };
 	} catch (err) {
-		try { req.onProcessExit?.(); } catch { /* best effort */ }
+		notifyProcessExit();
 		if (pollTimer) clearInterval(pollTimer);
 		await waitForInFlightDelivery();
 		stopped = true;
 		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
 		throw err;
 	} finally {
-		try { req.onProcessExit?.(); } catch { /* best effort */ }
+		notifyProcessExit();
 		stopped = true;
 		if (pollTimer) clearInterval(pollTimer);
 		if (client) {

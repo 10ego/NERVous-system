@@ -20,6 +20,14 @@ type Tab = "cortex" | "magi" | "axon" | "synapse" | "lion" | "cerebel" | "gangli
 const TABS: Tab[] = ["cortex", "magi", "axon", "synapse", "ganglion", "lion", "cerebel", "amygdala"];
 export const DASHBOARD_AUTO_REFRESH_MS = 1000;
 
+function formatRefreshInterval(ms: number): string {
+	if (ms <= 0) return "manual";
+	if (ms < 1000) return `auto ${ms}ms`;
+	const seconds = ms / 1000;
+	const label = Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1).replace(/\.0$/, "")}s`;
+	return `auto ${label}`;
+}
+
 type Detail =
 	| { kind: "cortex"; item: Goal }
 	| { kind: "magi"; item: MagiRecord }
@@ -262,8 +270,9 @@ export function describeLionProgress(run: LionRun, nowMs = Date.now()): string {
 
 export function summarizeWaveProgress(wave: Wave, runs: LionRun[], nowMs = Date.now()): string {
 	if (!wave.assignments.length) return "no assignments";
+	const runsById = new Map(runs.map((run) => [run.id, run]));
 	const linkedRuns = wave.assignments
-		.map((a) => a.lion_run_id ? runs.find((r) => r.id === a.lion_run_id) : undefined)
+		.map((a) => a.lion_run_id ? runsById.get(a.lion_run_id) : undefined)
 		.filter((r): r is LionRun => Boolean(r));
 	const assignmentCounts = countByStatus(wave.assignments);
 	const assignmentSummary = Object.entries(assignmentCounts)
@@ -314,6 +323,7 @@ export class NervousDashboard implements Component {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 	private refreshTimer: RefreshTimer | null = null;
+	private readonly autoRefreshMs: number;
 
 	constructor(
 		private data: DashboardData,
@@ -323,7 +333,8 @@ export class NervousDashboard implements Component {
 		private readonly refresh: () => Promise<DashboardData>,
 		options: DashboardRefreshOptions = {},
 	) {
-		this.startAutoRefresh(options.autoRefreshMs ?? DASHBOARD_AUTO_REFRESH_MS);
+		this.autoRefreshMs = options.autoRefreshMs ?? DASHBOARD_AUTO_REFRESH_MS;
+		this.startAutoRefresh(this.autoRefreshMs);
 	}
 
 	handleInput(data: string): void {
@@ -367,7 +378,8 @@ export class NervousDashboard implements Component {
 		if (this.detail) this.renderDetailViewport(lines, w);
 		else this.renderList(lines, w);
 		lines.push(hline(this.theme, w, "├", "┤"));
-		lines.push(frameLine(this.detail ? "↑/↓ scroll • pgup/pgdn jump • esc/backspace close detail • r refresh • auto 1s • q close" : "←/→ or tab switch systems • ↑/↓ select • enter details • r refresh • auto 1s • q/esc close", w, this.theme));
+		const refreshLabel = formatRefreshInterval(this.autoRefreshMs);
+		lines.push(frameLine(this.detail ? `↑/↓ scroll • pgup/pgdn jump • esc/backspace close detail • r refresh • ${refreshLabel} • q close` : `←/→ or tab switch systems • ↑/↓ select • enter details • r refresh • ${refreshLabel} • q/esc close`, w, this.theme));
 		lines.push(hline(this.theme, w, "└", "┘"));
 		this.cachedWidth = width;
 		this.cachedLines = lines;
@@ -632,8 +644,6 @@ export class NervousDashboard implements Component {
 	}
 	private reload(options: { showIndicator?: boolean } = {}): void {
 		if (this.refreshing || this.closed) return;
-		const selectedKey = this.currentSelectedKey();
-		const detailKey = this.detail ? this.detailKey(this.detail) : null;
 		this.refreshing = true;
 		this.showRefreshing = options.showIndicator ?? true;
 		this.error = null;
@@ -644,6 +654,8 @@ export class NervousDashboard implements Component {
 		void this.refresh()
 			.then((data) => {
 				if (this.closed) return;
+				const selectedKey = this.currentSelectedKey();
+				const detailKey = this.detail ? this.detailKey(this.detail) : null;
 				this.data = data;
 				this.restoreSelection(selectedKey);
 				this.restoreDetail(detailKey);

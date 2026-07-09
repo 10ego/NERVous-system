@@ -55,6 +55,15 @@ describe("CerebelLedger", () => {
 		assert.equal(d.decision?.decision, "wait");
 	});
 
+	it("preserves existing LION links on redispatch", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] });
+		assert.doesNotThrow(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] }));
+		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-002" }] }), /cannot replace LION link/);
+		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
+	});
+
 	it("does not redispatch terminal assignments", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
