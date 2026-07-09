@@ -64,26 +64,32 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let tmpPath: string | null = null;
 	let client: LionRpcClient | null = null;
 	let pollTimer: NodeJS.Timeout | null = null;
-	let delivering = false;
+	let deliveryPromise: Promise<void> | null = null;
 	let stopped = false;
 	const progressState = createLionProgressState();
 
 	const deliverPending = async () => {
-		if (delivering || stopped || !client) return;
-		delivering = true;
-		try {
+		if (deliveryPromise) return deliveryPromise;
+		if (stopped || !client) return;
+		deliveryPromise = (async () => {
+			const activeClient = client;
+			if (!activeClient) return;
 			const { result: messages } = await opts.store.mutate((l) => l.reservePendingSteering(req.run.id));
 			for (const msg of messages) {
 				try {
-					await client.steer(msg.message);
+					await activeClient.steer(msg.message);
 					await opts.store.mutate((l) => l.markSteeringDelivered(req.run.id, msg.id));
 				} catch (err) {
 					await opts.store.mutate((l) => l.markSteeringFailed(req.run.id, msg.id, `RPC steer failed: ${err instanceof Error ? err.message : String(err)}`));
 				}
 			}
-		} finally {
-			delivering = false;
-		}
+		})().finally(() => { deliveryPromise = null; });
+		return deliveryPromise;
+	};
+
+	const waitForInFlightDelivery = async () => {
+		const inFlight: Promise<void> | null = deliveryPromise;
+		if (inFlight) await inFlight.catch(() => undefined);
 	};
 
 	try {
@@ -118,16 +124,18 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		await raceAbort(idle, req.signal, async () => {
 			try { await client?.abort(); } catch { /* best effort */ }
 		});
-		stopped = true;
 		if (pollTimer) clearInterval(pollTimer);
+		await waitForInFlightDelivery();
 		await deliverPending().catch(() => undefined);
+		stopped = true;
 		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, "run finished before pending steering could be delivered"));
 		const text = (await client.getLastAssistantText()) ?? "";
 		const report: LionReport | null = parseLionReport(text);
 		return { text, report };
 	} catch (err) {
-		stopped = true;
 		if (pollTimer) clearInterval(pollTimer);
+		await waitForInFlightDelivery();
+		stopped = true;
 		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
 		throw err;
 	} finally {
