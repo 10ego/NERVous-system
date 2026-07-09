@@ -103,6 +103,7 @@ function formatControl(r: LionRun): string {
 	if (c.pid) bits.push(`pid:${c.pid}`);
 	if (c.pgid) bits.push(`pgid:${c.pgid}`);
 	if (c.cancel_requested_at) bits.push(`cancel requested${c.cancel_reason ? ` (${c.cancel_reason})` : ""}`);
+	if (c.cancel_delivery_status) bits.push(`cancel:${c.cancel_delivery_status}`);
 	if (c.reconciled_at) bits.push(`reconciled:${c.reconciled_at}`);
 	return bits.join(" · ") || "—";
 }

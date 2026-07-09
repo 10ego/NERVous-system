@@ -113,7 +113,16 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		await client.start();
 		const info = client.getProcessInfo?.();
 		if (info?.pid) {
-			try { req.onProcessStart?.(info); } catch { /* process metadata is best-effort */ }
+			try {
+				req.onProcessStart?.({
+					...info,
+					cancel: async () => {
+						await client?.abort();
+						await client?.stop();
+					},
+					isAlive: () => Boolean(client),
+				});
+			} catch { /* process metadata is best-effort */ }
 		}
 
 		pollTimer = setInterval(() => { void deliverPending().catch(() => undefined); }, opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
@@ -133,12 +142,14 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		const report: LionReport | null = parseLionReport(text);
 		return { text, report };
 	} catch (err) {
+		try { req.onProcessExit?.(); } catch { /* best effort */ }
 		if (pollTimer) clearInterval(pollTimer);
 		await waitForInFlightDelivery();
 		stopped = true;
 		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
 		throw err;
 	} finally {
+		try { req.onProcessExit?.(); } catch { /* best effort */ }
 		stopped = true;
 		if (pollTimer) clearInterval(pollTimer);
 		if (client) {

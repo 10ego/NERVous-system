@@ -26,6 +26,8 @@ export interface LionRunnerOptions {
 export interface LionProcessInfo {
 	pid: number;
 	pgid: number | null;
+	cancel?: (signal?: NodeJS.Signals) => Promise<void> | void;
+	isAlive?: () => boolean;
 }
 
 export interface LionRunRequest {
@@ -34,8 +36,10 @@ export interface LionRunRequest {
 	timeout_ms?: number;
 	/** Optional live progress callback. Called opportunistically and defensively. */
 	onProgress?: (progress: LionProgressSnapshot) => void;
-	/** Called once the subprocess PID is known so callers can persist control metadata. */
+	/** Called once the subprocess PID is known so callers can persist control metadata and active ownership. */
 	onProcessStart?: (info: LionProcessInfo) => void;
+	/** Called once the subprocess exits; owning callers should keep finalization authority until they persist the final state. */
+	onProcessExit?: () => void;
 }
 
 export interface LionRunOutput {
@@ -328,7 +332,7 @@ async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<
 		args.push("--append-system-prompt", tmpPath);
 		args.push(buildLionUserPrompt(req.run));
 
-		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress, req.onProcessStart);
+		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress, req.onProcessStart, req.onProcessExit);
 		const text = getFinalOutput(messages);
 		return { text, report: parseLionReport(text) };
 	} finally {
@@ -354,6 +358,7 @@ function collectMessages(
 	timeout_ms = 10 * 60_000,
 	onProgress?: (progress: LionProgressSnapshot) => void,
 	onProcessStart?: (info: LionProcessInfo) => void,
+	onProcessExit?: () => void,
 ): Promise<Message[]> {
 	return new Promise((resolve, reject) => {
 		const invocation = getPiInvocation([...args, ...(opts.extraArgs ?? [])], { forceBinary: opts.forcePiBinary });
@@ -364,8 +369,13 @@ function collectMessages(
 			detached,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		const processIsAlive = () => proc.exitCode === null && proc.signalCode === null && Boolean(proc.pid && isPidAlive(proc.pid));
+		const cancelOwnedProcess = (signal: NodeJS.Signals = "SIGTERM") => {
+			if (!proc.pid || !processIsAlive()) return;
+			signalProcessTree(proc.pid, signal);
+		};
 		if (proc.pid) {
-			try { onProcessStart?.({ pid: proc.pid, pgid: detached ? proc.pid : null }); } catch { /* control metadata is best-effort */ }
+			try { onProcessStart?.({ pid: proc.pid, pgid: detached ? proc.pid : null, cancel: cancelOwnedProcess, isAlive: processIsAlive }); } catch { /* control metadata is best-effort */ }
 		}
 
 		const messages: Message[] = [];
@@ -398,15 +408,9 @@ function collectMessages(
 
 		const killProc = (reason: string) => {
 			aborted = true;
-			if (proc.pid) {
-				try { signalProcessTree(proc.pid, "SIGTERM"); } catch { try { proc.kill("SIGTERM"); } catch { /* ignore */ } }
-			} else {
-				try { proc.kill("SIGTERM"); } catch { /* ignore */ }
-			}
+			try { cancelOwnedProcess("SIGTERM"); } catch { try { proc.kill("SIGTERM"); } catch { /* ignore */ } }
 			setTimeout(() => {
-				if (!proc.killed && proc.pid) {
-					try { signalProcessTree(proc.pid, "SIGKILL"); } catch { try { proc.kill("SIGKILL"); } catch { /* ignore */ } }
-				}
+				try { cancelOwnedProcess("SIGKILL"); } catch { try { if (processIsAlive()) proc.kill("SIGKILL"); } catch { /* ignore */ } }
 			}, 5000);
 			return reason;
 		};
@@ -420,8 +424,12 @@ function collectMessages(
 			for (const line of lines) processLine(line);
 		});
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
-		proc.on("error", (err) => done(() => reject(err)));
+		proc.on("error", (err) => {
+			try { onProcessExit?.(); } catch { /* best effort */ }
+			done(() => reject(err));
+		});
 		proc.on("close", (_code, closeSignal) => {
+			try { onProcessExit?.(); } catch { /* best effort */ }
 			if (buffer.trim()) processLine(buffer);
 			if (aborted) return done(() => reject(new Error("LION subprocess was aborted or timed out")));
 			if (closeSignal) return done(() => reject(new Error(`LION subprocess exited after signal ${closeSignal}`)));

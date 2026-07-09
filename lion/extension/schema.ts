@@ -86,6 +86,9 @@ export interface LionControlState {
 	cancel_requested_at?: string | null;
 	cancel_reason?: string | null;
 	cancel_signal?: string | null;
+	cancel_delivery_status?: string | null;
+	cancel_delivered_at?: string | null;
+	cancel_delivery_error?: string | null;
 	exit_signal?: string | null;
 	reconciled_at?: string | null;
 }

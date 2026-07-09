@@ -10,8 +10,9 @@ import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@n
 import { LionStore } from "./backend.ts";
 import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunnerMode, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
-import { createLionRunner, isPidAlive, signalProcessTree } from "./subprocess.ts";
+import { createLionRunner, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
+import { attachActiveRunProcess, beginActiveRun, cancelActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, markActiveRunExited } from "./active-runs.ts";
 
 interface LionDetails {
 	action: string;
@@ -108,7 +109,7 @@ async function runOp(store: LionStore, action: string, op: (l: import("./store.t
 }
 
 async function reconcileStore(store: LionStore): Promise<void> {
-	try { await store.mutate((l) => l.reconcileControls(isPidAlive)); } catch { /* best-effort read reconciliation */ }
+	try { await store.mutate((l) => l.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds() })); } catch { /* best-effort read reconciliation */ }
 }
 
 async function executeRun(args: {
@@ -122,6 +123,7 @@ async function executeRun(args: {
 	timeout_ms?: number;
 }): Promise<ToolResult> {
 	let run = args.run;
+	const activeOwner = beginActiveRun(run.id, run.runner_mode);
 	let progressChain = Promise.resolve();
 	const enqueueProgress = (progress: LionProgressSnapshot) => {
 		const preview = { ...run, progress, updated_at: progress.last_event_at } satisfies LionRun;
@@ -153,10 +155,12 @@ async function executeRun(args: {
 			timeout_ms: args.timeout_ms ?? DEFAULT_TIMEOUT_MS,
 			onProgress: enqueueProgress,
 			onProcessStart: (info) => {
+				attachActiveRunProcess(activeOwner, info);
 				void args.store.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).then((updated) => { run = updated.result; }).catch((err) => {
 					console.warn(`[nervous-system/lion] process metadata update failed for ${run.id}:`, err);
 				});
 			},
+			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
 		await progressChain;
 		const finished = await args.store.mutate((l) => l.finish(run.id, { output: out.text, report: out.report }));
@@ -173,6 +177,8 @@ async function executeRun(args: {
 		run = failed.result;
 		emitLionEvent(args.pi, "failed", run);
 		return fail(args.action, `LION ${run.id} ${run.status}: ${run.error ?? msg}`);
+	} finally {
+		finishActiveRun(activeOwner);
 	}
 }
 
@@ -242,18 +248,17 @@ export default function (pi: ExtensionAPI) {
 					try {
 						const { result } = await store.mutate((l) => l.requestCancel(p.id!, p.reason ?? p.context));
 						if (result.already_terminal) return ok(action, `LION ${p.id} is already terminal (${result.run.status}).`, { run: result.run });
-						if (result.signal && result.pid) {
-							try {
-								signalProcessTree(result.pgid ?? result.pid, result.signal);
-							} catch (err) {
-								return fail(action, `Cancel recorded for ${p.id}, but signal failed: ${err instanceof Error ? err.message : String(err)}`);
-							}
-							setTimeout(() => {
-								try { if (result.pid && isPidAlive(result.pid)) signalProcessTree(result.pgid ?? result.pid, "SIGKILL"); } catch { /* best effort */ }
-							}, 5000).unref?.();
-							return ok(action, `Cancellation requested for ${p.id} (pid ${result.pid}).`, { run: result.run });
+						if (!result.signal) return ok(action, `Cancelled queued LION ${p.id}.`, { run: result.run });
+
+						const delivered = await cancelActiveRun(p.id!, result.signal);
+						if (delivered.delivered) {
+							const updated = await store.mutate((l) => l.markCancelDelivery(p.id!, "delivered"));
+							setTimeout(() => { void cancelActiveRun(p.id!, "SIGKILL").catch(() => undefined); }, 5000).unref?.();
+							return ok(action, `Cancellation delivered to active LION ${p.id}${delivered.pid ? ` (pid ${delivered.pid})` : ""}.`, { run: updated.result });
 						}
-						return ok(action, `Cancelled queued LION ${p.id}.`, { run: result.run });
+
+						const updated = await store.mutate((l) => l.markCancelDelivery(p.id!, delivered.reason));
+						return ok(action, `Cancel recorded for ${p.id}, but no owned active worker was signaled (${delivered.reason}).`, { run: updated.result });
 					} catch (e) {
 						return e instanceof LionError ? fail(action, `lion cancel failed (${e.code}): ${e.message}`) : fail(action, `lion cancel failed: ${e instanceof Error ? e.message : String(e)}`);
 					}
@@ -265,7 +270,7 @@ export default function (pi: ExtensionAPI) {
 					try {
 						await reconcileStore(store);
 						const current = (await store.query((l) => l.get(p.id!))).result;
-						const liveRpc = current?.status === "running" && current.runner_mode === "rpc" && typeof current.control?.pid === "number" && isPidAlive(current.control.pid);
+						const liveRpc = current?.status === "running" && current.runner_mode === "rpc" && isActiveRunAttached(p.id!, "rpc");
 						const reason = current?.status === "running"
 							? (liveRpc ? "queued for live RPC delivery" : (current?.runner_mode === "rpc" ? "rpc worker is not attached to a live process" : "running json subprocess backend does not support live steering"))
 							: undefined;

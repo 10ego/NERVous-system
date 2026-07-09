@@ -29,6 +29,7 @@ const STATUS_SET = new Set<string>(LION_RUN_STATUSES);
 const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
 const STEERING_STATUS_SET = new Set<string>(["queued", "applied", "pending_delivery", "delivering", "delivered", "delivery_failed", "rejected_running", "rejected_terminal"]);
 const MAX_PROGRESS_TEXT = 1000;
+const DEFAULT_RECONCILE_GRACE_MS = 30_000;
 
 function now(): string {
 	return new Date().toISOString();
@@ -80,6 +81,12 @@ export interface CancelRunResult {
 	pid?: number;
 	pgid?: number | null;
 	already_terminal?: boolean;
+}
+
+export interface ReconcileControlsOptions {
+	active_run_ids?: Iterable<string>;
+	now_ms?: number;
+	stale_after_ms?: number;
 }
 
 export interface SteerRunResult {
@@ -206,7 +213,7 @@ export class LionLedger {
 		if (["completed", "blocked", "failed", "aborted"].includes(r.status)) {
 			return { run: clone(r), already_terminal: true };
 		}
-		r.control = { ...(r.control ?? {}), cancel_requested_at: r.control?.cancel_requested_at ?? ts, cancel_reason: reason ?? r.control?.cancel_reason ?? null, cancel_signal: "SIGTERM", last_seen_at: ts };
+		r.control = { ...(r.control ?? {}), cancel_requested_at: r.control?.cancel_requested_at ?? ts, cancel_reason: reason ?? r.control?.cancel_reason ?? null, cancel_signal: "SIGTERM", cancel_delivery_status: r.status === "running" ? "requested" : "not_needed", last_seen_at: ts };
 		if (r.status === "queued") {
 			this.transition(r, "aborted");
 			r.error = reason ? `Cancelled before start: ${reason}` : "Cancelled before start";
@@ -215,6 +222,20 @@ export class LionLedger {
 		}
 		r.updated_at = ts;
 		return { run: clone(r), signal: r.status === "running" ? "SIGTERM" : undefined, pid: r.control.pid ?? undefined, pgid: r.control.pgid ?? null };
+	}
+
+	markCancelDelivery(id: string, status: string, error?: string | null): LionRun {
+		const r = this.require(id);
+		const ts = now();
+		r.control = {
+			...(r.control ?? {}),
+			cancel_delivery_status: status,
+			cancel_delivered_at: status === "delivered" ? ts : r.control?.cancel_delivered_at ?? null,
+			cancel_delivery_error: status === "delivered" ? null : error ?? status,
+			last_seen_at: ts,
+		};
+		r.updated_at = ts;
+		return clone(r);
 	}
 
 	steer(id: string, message: string, options: SteerRunOptions = {}): SteerRunResult {
@@ -307,12 +328,17 @@ export class LionLedger {
 		return clone(r);
 	}
 
-	reconcileControls(isAlive: (pid: number) => boolean): LionRun[] {
+	reconcileControls(isAlive: (pid: number) => boolean, options: ReconcileControlsOptions = {}): LionRun[] {
 		const changed: LionRun[] = [];
+		const active = new Set(options.active_run_ids ?? []);
+		const nowMs = options.now_ms ?? Date.now();
+		const staleAfterMs = options.stale_after_ms ?? DEFAULT_RECONCILE_GRACE_MS;
 		for (const r of this.runsById.values()) {
 			if (r.status !== "running" || typeof r.control?.pid !== "number") continue;
+			if (active.has(r.id)) continue;
+			if (!isReconcileStale(r, nowMs, staleAfterMs)) continue;
 			if (isAlive(r.control.pid)) continue;
-			const ts = now();
+			const ts = new Date(nowMs).toISOString();
 			this.transition(r, r.control.cancel_requested_at ? "aborted" : "failed");
 			r.error = r.control.cancel_requested_at ? (r.control.cancel_reason ? `Cancelled: ${r.control.cancel_reason}` : "Cancelled") : "Subprocess is no longer running";
 			r.finished_at = ts;
@@ -442,6 +468,15 @@ function trimText(value: string): string {
 	return value.length > MAX_PROGRESS_TEXT ? value.slice(-MAX_PROGRESS_TEXT) : value;
 }
 
+function isReconcileStale(run: LionRun, nowMs: number, staleAfterMs: number): boolean {
+	const candidates = [run.control?.last_seen_at, run.updated_at, run.started_at]
+		.filter((value): value is string => typeof value === "string")
+		.map((value) => Date.parse(value))
+		.filter((value) => Number.isFinite(value));
+	const newest = candidates.length ? Math.max(...candidates) : 0;
+	return nowMs - newest >= staleAfterMs;
+}
+
 function defaultProgress(): LionProgressSnapshot {
 	return {
 		event: "heartbeat",
@@ -524,6 +559,9 @@ function coerceControl(value: unknown): LionControlState | null {
 		cancel_requested_at: typeof value.cancel_requested_at === "string" ? value.cancel_requested_at : null,
 		cancel_reason: typeof value.cancel_reason === "string" ? value.cancel_reason : null,
 		cancel_signal: typeof value.cancel_signal === "string" ? value.cancel_signal : null,
+		cancel_delivery_status: typeof value.cancel_delivery_status === "string" ? value.cancel_delivery_status : null,
+		cancel_delivered_at: typeof value.cancel_delivered_at === "string" ? value.cancel_delivered_at : null,
+		cancel_delivery_error: typeof value.cancel_delivery_error === "string" ? value.cancel_delivery_error : null,
 		exit_signal: typeof value.exit_signal === "string" ? value.exit_signal : null,
 		reconciled_at: typeof value.reconciled_at === "string" ? value.reconciled_at : null,
 	};
