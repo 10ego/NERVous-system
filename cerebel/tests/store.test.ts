@@ -64,6 +64,35 @@ describe("CerebelLedger", () => {
 		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
 	});
 
+	it("rejects mismatched LION provenance in guarded records", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-local" }] });
+		assert.throws(() => l.recordIfOwned(w.id, "run-local", {
+			assignment_id: "assign-001",
+			lion_run_id: "run-foreign",
+			outcome: "completed",
+			summary: "wrong provenance",
+		}), /cannot write LION link/);
+		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-local");
+		assert.equal(l.get(w.id)?.assignments[0]?.status, "dispatched");
+	});
+
+	it("does not record guarded results against a nonterminal foreign link", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-foreign" }] });
+		const result = l.recordIfOwned(w.id, "run-local", {
+			assignment_id: "assign-001",
+			lion_run_id: "run-local",
+			outcome: "completed",
+			summary: "local done",
+		});
+		assert.equal(result.committed, false);
+		assert.equal(result.assignment.lion_run_id, "run-foreign");
+		assert.equal(result.assignment.status, "dispatched");
+	});
+
 	it("does not redispatch terminal assignments", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
