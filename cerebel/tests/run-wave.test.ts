@@ -180,7 +180,7 @@ describe("runWave", () => {
 		assert.equal(result.assignment_results.at(-1)?.outcome, "skipped");
 	});
 
-	it("finalizes a created LION run when assignment linking fails", async () => {
+	it("finalizes a created LION run without overwriting a terminal assignment when linking fails", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
 		const adapter = fakeAdapter({ "assign-001": completedReport("should not run") });
@@ -206,9 +206,42 @@ describe("runWave", () => {
 		assert.equal(ran, false);
 		assert.equal(finishStatus, "failed");
 		assert.match(finishError ?? "", /dispatch\/link failed/);
-		assert.equal(result.assignment_results[0]?.lion_run_id, "run-001");
-		assert.match(result.assignment_results[0]?.summary ?? "", /setup failed/);
-		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
+		assert.equal(result.assignment_results[0]?.outcome, "skipped");
+		assert.equal(result.wave.assignments[0]?.lion_run_id, null);
+		assert.equal(result.wave.assignments[0]?.status, "failed");
+	});
+
+	it("does not overwrite a concurrent foreign LION link during setup recovery", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 1, assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("should not run") });
+		const baseCreateRun = adapter.createRun.bind(adapter);
+		const trace: string[] = [];
+		let ran = false;
+		let finishStatus: string | undefined;
+		adapter.createRun = async (assignment) => {
+			trace.push("create-local");
+			const run = await baseCreateRun(assignment);
+			await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: assignment.id, lion_run_id: "run-foreign" }] }));
+			trace.push("link-foreign");
+			return run;
+		};
+		adapter.run = async () => {
+			ran = true;
+			return { text: "unexpected", report: completedReport("unexpected") };
+		};
+		adapter.finishRun = async (runId, result) => {
+			trace.push(`finish-local:${runId}`);
+			finishStatus = result.status;
+			return { id: runId, agent_id: "lion", status: result.status ?? "failed", task_id: null, objective: "", context: "", started_at: new Date().toISOString(), updated_at: new Date().toISOString(), report: result.report, error: result.error ?? null } as LionRun;
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.deepEqual(trace, ["create-local", "link-foreign", "finish-local:run-001"]);
+		assert.equal(ran, false);
+		assert.equal(finishStatus, "failed");
+		assert.equal(result.assignment_results[0]?.outcome, "skipped");
+		assert.equal(result.wave.assignments[0]?.status, "dispatched");
+		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-foreign");
 	});
 
 	it("records createRun failures against reserved assignments", async () => {

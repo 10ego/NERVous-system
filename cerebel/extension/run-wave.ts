@@ -101,7 +101,26 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 		if (run) {
 			await adapter.finishRun(run.id, { output: "", report: null, status: "failed", error: `CEREBEL dispatch/link failed after run creation: ${message}` }).catch(() => undefined);
 		}
-		await store.mutate((ledger) => ledger.record(waveId, {
+		const recovery = await recoverSetupFailure(store, waveId, assignment, run, summary, message);
+		if (recovery.superseded) {
+			const owner = recovery.assignment.lion_run_id;
+			const reason = owner
+				? `assignment is owned by ${owner}`
+				: `assignment is already ${recovery.assignment.status}`;
+			return { assignment_id: assignment.id, lion_run_id: run?.id, outcome: "skipped", summary: `${summary}; local attempt superseded because ${reason}`, blockers: [message] };
+		}
+		return { assignment_id: assignment.id, lion_run_id: run?.id, outcome: "failed", summary, blockers: [message] };
+	}
+}
+
+async function recoverSetupFailure(store: CerebelStore, waveId: string, assignment: Assignment, run: LionRun | undefined, summary: string, message: string): Promise<{ superseded: boolean; assignment: Assignment }> {
+	const { result } = await store.mutate((ledger) => {
+		const current = ledger.get(waveId)?.assignments.find((a) => a.id === assignment.id);
+		if (!current) throw new Error(`assignment ${assignment.id} not found in wave ${waveId} during LION setup recovery`);
+		const ownedByOtherRun = Boolean(current.lion_run_id && current.lion_run_id !== run?.id);
+		const terminal = ["completed", "partial", "blocked", "failed", "cancelled"].includes(current.status);
+		if (ownedByOtherRun || terminal) return { superseded: true, assignment: current };
+		const wave = ledger.record(waveId, {
 			assignment_id: assignment.id,
 			lion_run_id: run?.id,
 			ganglion_id: assignment.ganglion_id,
@@ -109,9 +128,10 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 			outcome: "failed",
 			summary,
 			blockers: [message],
-		}));
-		return { assignment_id: assignment.id, lion_run_id: run?.id, outcome: "failed", summary, blockers: [message] };
-	}
+		});
+		return { superseded: false, assignment: wave.assignments.find((a) => a.id === assignment.id) ?? current };
+	});
+	return result;
 }
 
 async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun): Promise<RunWaveAssignmentResult> {

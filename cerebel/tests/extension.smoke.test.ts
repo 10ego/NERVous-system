@@ -14,8 +14,11 @@ function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 
 describe("cerebel extension factory", () => {
 	it("does not value-import LION at module load", async () => {
-		const source = await fs.readFile(path.join(process.cwd(), "cerebel/extension/index.ts"), "utf8");
-		assert.equal(/import\s+(?!type\b)[^;]*from\s+["']\.\.\/\.\.\/lion\//.test(source), false);
+		const source = await fs.readFile(path.resolve(__dirname, "../extension/index.ts"), "utf8");
+		const lionImport = /import\s+(?:type\s+)?(?:[^;]*?from\s+)?["']\.\.\/\.\.\/lion\//g;
+		for (const match of source.matchAll(lionImport)) {
+			assert.match(match[0], /^import\s+type\s+/);
+		}
 	});
 
 	it("registers the cerebel tool and commands", () => {
