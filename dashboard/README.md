@@ -27,8 +27,10 @@ MAGI history is recorded for successful future `magi` tool calls and `/magi` com
 - `↑` / `↓` — move selection
 - `enter` — open selected item details
 - `esc` / `backspace` — close details
-- `r` — reload AXON/LION state from disk
+- `r` — manually reload state from disk
 - `q` / `esc` — close dashboard
+
+While open, the dashboard auto-refreshes state about once per second so running LION/CEREBEL progress can be watched without closing/reopening the modal. Manual `r` reload remains available, and the dashboard tries to preserve the current tab, selected row, and detail view across refreshes.
 
 The dashboard reads component state through existing store APIs and does not mutate state. It can display empty tabs when a component has not yet produced persisted state. Set `NERVOUS_CONTEXT=<work-id>` before launching pi to view or resume a specific work context.
 

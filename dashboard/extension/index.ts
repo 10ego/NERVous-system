@@ -18,6 +18,7 @@ import type { Note } from "../../synapse/extension/schema.ts";
 
 type Tab = "cortex" | "magi" | "axon" | "synapse" | "lion" | "cerebel" | "ganglion" | "amygdala";
 const TABS: Tab[] = ["cortex", "magi", "axon", "synapse", "ganglion", "lion", "cerebel", "amygdala"];
+export const DASHBOARD_AUTO_REFRESH_MS = 1000;
 
 type Detail =
 	| { kind: "cortex"; item: Goal }
@@ -28,6 +29,12 @@ type Detail =
 	| { kind: "cerebel"; item: Wave }
 	| { kind: "ganglion"; item: Ganglion }
 	| { kind: "amygdala"; item: Incident };
+
+type RefreshTimer = ReturnType<typeof setInterval>;
+
+interface DashboardRefreshOptions {
+	autoRefreshMs?: number;
+}
 
 interface DashboardData {
 	goals: Goal[];
@@ -293,7 +300,7 @@ function headerColumnLine(theme: Theme, width: number, columns: Column[]): strin
 	return theme.fg("muted", theme.bold(columnLine(width, columns)));
 }
 
-class NervousDashboard implements Component {
+export class NervousDashboard implements Component {
 	private tabIndex = 0;
 	private selected = 0;
 	private detail: Detail | null = null;
@@ -301,9 +308,12 @@ class NervousDashboard implements Component {
 	private detailLineCount = 0;
 	private readonly detailViewportRows = 20;
 	private refreshing = false;
+	private showRefreshing = false;
+	private closed = false;
 	private error: string | null = null;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+	private refreshTimer: RefreshTimer | null = null;
 
 	constructor(
 		private data: DashboardData,
@@ -311,12 +321,15 @@ class NervousDashboard implements Component {
 		private readonly theme: Theme,
 		private readonly done: () => void,
 		private readonly refresh: () => Promise<DashboardData>,
-	) {}
+		options: DashboardRefreshOptions = {},
+	) {
+		this.startAutoRefresh(options.autoRefreshMs ?? DASHBOARD_AUTO_REFRESH_MS);
+	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
 			if (this.detail) return this.closeDetail();
-			this.done();
+			this.closeDashboard();
 			return;
 		}
 		if (this.detail) {
@@ -350,11 +363,11 @@ class NervousDashboard implements Component {
 		const lines: string[] = [hline(this.theme, w, "┌", "┐"), frameLine(this.header(w), w, this.theme), hline(this.theme, w, "├", "┤")];
 		if (this.error) lines.push(frameLine(this.theme.fg("error", this.error), w, this.theme));
 		for (const warning of this.data.warnings.slice(0, 2)) lines.push(frameLine(this.theme.fg("warning", warning), w, this.theme));
-		if (this.refreshing) lines.push(frameLine(this.theme.fg("accent", "Refreshing…"), w, this.theme));
+		if (this.refreshing && this.showRefreshing) lines.push(frameLine(this.theme.fg("accent", "Refreshing…"), w, this.theme));
 		if (this.detail) this.renderDetailViewport(lines, w);
 		else this.renderList(lines, w);
 		lines.push(hline(this.theme, w, "├", "┤"));
-		lines.push(frameLine(this.detail ? "↑/↓ scroll • pgup/pgdn jump • esc/backspace close detail • r refresh • q close" : "←/→ or tab switch systems • ↑/↓ select • enter details • r refresh • q/esc close", w, this.theme));
+		lines.push(frameLine(this.detail ? "↑/↓ scroll • pgup/pgdn jump • esc/backspace close detail • r refresh • auto 1s • q close" : "←/→ or tab switch systems • ↑/↓ select • enter details • r refresh • auto 1s • q/esc close", w, this.theme));
 		lines.push(hline(this.theme, w, "└", "┘"));
 		this.cachedWidth = width;
 		this.cachedLines = lines;
@@ -591,6 +604,12 @@ class NervousDashboard implements Component {
 	private renderAmygdala(lines: string[], width: number, i: Incident): void { this.title(lines, width, `AMYGDALA ${i.id}: ${i.title}`); pushWrapped(lines, "Status", `${i.status} • ${i.severity}/${i.category} • ${i.recommendation}`, width, this.theme); pushWrapped(lines, "Source", `${i.source}${i.source_id ? `:${i.source_id}` : ""}`, width, this.theme); pushWrapped(lines, "Description", i.description, width, this.theme); pushWrapped(lines, "Reason", i.reason, width, this.theme); pushWrapped(lines, "Mitigation", i.mitigation_plan.join(" | "), width, this.theme); pushWrapped(lines, "Latest note", i.notes.at(-1)?.text, width, this.theme); }
 
 	private closeDetail(): void { this.detail = null; this.detailScroll = 0; this.invalidate(); this.tui.requestRender(); }
+	private closeDashboard(): void {
+		if (this.closed) return;
+		this.closed = true;
+		this.dispose();
+		this.done();
+	}
 	private switchTab(delta: number): void { this.tabIndex = (this.tabIndex + delta + TABS.length) % TABS.length; this.selected = 0; this.detailScroll = 0; this.invalidate(); this.tui.requestRender(); }
 	private move(delta: number): void { this.selected = Math.max(0, Math.min(Math.max(0, this.items().length - 1), this.selected + delta)); this.invalidate(); this.tui.requestRender(); }
 	private scrollDetail(delta: number): void { this.scrollDetailTo(this.detailScroll + delta); }
@@ -600,13 +619,77 @@ class NervousDashboard implements Component {
 		this.invalidate();
 		this.tui.requestRender();
 	}
-	private reload(): void {
-		if (this.refreshing) return;
+	private startAutoRefresh(intervalMs: number): void {
+		if (intervalMs <= 0) return;
+		this.refreshTimer = setInterval(() => this.reload({ showIndicator: false }), intervalMs);
+		const maybeUnref = this.refreshTimer as RefreshTimer & { unref?: () => void };
+		maybeUnref.unref?.();
+	}
+	dispose(): void {
+		if (!this.refreshTimer) return;
+		clearInterval(this.refreshTimer);
+		this.refreshTimer = null;
+	}
+	private reload(options: { showIndicator?: boolean } = {}): void {
+		if (this.refreshing || this.closed) return;
+		const selectedKey = this.currentSelectedKey();
+		const detailKey = this.detail ? this.detailKey(this.detail) : null;
 		this.refreshing = true;
+		this.showRefreshing = options.showIndicator ?? true;
 		this.error = null;
-		this.invalidate();
-		this.tui.requestRender();
-		void this.refresh().then((data) => { this.data = data; this.detail = null; }).catch((err) => { this.error = err instanceof Error ? err.message : String(err); }).finally(() => { this.refreshing = false; this.selected = Math.min(this.selected, Math.max(0, this.items().length - 1)); this.invalidate(); this.tui.requestRender(); });
+		if (this.showRefreshing) {
+			this.invalidate();
+			this.tui.requestRender();
+		}
+		void this.refresh()
+			.then((data) => {
+				if (this.closed) return;
+				this.data = data;
+				this.restoreSelection(selectedKey);
+				this.restoreDetail(detailKey);
+			})
+			.catch((err) => {
+				if (!this.closed) this.error = err instanceof Error ? err.message : String(err);
+			})
+			.finally(() => {
+				this.refreshing = false;
+				this.showRefreshing = false;
+				if (this.closed) return;
+				this.selected = Math.min(this.selected, Math.max(0, this.items().length - 1));
+				this.invalidate();
+				this.tui.requestRender();
+			});
+	}
+	private currentSelectedKey(): string | null {
+		const item = this.items()[this.selected];
+		return item ? this.detailKey(item) : null;
+	}
+	private detailKey(detail: Detail): string { return `${detail.kind}:${detail.item.id}`; }
+	private findDetail(key: string | null): Detail | null {
+		if (!key) return null;
+		const [kind, id] = key.split(":", 2);
+		if (!kind || !id || !TABS.includes(kind as Tab)) return null;
+		return this.itemsFor(kind as Tab).find((detail) => this.detailKey(detail) === key) ?? null;
+	}
+	private restoreSelection(key: string | null): void {
+		const items = this.items();
+		if (key) {
+			const index = items.findIndex((item) => this.detailKey(item) === key);
+			if (index >= 0) {
+				this.selected = index;
+				return;
+			}
+		}
+		this.selected = Math.min(this.selected, Math.max(0, items.length - 1));
+	}
+	private restoreDetail(key: string | null): void {
+		if (!key) return;
+		const next = this.findDetail(key);
+		if (next) this.detail = next;
+		else {
+			this.detail = null;
+			this.detailScroll = 0;
+		}
 	}
 }
 

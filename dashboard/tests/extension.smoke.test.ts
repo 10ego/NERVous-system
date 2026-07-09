@@ -1,6 +1,6 @@
 import * as assert from "node:assert";
-import { describe, it } from "vitest";
-import factory, { describeLionProgress, summarizeWaveProgress } from "../extension/index.ts";
+import { afterEach, describe, it, vi } from "vitest";
+import factory, { describeLionProgress, NervousDashboard, summarizeWaveProgress } from "../extension/index.ts";
 
 function stubPi(): { pi: any; commands: Array<{ name: string; options: any }> } {
 	const commands: Array<{ name: string; options: any }> = [];
@@ -14,6 +14,31 @@ function stubPi(): { pi: any; commands: Array<{ name: string; options: any }> } 
 	};
 }
 
+const emptyDashboardData = (overrides: Record<string, unknown> = {}) => ({
+	goals: [],
+	magi: [],
+	tasks: [],
+	notes: [],
+	runs: [],
+	waves: [],
+	ganglions: [],
+	incidents: [],
+	warnings: [],
+	...overrides,
+}) as any;
+
+const theme = {
+	fg: (_color: string, text: string) => text,
+	bg: (_color: string, text: string) => text,
+	bold: (text: string) => text,
+	italic: (text: string) => text,
+} as any;
+
+afterEach(() => {
+	vi.useRealTimers();
+	vi.restoreAllMocks();
+});
+
 describe("dashboard extension factory", () => {
 	it("registers the NERVous dashboard command", () => {
 		const { pi, commands } = stubPi();
@@ -23,6 +48,34 @@ describe("dashboard extension factory", () => {
 		assert.equal(typeof dashboard?.options.handler, "function");
 		assert.ok(dashboard?.options.description);
 		assert.equal(commands.some((c) => c.name === "nervous"), false, "/nervous prompt template remains unshadowed");
+	});
+
+	it("auto-refreshes while open and cleans up its timer", async () => {
+		vi.useFakeTimers();
+		const refresh = vi.fn().mockResolvedValue(emptyDashboardData({ runs: [{ id: "run-001", status: "running" }] }));
+		const tui = { requestRender: vi.fn() } as any;
+		const dashboard = new NervousDashboard(emptyDashboardData(), tui, theme, vi.fn(), refresh, { autoRefreshMs: 100 });
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(refresh.mock.calls.length, 1);
+		dashboard.dispose();
+		await vi.advanceTimersByTimeAsync(300);
+		assert.equal(refresh.mock.calls.length, 1);
+	});
+
+	it("preserves an open detail view across reloads", async () => {
+		const oldRun = { id: "run-001", agent_id: "lion-a", status: "running", task_id: null, objective: "old", context: "", started_at: "2026-07-08T12:00:00.000Z", updated_at: "2026-07-08T12:00:00.000Z" } as any;
+		const newRun = { ...oldRun, status: "completed", objective: "new", report: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } } as any;
+		const refresh = vi.fn().mockResolvedValue(emptyDashboardData({ runs: [newRun] }));
+		const tui = { requestRender: vi.fn() } as any;
+		const dashboard = new NervousDashboard(emptyDashboardData({ runs: [oldRun] }), tui, theme, vi.fn(), refresh, { autoRefreshMs: 0 });
+		(dashboard as any).tabIndex = 5; // LION tab
+		(dashboard as any).selected = 0;
+		(dashboard as any).detail = { kind: "lion", item: oldRun };
+		dashboard.handleInput("r");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal((dashboard as any).detail?.item.status, "completed");
+		assert.equal((dashboard as any).detail?.item.objective, "new");
+		assert.equal((dashboard as any).selected, 0);
 	});
 
 	it("formats LION progress snapshots with activity and staleness", () => {
