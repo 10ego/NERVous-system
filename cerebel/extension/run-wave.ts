@@ -30,30 +30,25 @@ export interface RunWaveResult {
 	summary: string;
 }
 
+interface ReservationResult {
+	wave: Wave;
+	assignments: Assignment[];
+}
+
 export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, options: RunWaveOptions = {}): Promise<RunWaveResult> {
 	const results: RunWaveAssignmentResult[] = [];
 	let wave = await loadWave(store, options.wave_id);
 	const maxParallel = clampParallel(options.max_parallel ?? wave.max_parallel);
 
 	for (;;) {
-		wave = await loadWave(store, wave.id);
-		const blockedOrFailed = wave.assignments.find((a) => a.status === "blocked" || a.status === "failed");
-		if (blockedOrFailed) break;
-		const planned = wave.assignments.filter((a) => a.status === "planned").slice(0, maxParallel);
-		if (!planned.length) break;
+		const reservation = await reservePlannedAssignments(store, wave.id, maxParallel);
+		wave = reservation.wave;
+		if (wave.assignments.some((a) => a.status === "blocked" || a.status === "failed")) break;
+		if (!reservation.assignments.length) break;
 
-		const created = await Promise.all(planned.map(async (assignment) => ({ assignment, run: await adapter.createRun(assignment) })));
-		wave = (await store.mutate((ledger) => ledger.dispatch(wave.id, {
-			links: created.map(({ assignment, run }) => ({
-				assignment_id: assignment.id,
-				lion_run_id: run.id,
-				ganglion_id: assignment.ganglion_id,
-				ganglion_allocation_id: assignment.ganglion_allocation_id,
-			})),
-		}))).result;
-
-		const batch = await Promise.all(created.map(({ assignment, run }) => runOne(store, adapter, wave.id, assignment, run)));
+		const batch = await Promise.all(reservation.assignments.map((assignment) => createAndRunOne(store, adapter, wave.id, assignment)));
 		results.push(...batch);
+		wave = await loadWave(store, wave.id);
 	}
 
 	wave = await loadWave(store, wave.id);
@@ -65,27 +60,77 @@ export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, 
 	return { wave, assignment_results: results, summary: summarizeRunWave(wave, results) };
 }
 
-async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun): Promise<RunWaveAssignmentResult> {
+async function reservePlannedAssignments(store: CerebelStore, waveId: string, maxParallel: number): Promise<ReservationResult> {
+	const { result } = await store.mutate((ledger) => {
+		const current = ledger.get(waveId);
+		if (!current) throw new Error(`wave ${waveId} not found`);
+		if (current.assignments.some((a) => a.status === "blocked" || a.status === "failed")) return { wave: current, assignments: [] };
+		const plannedIds = current.assignments.filter((a) => a.status === "planned").slice(0, maxParallel).map((a) => a.id);
+		if (!plannedIds.length) return { wave: current, assignments: [] };
+		const wave = ledger.dispatch(waveId, { links: plannedIds.map((assignment_id) => ({ assignment_id })) });
+		return { wave, assignments: wave.assignments.filter((a) => plannedIds.includes(a.id)) };
+	});
+	return result;
+}
+
+async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment): Promise<RunWaveAssignmentResult> {
+	let run: LionRun;
 	try {
-		const out = await adapter.run(run, assignment, (progress) => {
-			void adapter.updateProgress?.(run.id, progress).catch(() => undefined);
+		run = await adapter.createRun(assignment);
+		const { result: linkedWave } = await store.mutate((ledger) => ledger.dispatch(waveId, {
+			links: [{
+				assignment_id: assignment.id,
+				lion_run_id: run.id,
+				ganglion_id: assignment.ganglion_id,
+				ganglion_allocation_id: assignment.ganglion_allocation_id,
+			}],
+		}));
+		const linkedAssignment = linkedWave.assignments.find((a) => a.id === assignment.id) ?? assignment;
+		return runOne(store, adapter, waveId, linkedAssignment, run);
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		await store.mutate((ledger) => ledger.record(waveId, {
+			assignment_id: assignment.id,
+			ganglion_id: assignment.ganglion_id,
+			ganglion_allocation_id: assignment.ganglion_allocation_id,
+			outcome: "failed",
+			summary: `LION run creation failed: ${message}`,
+			blockers: [message],
+		}));
+		return { assignment_id: assignment.id, outcome: "failed", summary: `LION run creation failed: ${message}`, blockers: [message] };
+	}
+}
+
+async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun): Promise<RunWaveAssignmentResult> {
+	const progress = createProgressUpdater((snapshot) => adapter.updateProgress?.(run.id, snapshot) ?? Promise.resolve());
+	try {
+		const out = await adapter.run(run, assignment, progress.enqueue);
+		await progress.drain();
+		const missingReport = !out.report;
+		const finished = await adapter.finishRun(run.id, {
+			output: out.text,
+			report: out.report,
+			status: missingReport ? "failed" : undefined,
+			error: missingReport ? "missing WORKER_REPORT" : null,
 		});
-		const finished = await adapter.finishRun(run.id, { output: out.text, report: out.report });
 		const outcome = assignmentStatusFromReport(out.report, finished.status);
+		const summary = out.report?.summary ?? (finished.error ? `failed: ${finished.error}` : "failed: missing WORKER_REPORT");
+		const blockers = out.report?.blockers ?? (finished.error ? [finished.error] : ["missing WORKER_REPORT"]);
 		await store.mutate((ledger) => ledger.record(waveId, {
 			assignment_id: assignment.id,
 			lion_run_id: run.id,
 			ganglion_id: assignment.ganglion_id,
 			ganglion_allocation_id: assignment.ganglion_allocation_id,
 			outcome,
-			summary: out.report?.summary ?? (finished.error ? `failed: ${finished.error}` : "completed with unparsed report"),
+			summary,
 			changed_files: out.report?.changed_files ?? [],
 			tests_run: out.report?.tests_run ?? [],
-			blockers: out.report?.blockers ?? (finished.error ? [finished.error] : []),
+			blockers,
 			next_steps: out.report?.next_steps ?? [],
 		}));
-		return { assignment_id: assignment.id, lion_run_id: run.id, outcome, summary: out.report?.summary ?? "completed with unparsed report", blockers: out.report?.blockers ?? [] };
+		return { assignment_id: assignment.id, lion_run_id: run.id, outcome, summary, blockers };
 	} catch (err) {
+		await progress.drain().catch(() => undefined);
 		const message = err instanceof Error ? err.message : String(err);
 		await adapter.finishRun(run.id, { output: "", report: null, status: "failed", error: message }).catch(() => undefined);
 		await store.mutate((ledger) => ledger.record(waveId, {
@@ -101,6 +146,33 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 	}
 }
 
+function createProgressUpdater(update: (progress: LionProgressSnapshot) => Promise<void>) {
+	let inFlight: Promise<void> | null = null;
+	let pending: LionProgressSnapshot | null = null;
+	const flush = () => {
+		if (inFlight || !pending) return;
+		const next = pending;
+		pending = null;
+		inFlight = update(next).catch(() => undefined).finally(() => {
+			inFlight = null;
+			flush();
+		});
+	};
+	return {
+		enqueue(progress: LionProgressSnapshot) {
+			pending = progress;
+			flush();
+		},
+		async drain() {
+			for (;;) {
+				flush();
+				if (!inFlight && !pending) return;
+				await (inFlight ?? Promise.resolve());
+			}
+		},
+	};
+}
+
 async function loadWave(store: CerebelStore, waveId?: string): Promise<Wave> {
 	const { result } = await store.query((ledger) => {
 		const id = !waveId || waveId === "current" || waveId === "latest" ? ledger.current_wave_id ?? ledger.current()?.id : waveId;
@@ -111,9 +183,10 @@ async function loadWave(store: CerebelStore, waveId?: string): Promise<Wave> {
 }
 
 function assignmentStatusFromReport(report: LionReport | null, fallback: LionRun["status"]): AssignmentStatus {
-	if (report?.outcome === "blocked") return "blocked";
-	if (report?.outcome === "failed") return "failed";
-	if (report?.outcome === "partial") return "partial";
+	if (!report) return "failed";
+	if (report.outcome === "blocked") return "blocked";
+	if (report.outcome === "failed") return "failed";
+	if (report.outcome === "partial") return "partial";
 	if (fallback === "blocked") return "blocked";
 	if (fallback === "failed" || fallback === "aborted") return "failed";
 	return "completed";

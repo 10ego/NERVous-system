@@ -55,6 +55,15 @@ describe("CerebelLedger", () => {
 		assert.equal(d.decision?.decision, "wait");
 	});
 
+	it("does not redispatch terminal assignments", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] });
+		l.record(w.id, { assignment_id: "assign-001", lion_run_id: "run-001", outcome: "completed", summary: "done" });
+		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-002" }] }), CerebelError);
+		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
+	});
+
 	it("records completion and decides to complete", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });

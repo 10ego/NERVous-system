@@ -203,7 +203,7 @@ export default function (pi: ExtensionAPI) {
 							if (r.outcome === "skipped") continue;
 							const assignment = result.wave.assignments.find((a) => a.id === r.assignment_id);
 							if (!assignment) continue;
-							const msg = await recordLinkedGanglion(ctx.cwd, assignment, { ...p, lion_run_id: r.lion_run_id, summary: r.summary } as CerebelToolInput, r.outcome as AssignmentStatus);
+							const msg = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: r.lion_run_id, summary: r.summary } as CerebelToolInput, r.outcome as AssignmentStatus);
 							if (msg) ganglionMessages.push(msg);
 						}
 						const suffix = ganglionMessages.length ? ` ${ganglionMessages.join(" ")}` : "";

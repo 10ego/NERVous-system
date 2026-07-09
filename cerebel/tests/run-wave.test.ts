@@ -61,6 +61,21 @@ describe("runWave", () => {
 		assert.match(result.summary, /completed 2\/2/);
 	});
 
+	it("reserves assignments before creating LION runs", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 2, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;
+		const seenStatuses: string[] = [];
+		const adapter = fakeAdapter({ "assign-001": completedReport("A done"), "assign-002": completedReport("B done") });
+		const baseCreateRun = adapter.createRun.bind(adapter);
+		adapter.createRun = async (assignment) => {
+			const current = (await store.query((l) => l.get(wave.id))).result!;
+			seenStatuses.push(current.assignments.find((a) => a.id === assignment.id)?.status ?? "missing");
+			return baseCreateRun(assignment);
+		};
+		await runWave(store, adapter, { wave_id: wave.id });
+		assert.deepEqual(seenStatuses, ["dispatched", "dispatched"]);
+	});
+
 	it("records blocked and failed reports as terminal wave states", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 1, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;
@@ -70,6 +85,48 @@ describe("runWave", () => {
 		assert.equal(result.wave.assignments[0]?.status, "blocked");
 		assert.equal(result.wave.assignments[1]?.status, "planned");
 		assert.equal(result.assignment_results.at(-1)?.outcome, "skipped");
+	});
+
+	it("treats missing worker reports as failed", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": null as unknown as LionReport });
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(result.wave.status, "needs_replan");
+		assert.equal(result.wave.assignments[0]?.status, "failed");
+		assert.equal(result.assignment_results[0]?.outcome, "failed");
+		assert.match(result.assignment_results[0]?.summary ?? "", /missing WORKER_REPORT/);
+	});
+
+	it("records createRun failures against reserved assignments", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({});
+		adapter.createRun = async () => { throw new Error("spawn unavailable"); };
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(result.wave.assignments[0]?.status, "failed");
+		assert.equal(result.assignment_results[0]?.outcome, "failed");
+		assert.match(result.assignment_results[0]?.summary ?? "", /creation failed/);
+	});
+
+	it("bounds progress update backpressure to latest pending snapshot", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		let updateCount = 0;
+		let releaseFirst: (() => void) | null = null;
+		const adapter = fakeAdapter({ "assign-001": completedReport("A done") });
+		adapter.run = async (_run, assignment, onProgress) => {
+			for (let i = 0; i < 5; i++) onProgress({ event: "message", activity: `step ${i}`, active_tools: [], tool_uses: 0, turn_count: i, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
+			releaseFirst?.();
+			return { text: "ok", report: completedReport(`${assignment.id} done`) };
+		};
+		adapter.updateProgress = async () => {
+			updateCount++;
+			if (updateCount === 1) await new Promise<void>((resolve) => { releaseFirst = resolve; });
+		};
+		await runWave(store, adapter, { wave_id: wave.id });
+		assert.ok(updateCount < 5, `expected coalesced updates, saw ${updateCount}`);
+		assert.ok(updateCount >= 1);
 	});
 
 	it("does not rerun already terminal assignments", async () => {

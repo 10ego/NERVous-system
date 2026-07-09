@@ -21,6 +21,7 @@ const VERSION = 1;
 const STATUS_SET = new Set<string>(WAVE_STATUSES);
 const ASSIGNMENT_STATUS_SET = new Set<string>(ASSIGNMENT_STATUSES);
 const PRIORITY_SET = new Set<string>(PRIORITIES);
+const TERMINAL_ASSIGNMENT_STATUS_SET = new Set<AssignmentStatus>(["completed", "partial", "blocked", "failed", "cancelled"]);
 
 function now(): string {
 	return new Date().toISOString();
@@ -105,6 +106,8 @@ export class CerebelLedger {
 		const links = input.links ?? [];
 		for (const link of links) {
 			const a = requireAssignment(w, link.assignment_id);
+			if (TERMINAL_ASSIGNMENT_STATUS_SET.has(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch terminal assignment ${a.id} from ${a.status}`);
+			if (!["planned", "dispatched"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch assignment ${a.id} from ${a.status}`);
 			a.status = "dispatched";
 			if (link.lion_run_id) a.lion_run_id = link.lion_run_id;
 			if (link.ganglion_id) a.ganglion_id = link.ganglion_id;
