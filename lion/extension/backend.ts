@@ -131,6 +131,16 @@ export class FileBackend {
 		});
 	}
 
+	async mutateMaybe<T>(fn: (ledger: LionLedger) => { result: T; changed: boolean }): Promise<{ result: T; warnings: string[]; changed: boolean }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { ledger, warnings } = await this.loadUnlocked();
+			const outcome = fn(ledger);
+			if (outcome.changed) await this.saveUnlocked(ledger);
+			return { result: outcome.result, warnings, changed: outcome.changed };
+		});
+	}
+
 	private async loadUnlocked(): Promise<LoadResult> {
 		let raw: string;
 		try {
@@ -191,5 +201,9 @@ export class LionStore {
 
 	async mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T; warnings: string[] }> {
 		return this.backend.mutate(fn);
+	}
+
+	async mutateMaybe<T>(fn: (ledger: LionLedger) => { result: T; changed: boolean }): Promise<{ result: T; warnings: string[]; changed: boolean }> {
+		return this.backend.mutateMaybe(fn);
 	}
 }

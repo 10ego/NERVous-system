@@ -34,6 +34,8 @@ export interface LionRunRequest {
 	run: Pick<LionRun, "id" | "agent_id" | "task_id" | "objective" | "context" | "model" | "tools" | "steering_messages">;
 	signal?: AbortSignal;
 	timeout_ms?: number;
+	/** Opt in to raw assistant text tails in progress snapshots. Default false/redacted. */
+	include_progress_text?: boolean;
 	/** Optional live progress callback. Called opportunistically and defensively. */
 	onProgress?: (progress: LionProgressSnapshot) => void;
 	/** Called once the subprocess PID is known so callers can persist control metadata and active ownership. */
@@ -104,15 +106,17 @@ export function getFinalOutput(messages: Message[]): string {
 
 export interface LionProgressState {
 	activeTools: string[];
+	activeToolCounts: Record<string, number>;
 	toolUses: number;
 	turnCount: number;
 	tokenTotal: number | null;
 	currentText: string;
 	lastTextEmitAt: number;
+	includeText: boolean;
 }
 
-export function createLionProgressState(): LionProgressState {
-	return { activeTools: [], toolUses: 0, turnCount: 0, tokenTotal: null, currentText: "", lastTextEmitAt: 0 };
+export function createLionProgressState(options: { includeText?: boolean } = {}): LionProgressState {
+	return { activeTools: [], activeToolCounts: {}, toolUses: 0, turnCount: 0, tokenTotal: null, currentText: "", lastTextEmitAt: 0, includeText: options.includeText ?? false };
 }
 
 export function progressFromEvent(raw: unknown, state: LionProgressState = createLionProgressState(), nowMs = Date.now()): LionProgressSnapshot | null {
@@ -120,26 +124,26 @@ export function progressFromEvent(raw: unknown, state: LionProgressState = creat
 	const eventType = raw.type;
 	if (eventType === "tool_execution_start") {
 		const tool = stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? "tool";
-		if (!state.activeTools.includes(tool)) state.activeTools.push(tool);
+		incrementTool(state, tool);
 		return snapshot(state, "tool_start", `running ${tool}…`, nowMs);
 	}
 	if (eventType === "tool_execution_end") {
 		const tool = stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? state.activeTools[0] ?? "tool";
-		state.activeTools = state.activeTools.filter((name) => name !== tool);
+		decrementTool(state, tool);
 		state.toolUses++;
 		return snapshot(state, "tool_end", state.activeTools.length ? activityFromTools(state.activeTools) : `finished ${tool}`, nowMs);
 	}
 	if (eventType === "message_update") {
 		const delta = textDelta(raw);
-		if (delta) state.currentText = tail(state.currentText + delta);
+		if (delta && state.includeText) state.currentText = tail(state.currentText + delta);
 		if (nowMs - state.lastTextEmitAt < TEXT_PROGRESS_THROTTLE_MS) return null;
 		state.lastTextEmitAt = nowMs;
-		return snapshot(state, "message", summarizeText(state.currentText) || "responding…", nowMs);
+		return snapshot(state, "message", state.includeText ? (summarizeText(state.currentText) || "responding…") : "responding…", nowMs);
 	}
 	if (eventType === "message_end") {
 		addUsage(state, raw.message);
 		const text = isObject(raw.message) ? extractMessageText(raw.message) : "";
-		if (text) state.currentText = tail(text);
+		if (text && state.includeText) state.currentText = tail(text);
 		return snapshot(state, "message_end", state.activeTools.length ? activityFromTools(state.activeTools) : "message complete", nowMs);
 	}
 	if (eventType === "turn_end") {
@@ -157,13 +161,25 @@ function snapshot(state: LionProgressState, event: LionProgressSnapshot["event"]
 		tool_uses: state.toolUses,
 		turn_count: state.turnCount,
 		token_total: state.tokenTotal,
-		last_text: state.currentText || null,
+		last_text: state.includeText ? (state.currentText || null) : null,
 		last_event_at: new Date(nowMs).toISOString(),
 	};
 }
 
 function activityFromTools(tools: string[]): string {
 	return tools.length === 1 ? `running ${tools[0]}…` : `running ${tools.length} tools…`;
+}
+
+function incrementTool(state: LionProgressState, tool: string): void {
+	state.activeToolCounts[tool] = (state.activeToolCounts[tool] ?? 0) + 1;
+	state.activeTools = Object.entries(state.activeToolCounts).filter(([, count]) => count > 0).map(([name]) => name);
+}
+
+function decrementTool(state: LionProgressState, tool: string): void {
+	const next = Math.max(0, (state.activeToolCounts[tool] ?? 0) - 1);
+	if (next > 0) state.activeToolCounts[tool] = next;
+	else delete state.activeToolCounts[tool];
+	state.activeTools = Object.entries(state.activeToolCounts).filter(([, count]) => count > 0).map(([name]) => name);
 }
 
 function textDelta(raw: Record<string, unknown>): string {
@@ -332,7 +348,7 @@ async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<
 		args.push("--append-system-prompt", tmpPath);
 		args.push(buildLionUserPrompt(req.run));
 
-		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress, req.onProcessStart, req.onProcessExit);
+		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress, req.onProcessStart, req.onProcessExit, req.include_progress_text ?? false);
 		const text = getFinalOutput(messages);
 		return { text, report: parseLionReport(text) };
 	} finally {
@@ -359,6 +375,7 @@ function collectMessages(
 	onProgress?: (progress: LionProgressSnapshot) => void,
 	onProcessStart?: (info: LionProcessInfo) => void,
 	onProcessExit?: () => void,
+	includeProgressText = false,
 ): Promise<Message[]> {
 	return new Promise((resolve, reject) => {
 		const invocation = getPiInvocation([...args, ...(opts.extraArgs ?? [])], { forceBinary: opts.forcePiBinary });
@@ -383,7 +400,7 @@ function collectMessages(
 		let stderr = "";
 		let aborted = false;
 		let settled = false;
-		const progressState = createLionProgressState();
+		const progressState = createLionProgressState({ includeText: includeProgressText });
 
 		const done = (fn: () => void) => {
 			if (settled) return;

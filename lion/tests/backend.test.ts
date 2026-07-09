@@ -57,6 +57,17 @@ describe("FileBackend", () => {
 		assert.equal(result[0]?.objective, "persist");
 	});
 
+	it("skips saving conditional mutations when unchanged", async () => {
+		const { backend, store } = await tmpStore();
+		await store.mutate((l) => l.create({ objective: "persist" }));
+		const before = await fs.readFile(backend.location.runsPath, "utf8");
+		const out = await store.mutateMaybe((l) => ({ result: l.all().length, changed: false }));
+		const after = await fs.readFile(backend.location.runsPath, "utf8");
+		assert.equal(out.changed, false);
+		assert.equal(out.result, 1);
+		assert.equal(after, before);
+	});
+
 	it("leaves no tmp and creates backup after second save", async () => {
 		const { backend, store } = await tmpStore();
 		await store.mutate((l) => l.create({ objective: "a" }));

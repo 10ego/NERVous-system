@@ -26,6 +26,7 @@ interface LionDetails {
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: LionDetails; isError?: boolean };
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
+const PROGRESS_PERSIST_INTERVAL_MS = 500;
 
 type LionEventKind = "started" | "progress" | "completed" | "blocked" | "failed";
 
@@ -109,7 +110,12 @@ async function runOp(store: LionStore, action: string, op: (l: import("./store.t
 }
 
 async function reconcileStore(store: LionStore): Promise<void> {
-	try { await store.mutate((l) => l.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds() })); } catch { /* best-effort read reconciliation */ }
+	try {
+		await store.mutateMaybe((l) => {
+			const changed = l.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds() });
+			return { result: changed, changed: changed.length > 0 };
+		});
+	} catch { /* best-effort read reconciliation */ }
 }
 
 async function executeRun(args: {
@@ -121,10 +127,50 @@ async function executeRun(args: {
 	signal?: AbortSignal;
 	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void;
 	timeout_ms?: number;
+	include_progress_text?: boolean;
 }): Promise<ToolResult> {
 	let run = args.run;
 	const activeOwner = beginActiveRun(run.id, run.runner_mode);
-	let progressChain = Promise.resolve();
+	let pendingProgress: LionProgressSnapshot | null = null;
+	let progressInFlight: Promise<void> | null = null;
+	let progressTimer: NodeJS.Timeout | null = null;
+	let lastProgressPersistAt = 0;
+	const flushProgress = () => {
+		if (progressInFlight || !pendingProgress) return;
+		if (progressTimer) {
+			clearTimeout(progressTimer);
+			progressTimer = null;
+		}
+		const progress = pendingProgress;
+		pendingProgress = null;
+		lastProgressPersistAt = Date.now();
+		progressInFlight = args.store.mutate((l) => l.updateProgress(run.id, progress)).then((updated) => {
+			run = updated.result;
+			emitLionEvent(args.pi, "progress", run, progress);
+		}).catch((err) => {
+			console.warn(`[nervous-system/lion] progress update failed for ${run.id}:`, err);
+		}).finally(() => {
+			progressInFlight = null;
+			if (pendingProgress) scheduleProgress();
+		});
+	};
+	const scheduleProgress = (immediate = false) => {
+		if (!pendingProgress) return;
+		const delay = immediate ? 0 : Math.max(0, PROGRESS_PERSIST_INTERVAL_MS - (Date.now() - lastProgressPersistAt));
+		if (delay === 0) flushProgress();
+		else if (!progressTimer) progressTimer = setTimeout(() => { progressTimer = null; flushProgress(); }, delay);
+	};
+	const drainProgress = async () => {
+		if (progressTimer) {
+			clearTimeout(progressTimer);
+			progressTimer = null;
+		}
+		for (;;) {
+			flushProgress();
+			if (!progressInFlight && !pendingProgress) return;
+			await (progressInFlight ?? Promise.resolve());
+		}
+	};
 	const enqueueProgress = (progress: LionProgressSnapshot) => {
 		const preview = { ...run, progress, updated_at: progress.last_event_at } satisfies LionRun;
 		try {
@@ -132,13 +178,8 @@ async function executeRun(args: {
 		} catch (err) {
 			console.warn(`[nervous-system/lion] progress update callback failed for ${run.id}:`, err);
 		}
-		progressChain = progressChain.then(async () => {
-			const updated = await args.store.mutate((l) => l.updateProgress(run.id, progress));
-			run = updated.result;
-			emitLionEvent(args.pi, "progress", run, progress);
-		}).catch((err) => {
-			console.warn(`[nervous-system/lion] progress update failed for ${run.id}:`, err);
-		});
+		pendingProgress = progress;
+		scheduleProgress(progress.event !== "message");
 	};
 
 	const initialProgress = startedProgress();
@@ -153,6 +194,7 @@ async function executeRun(args: {
 			run,
 			signal: args.signal,
 			timeout_ms: args.timeout_ms ?? DEFAULT_TIMEOUT_MS,
+			include_progress_text: args.include_progress_text,
 			onProgress: enqueueProgress,
 			onProcessStart: (info) => {
 				attachActiveRunProcess(activeOwner, info);
@@ -162,14 +204,14 @@ async function executeRun(args: {
 			},
 			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
-		await progressChain;
+		await drainProgress();
 		const finished = await args.store.mutate((l) => l.finish(run.id, { output: out.text, report: out.report }));
 		run = finished.result;
 		emitLionEvent(args.pi, terminalEventKind(run.status), run);
 		const reportHint = run.report ? `${run.report.outcome}: ${run.report.summary}` : "completed with unparsed report";
 		return ok(args.action, `LION ${run.id} ${run.status}: ${reportHint}`, { run });
 	} catch (err) {
-		await progressChain;
+		await drainProgress();
 		const msg = err instanceof Error ? err.message : String(err);
 		const current = (await args.store.query((l) => l.get(run.id))).result;
 		const wasCancelled = Boolean(current?.control?.cancel_requested_at || args.signal?.aborted);
@@ -232,7 +274,7 @@ export default function (pi: ExtensionAPI) {
 					);
 					const run = created.result;
 					if (p.dry_run) return ok(action, `Queued dry-run ${run.id}. Use lion start id=${run.id} to launch; queued steering may be added before start.`, { run });
-					return executeRun({ pi, ctx, store, action, run, signal, onUpdate, timeout_ms: p.timeout_ms });
+					return executeRun({ pi, ctx, store, action, run, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
 				}
 
 				case "start": {
@@ -240,7 +282,7 @@ export default function (pi: ExtensionAPI) {
 					let run: LionRun;
 					try { run = (await store.mutate((l) => l.start(p.id!))).result; }
 					catch (e) { return e instanceof LionError ? fail(action, `lion start failed (${e.code}): ${e.message}`) : fail(action, `lion start failed: ${e instanceof Error ? e.message : String(e)}`); }
-					return executeRun({ pi, ctx, store, action, run, signal, onUpdate, timeout_ms: p.timeout_ms });
+					return executeRun({ pi, ctx, store, action, run, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
 				}
 
 				case "cancel": {

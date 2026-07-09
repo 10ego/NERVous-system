@@ -275,6 +275,11 @@ export class LionLedger {
 		return { run: clone(r), message: clone(msg), accepted: msg.status === "queued" || msg.status === "pending_delivery" };
 	}
 
+	hasPendingSteering(id: string): boolean {
+		const r = this.require(id);
+		return r.status === "running" && r.runner_mode === "rpc" && (r.steering_messages ?? []).some((msg) => msg.status === "pending_delivery");
+	}
+
 	reservePendingSteering(id: string, limit = 10): LionSteeringMessage[] {
 		const r = this.require(id);
 		if (r.status !== "running" || r.runner_mode !== "rpc") return [];

@@ -53,7 +53,7 @@ describe("LION subprocess helpers", () => {
 		assert.equal(getFinalOutput(messages), "final");
 	});
 
-	it("derives bounded progress snapshots from pi JSON events", () => {
+	it("derives redacted bounded progress snapshots from pi JSON events by default", () => {
 		const state = createLionProgressState();
 		const start = progressFromEvent({ type: "tool_execution_start", toolName: "bash" }, state)!;
 		assert.equal(start.event, "tool_start");
@@ -65,10 +65,29 @@ describe("LION subprocess helpers", () => {
 		const msg = progressFromEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Working on it" } }, state, 2000)!;
 		assert.equal(msg.event, "message");
 		assert.equal(msg.last_event_at, new Date(2000).toISOString());
-		assert.match(msg.activity, /Working/);
+		assert.equal(msg.activity, "responding…");
+		assert.equal(msg.last_text, null);
 		const done = progressFromEvent({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Done" }], usage: { input: 10, output: 5 } } }, state)!;
 		assert.equal(done.event, "message_end");
 		assert.equal(done.token_total, 15);
+		assert.equal(done.last_text, null);
+	});
+
+	it("can opt in to raw progress text tails", () => {
+		const state = createLionProgressState({ includeText: true });
+		const msg = progressFromEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Working on it" } }, state, 2000)!;
+		assert.match(msg.activity, /Working/);
+		assert.match(msg.last_text ?? "", /Working/);
+	});
+
+	it("keeps same-name active tool calls active until all end", () => {
+		const state = createLionProgressState();
+		progressFromEvent({ type: "tool_execution_start", toolName: "bash" }, state)!;
+		progressFromEvent({ type: "tool_execution_start", toolName: "bash" }, state)!;
+		const firstEnd = progressFromEvent({ type: "tool_execution_end", toolName: "bash" }, state)!;
+		assert.deepEqual(firstEnd.active_tools, ["bash"]);
+		const secondEnd = progressFromEvent({ type: "tool_execution_end", toolName: "bash" }, state)!;
+		assert.deepEqual(secondEnd.active_tools, []);
 	});
 
 	it("throttles text progress snapshots", () => {

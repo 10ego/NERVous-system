@@ -139,7 +139,7 @@ export interface LionRun {
 	output?: string | null;
 	/** Parsed WORKER_REPORT JSON if present. */
 	report?: LionReport | null;
-	/** Latest bounded live progress snapshot, when the subprocess emitted usable events. */
+	/** Latest bounded live progress snapshot, when the subprocess emitted usable events. Raw assistant text is redacted unless explicitly enabled per run. */
 	progress?: LionProgressSnapshot | null;
 	/** Best-effort subprocess control metadata for cancellation/reconciliation. */
 	control?: LionControlState | null;
@@ -186,6 +186,7 @@ export const LionToolParams = Type.Object({
 	runner_mode: Type.Optional(LION_RUNNER_MODE_SCHEMA),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional pi tool allow-list for the worker subprocess." })),
 	timeout_ms: Type.Optional(Type.Number({ description: "Subprocess timeout in milliseconds. Default 10 minutes." })),
+	include_progress_text: Type.Optional(Type.Boolean({ description: "Opt in to persisting raw assistant text tails in progress.last_text/activity. Default false/redacted." })),
 	dry_run: Type.Optional(Type.Boolean({ description: "Create a run record without spawning a subprocess." })),
 	// start/cancel/steer/query/list
 	id: Type.Optional(Type.String({ description: "LION run id (start/cancel/steer/get/delete)." })),

@@ -66,7 +66,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let pollTimer: NodeJS.Timeout | null = null;
 	let deliveryPromise: Promise<void> | null = null;
 	let stopped = false;
-	const progressState = createLionProgressState();
+	const progressState = createLionProgressState({ includeText: req.include_progress_text ?? false });
 
 	const deliverPending = async () => {
 		if (deliveryPromise) return deliveryPromise;
@@ -74,6 +74,8 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		deliveryPromise = (async () => {
 			const activeClient = client;
 			if (!activeClient) return;
+			const { result: hasPending } = await opts.store.query((l) => l.hasPendingSteering(req.run.id));
+			if (!hasPending) return;
 			const { result: messages } = await opts.store.mutate((l) => l.reservePendingSteering(req.run.id));
 			for (const msg of messages) {
 				try {
