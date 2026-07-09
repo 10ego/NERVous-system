@@ -227,6 +227,7 @@ export class LionLedger {
 
 	markCancelDelivery(id: string, status: string, error?: string | null): LionRun {
 		const r = this.require(id);
+		if (r.control?.cancel_delivery_status === "delivered" && status !== "delivered") return clone(r);
 		const ts = now();
 		r.control = {
 			...(r.control ?? {}),

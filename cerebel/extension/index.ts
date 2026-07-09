@@ -13,7 +13,7 @@ type ToolResult = { content: Array<{ type: "text"; text: string }>; details: Cer
 
 type LionRunner = (req: import("../../lion/extension/subprocess.ts").LionRunRequest) => Promise<{ text: string; report: import("../../lion/extension/schema.ts").LionReport | null }>;
 interface LionAdapterDeps {
-	lionStore?: { mutate<T>(fn: (ledger: import("../../lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>; query<T>(fn: (ledger: import("../../lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }> };
+	lionStore?: { namespaceId: string; mutate<T>(fn: (ledger: import("../../lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>; query<T>(fn: (ledger: import("../../lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }> };
 	createLionRunner?: (opts: { cwd: string }) => LionRunner;
 	createLionRpcRunner?: (opts: { cwd: string; store: unknown }) => LionRunner;
 	activeRuns?: typeof import("../../lion/extension/active-runs.ts");
@@ -119,7 +119,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				return result;
 			},
 			async run(run: LionRun, _assignment, onProgress) {
-				const activeOwner = activeRuns.beginActiveRun(run.id, runnerMode);
+				const activeOwner = activeRuns.beginActiveRun({ namespaceId: lionStore.namespaceId, runId: run.id }, runnerMode);
 				activeOwners.set(run.id, activeOwner);
 				return runner({
 					run,
@@ -127,7 +127,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					timeout_ms: p.timeout_ms ?? DEFAULT_RUN_WAVE_TIMEOUT_MS,
 					onProcessStart: (info) => {
 						activeRuns.attachActiveRunProcess(activeOwner, info);
-						void lionStore.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).catch(() => undefined);
+						void lionStore.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).catch(() => undefined).finally(() => activeRuns.replayPendingCancellation(activeOwner, lionStore).catch(() => undefined));
 					},
 					onProcessExit: () => activeRuns.markActiveRunExited(activeOwner),
 					onProgress: (progress: LionProgressSnapshot) => {

@@ -12,7 +12,7 @@ import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type 
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createLionRunner, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
-import { attachActiveRunProcess, beginActiveRun, cancelActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, markActiveRunExited } from "./active-runs.ts";
+import { attachActiveRunProcess, beginActiveRun, cancelActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, markActiveRunExited, replayPendingCancellation, type ActiveRunScope } from "./active-runs.ts";
 
 interface LionDetails {
 	action: string;
@@ -122,10 +122,14 @@ async function runOp(store: LionStore, action: string, op: (l: import("./store.t
 	}
 }
 
+function activeRunScope(store: LionStore, runId: string): ActiveRunScope {
+	return { namespaceId: store.namespaceId, runId };
+}
+
 async function reconcileStore(store: LionStore): Promise<void> {
 	try {
 		await store.mutateMaybe((l) => {
-			const changed = l.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds() });
+			const changed = l.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId) });
 			return { result: changed, changed: changed.length > 0 };
 		});
 	} catch { /* best-effort read reconciliation */ }
@@ -143,7 +147,7 @@ async function executeRun(args: {
 	include_progress_text?: boolean;
 }): Promise<ToolResult> {
 	let run = args.run;
-	const activeOwner = beginActiveRun(run.id, run.runner_mode);
+	const activeOwner = beginActiveRun(activeRunScope(args.store, run.id), run.runner_mode);
 	let pendingProgress: LionProgressSnapshot | null = null;
 	let progressInFlight: Promise<void> | null = null;
 	let progressTimer: NodeJS.Timeout | null = null;
@@ -213,7 +217,9 @@ async function executeRun(args: {
 				attachActiveRunProcess(activeOwner, info);
 				void args.store.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).then((updated) => { run = updated.result; }).catch((err) => {
 					console.warn(`[nervous-system/lion] process metadata update failed for ${run.id}:`, err);
-				});
+				}).finally(() => replayPendingCancellation(activeOwner, args.store).catch((err) => {
+					console.warn(`[nervous-system/lion] pending cancellation replay failed for ${run.id}:`, err);
+				}));
 			},
 			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
@@ -305,10 +311,11 @@ export default function (pi: ExtensionAPI) {
 						if (result.already_terminal) return ok(action, `LION ${p.id} is already terminal (${result.run.status}).`, { run: result.run });
 						if (!result.signal) return ok(action, `Cancelled queued LION ${p.id}.`, { run: result.run });
 
-						const delivered = await cancelActiveRun(p.id!, result.signal);
+						const scope = activeRunScope(store, p.id!);
+						const delivered = await cancelActiveRun(scope, result.signal);
 						if (delivered.delivered) {
 							const updated = await store.mutate((l) => l.markCancelDelivery(p.id!, "delivered"));
-							setTimeout(() => { void cancelActiveRun(p.id!, "SIGKILL").catch(() => undefined); }, 5000).unref?.();
+							setTimeout(() => { void cancelActiveRun(scope, "SIGKILL").catch(() => undefined); }, 5000).unref?.();
 							return ok(action, `Cancellation delivered to active LION ${p.id}${delivered.pid ? ` (pid ${delivered.pid})` : ""}.`, { run: updated.result });
 						}
 
@@ -325,7 +332,7 @@ export default function (pi: ExtensionAPI) {
 					try {
 						await reconcileStore(store);
 						const current = (await store.query((l) => l.get(p.id!))).result;
-						const liveRpc = current?.status === "running" && current.runner_mode === "rpc" && isActiveRunAttached(p.id!, "rpc");
+						const liveRpc = current?.status === "running" && current.runner_mode === "rpc" && isActiveRunAttached(activeRunScope(store, p.id!), "rpc");
 						const reason = current?.status === "running"
 							? (liveRpc ? "queued for live RPC delivery" : (current?.runner_mode === "rpc" ? "rpc worker is not attached to a live process" : "running json subprocess backend does not support live steering"))
 							: undefined;

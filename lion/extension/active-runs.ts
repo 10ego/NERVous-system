@@ -3,29 +3,32 @@
  *
  * Persisted PID/PGID values are observational metadata only. They are never
  * sufficient authority to signal a process after restart or stale ledger
- * recovery. Only a currently registered owner from this process may deliver
- * cancellation to a live worker.
+ * recovery. Only a currently registered owner from the matching durable LION
+ * namespace may deliver cancellation to a live worker.
  */
 
 import { randomUUID } from "node:crypto";
+import type { LionLedger } from "./store.ts";
 import type { LionRunnerMode } from "./schema.ts";
 import type { LionProcessInfo } from "./subprocess.ts";
 
 export type ActiveCancelSignal = "SIGTERM" | "SIGKILL";
+
+export interface ActiveRunScope {
+	namespaceId: string;
+	runId: string;
+}
 
 export interface ActiveRunProcessInfo extends Omit<LionProcessInfo, "cancel"> {
 	cancel?: (signal: ActiveCancelSignal) => Promise<void> | void;
 	isAlive?: () => boolean;
 }
 
-export interface ActiveRunOwner {
-	runId: string;
+export interface ActiveRunOwner extends ActiveRunScope {
 	ownerId: string;
 }
 
-interface ActiveRunEntry {
-	runId: string;
-	ownerId: string;
+interface ActiveRunEntry extends ActiveRunOwner {
 	runnerMode?: LionRunnerMode | null;
 	registeredAt: string;
 	state: "starting" | "running" | "exited";
@@ -33,6 +36,8 @@ interface ActiveRunEntry {
 	pgid?: number | null;
 	cancel?: (signal: ActiveCancelSignal) => Promise<void> | void;
 	isAlive?: () => boolean;
+	cancelInFlight: Map<ActiveCancelSignal, Promise<ActiveCancelResult>>;
+	cancelDelivered: Map<ActiveCancelSignal, ActiveCancelResult & { delivered: true }>;
 }
 
 export type ActiveCancelResult =
@@ -41,14 +46,25 @@ export type ActiveCancelResult =
 
 const activeRuns = new Map<string, ActiveRunEntry>();
 
-export function beginActiveRun(runId: string, runnerMode?: LionRunnerMode | null): ActiveRunOwner {
-	const owner: ActiveRunOwner = { runId, ownerId: randomUUID() };
-	activeRuns.set(runId, { ...owner, runnerMode, registeredAt: new Date().toISOString(), state: "starting" });
+function scopeKey(scope: ActiveRunScope): string {
+	return `${scope.namespaceId}\u0000${scope.runId}`;
+}
+
+export function beginActiveRun(scope: ActiveRunScope, runnerMode?: LionRunnerMode | null): ActiveRunOwner {
+	const owner: ActiveRunOwner = { ...scope, ownerId: randomUUID() };
+	activeRuns.set(scopeKey(scope), {
+		...owner,
+		runnerMode,
+		registeredAt: new Date().toISOString(),
+		state: "starting",
+		cancelInFlight: new Map(),
+		cancelDelivered: new Map(),
+	});
 	return owner;
 }
 
 export function attachActiveRunProcess(owner: ActiveRunOwner, info: ActiveRunProcessInfo): void {
-	const entry = activeRuns.get(owner.runId);
+	const entry = activeRuns.get(scopeKey(owner));
 	if (!entry || entry.ownerId !== owner.ownerId) return;
 	entry.state = "running";
 	entry.pid = info.pid;
@@ -58,36 +74,61 @@ export function attachActiveRunProcess(owner: ActiveRunOwner, info: ActiveRunPro
 }
 
 export function markActiveRunExited(owner: ActiveRunOwner): void {
-	const entry = activeRuns.get(owner.runId);
+	const entry = activeRuns.get(scopeKey(owner));
 	if (!entry || entry.ownerId !== owner.ownerId) return;
 	entry.state = "exited";
 }
 
 export function finishActiveRun(owner: ActiveRunOwner): void {
-	const entry = activeRuns.get(owner.runId);
-	if (entry?.ownerId === owner.ownerId) activeRuns.delete(owner.runId);
+	const key = scopeKey(owner);
+	const entry = activeRuns.get(key);
+	if (entry?.ownerId === owner.ownerId) activeRuns.delete(key);
 }
 
-export function getActiveRunIds(): string[] {
-	return Array.from(activeRuns.keys());
+export function getActiveRunIds(namespaceId: string): string[] {
+	return Array.from(activeRuns.values()).filter((entry) => entry.namespaceId === namespaceId).map((entry) => entry.runId);
 }
 
-export function isActiveRunAttached(runId: string, runnerMode?: LionRunnerMode): boolean {
-	const entry = activeRuns.get(runId);
+export function isActiveRunAttached(scope: ActiveRunScope, runnerMode?: LionRunnerMode): boolean {
+	const entry = activeRuns.get(scopeKey(scope));
 	if (!entry) return false;
 	if (runnerMode && entry.runnerMode !== runnerMode) return false;
 	if (entry.state !== "running") return false;
 	return entry.isAlive ? entry.isAlive() : true;
 }
 
-export async function cancelActiveRun(runId: string, signal: ActiveCancelSignal = "SIGTERM"): Promise<ActiveCancelResult> {
-	const entry = activeRuns.get(runId);
+export async function cancelActiveRun(scope: ActiveRunScope, signal: ActiveCancelSignal = "SIGTERM"): Promise<ActiveCancelResult> {
+	const entry = activeRuns.get(scopeKey(scope));
 	if (!entry) return { delivered: false, reason: "not_attached" };
-	if (entry.state === "exited") return { delivered: false, reason: "already_exited", pid: entry.pid, pgid: entry.pgid };
-	if (entry.isAlive && !entry.isAlive()) return { delivered: false, reason: "not_alive", pid: entry.pid, pgid: entry.pgid };
-	if (!entry.cancel) return { delivered: false, reason: "no_cancel_handle", pid: entry.pid, pgid: entry.pgid };
-	await entry.cancel(signal);
-	return { delivered: true, pid: entry.pid, pgid: entry.pgid };
+	const delivered = entry.cancelDelivered.get(signal);
+	if (delivered) return delivered;
+	const inFlight = entry.cancelInFlight.get(signal);
+	if (inFlight) return inFlight;
+
+	const attempt = (async (): Promise<ActiveCancelResult> => {
+		if (entry.state === "exited") return { delivered: false, reason: "already_exited", pid: entry.pid, pgid: entry.pgid };
+		if (entry.isAlive && !entry.isAlive()) return { delivered: false, reason: "not_alive", pid: entry.pid, pgid: entry.pgid };
+		if (!entry.cancel) return { delivered: false, reason: "no_cancel_handle", pid: entry.pid, pgid: entry.pgid };
+		await entry.cancel(signal);
+		const result = { delivered: true, pid: entry.pid, pgid: entry.pgid } as const;
+		entry.cancelDelivered.set(signal, result);
+		return result;
+	})().finally(() => entry.cancelInFlight.delete(signal));
+	entry.cancelInFlight.set(signal, attempt);
+	return attempt;
+}
+
+/** Replay a durable cancellation that arrived before the live process handle attached. */
+export async function replayPendingCancellation(owner: ActiveRunOwner, store: {
+	query<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
+	mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
+}): Promise<ActiveCancelResult | null> {
+	const current = (await store.query((ledger) => ledger.get(owner.runId))).result;
+	if (!current?.control?.cancel_requested_at) return null;
+	if (current.control.cancel_delivery_status === "delivered" || current.control.cancel_delivery_status === "not_needed") return null;
+	const result = await cancelActiveRun(owner, "SIGTERM");
+	await store.mutate((ledger) => ledger.markCancelDelivery(owner.runId, result.delivered ? "delivered" : result.reason));
+	return result;
 }
 
 export function clearActiveRunsForTests(): void {

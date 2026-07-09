@@ -40,6 +40,7 @@ describe("createLionAdapter", () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-lion-adapter-"));
 		const ledger = new LionLedger();
 		const lionStore = {
+			namespaceId: path.join(dir, "lion-runs.json"),
 			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
 			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
 		};
@@ -59,9 +60,9 @@ describe("createLionAdapter", () => {
 		);
 		const run = await adapter.createRun(assignment());
 		await adapter.run(run, assignment(), () => undefined);
-		assert.ok(activeRuns.getActiveRunIds().includes(run.id), "owner should remain while final LION ledger state is not persisted");
+		assert.ok(activeRuns.getActiveRunIds(lionStore.namespaceId).includes(run.id), "owner should remain while final LION ledger state is not persisted");
 		await adapter.finishRun(run.id, { output: "ok", report });
-		assert.ok(!activeRuns.getActiveRunIds().includes(run.id), "owner should be released after finishRun persists final state");
+		assert.ok(!activeRuns.getActiveRunIds(lionStore.namespaceId).includes(run.id), "owner should be released after finishRun persists final state");
 		assert.equal(ledger.get(run.id)?.status, "completed");
 		activeRuns.clearActiveRunsForTests();
 	});

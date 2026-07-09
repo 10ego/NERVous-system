@@ -76,7 +76,7 @@ describe("lion extension factory", () => {
 			const staleRpcSteer = await lion.execute("call-rpc-stale", { action: "steer", id: rpcRun.id, message: "adjust" }, undefined, undefined, ctx);
 			assert.equal(staleRpcSteer.details.run.steering_messages[0].status, "rejected_running");
 
-			const owner = beginActiveRun(rpcRun.id, "rpc");
+			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: rpcRun.id }, "rpc");
 			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => undefined });
 			try {
 				const liveRpcSteer = await lion.execute("call-rpc-live", { action: "steer", id: rpcRun.id, message: "adjust live" }, undefined, undefined, ctx);
@@ -108,7 +108,7 @@ describe("lion extension factory", () => {
 			assert.equal(cancel.details.run.control.cancel_delivery_status, "not_attached");
 
 			let delivered = false;
-			const owner = beginActiveRun(run.id, "json");
+			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id }, "json");
 			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { delivered = true; } });
 			try {
 				const liveCancel = await lion.execute("call-cancel-live", { action: "cancel", id: run.id, reason: "stop" }, undefined, undefined, ctx);

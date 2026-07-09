@@ -6,6 +6,7 @@
  */
 
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { resolveNervousStateFile } from "@nervous-system/state";
 import { LionLedger } from "./store.ts";
@@ -23,6 +24,22 @@ export interface LionLocation {
 export function resolveLionLocation(cwd: string): LionLocation {
 	const runsPath = resolveNervousStateFile(cwd, "lion", "runs.json", "LION_RUNS_PATH");
 	return { runsPath, dir: path.dirname(runsPath) };
+}
+
+export function canonicalLionNamespace(runsPath: string): string {
+	const absolute = path.resolve(runsPath);
+	let existing = absolute;
+	while (!fsSync.existsSync(existing)) {
+		const parent = path.dirname(existing);
+		if (parent === existing) return absolute;
+		existing = parent;
+	}
+	try {
+		const canonicalBase = fsSync.realpathSync.native(existing);
+		return path.join(canonicalBase, path.relative(existing, absolute));
+	} catch {
+		return absolute;
+	}
 }
 
 interface LockInfo {
@@ -185,9 +202,11 @@ export class FileBackend {
 
 export class LionStore {
 	readonly backend: FileBackend;
+	readonly namespaceId: string;
 
 	constructor(backend: FileBackend) {
 		this.backend = backend;
+		this.namespaceId = canonicalLionNamespace(backend.location.runsPath);
 	}
 
 	static fromCwd(cwd: string): LionStore {
