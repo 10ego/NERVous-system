@@ -71,7 +71,7 @@ LION stores best-effort process control metadata for running subprocesses (`pid`
 lion cancel id="run-001" reason="superseded by newer plan"
 ```
 
-Cancellation is honest but best-effort: it records the request durably, and only the current live LION owner may deliver cancellation to its attached worker. Persisted PID/PGID values are observational metadata and are not used as authority to signal after restart or stale ledger recovery. Queued runs are aborted without launching; stale/unattached running records store the cancellation request as `not_attached` without signaling unrelated processes.
+Cancellation is honest but best-effort: it records the request durably, and only the current live LION owner in the matching canonical ledger namespace may deliver cancellation to its attached worker. Persisted PID/PGID values are observational metadata and are not used as authority to signal after restart or stale ledger recovery. If cancellation is recorded while an owner is starting but before its process handle attaches, attachment replays the durable request once per live owner and persists the delivery result. Queued runs are aborted without launching; stale/unattached running records store the cancellation request without signaling unrelated processes.
 
 Pre-start steering works for all runner modes:
 
@@ -93,7 +93,7 @@ lion run \
 lion steer id="run-001" message="Narrow the change to tests only."
 ```
 
-RPC live steering uses pi's official `RpcClient.steer()` control channel. Running steering is recorded as `pending_delivery`, the active RPC runner query-checks for pending messages, reserves them durably, calls `RpcClient.steer()` exactly once per reserved message, then marks the message `delivered` or `delivery_failed`. Running steering on the default `json` runner is still rejected as `rejected_running` because `pi --mode json -p --no-session` has no live bidirectional control channel.
+RPC live steering uses pi's official `RpcClient.steer()` control channel. Running steering is recorded as `pending_delivery`, the active RPC runner query-checks for pending messages with non-overlapping adaptive polling, reserves them durably, calls `RpcClient.steer()` exactly once per reserved message, then marks the message `delivered` or `delivery_failed`. The live-steering gate closes as soon as the worker becomes idle; messages not already in flight are failed rather than reported as delivered after the final response. Running steering on the default `json` runner is still rejected as `rejected_running` because `pi --mode json -p --no-session` has no live bidirectional control channel.
 
 Set `LION_RUNNER=rpc` to make RPC the default for local/manual testing, or pass `runner_mode="rpc"` per run. Do not rely on restart reattachment yet: if the parent LION process exits, a persisted running record may have process metadata but no attached RPC bridge, so new steering may be rejected or pending messages may fail during reconciliation.
 
