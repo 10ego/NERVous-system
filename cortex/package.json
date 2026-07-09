@@ -1,6 +1,6 @@
 {
   "name": "@nervous-system/cortex",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "CORTEX \u2014 the main reasoning core of the NERVous System. Parses user intent into durable goals (success criteria, constraints, risks), decides whether MAGI deliberation is needed, converts plans/MAGI recommendations into execution plans, and verifies completed work against the original intent before final review.",
   "keywords": [
     "pi-package",
@@ -36,6 +36,6 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "@nervous-system/state": "0.1.0"
+    "@nervous-system/state": "1.0.0"
   }
 }

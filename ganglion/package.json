@@ -1,6 +1,6 @@
 {
   "name": "@nervous-system/ganglion",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "GANGLION \u2014 working-group roster and capability allocator for LION agents in the NERVous System.",
   "keywords": [
     "pi-package",
@@ -39,6 +39,6 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "@nervous-system/state": "0.1.0"
+    "@nervous-system/state": "1.0.0"
   }
 }
