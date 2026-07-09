@@ -2,9 +2,9 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
-import { createLionRpcRunner, type LionRpcClient } from "../extension/rpc-runner.ts";
+import { AdaptivePoller, createLionRpcRunner, type LionRpcClient } from "../extension/rpc-runner.ts";
 
 class FakeRpcClient implements LionRpcClient {
 	started = false;
@@ -58,6 +58,43 @@ async function until(fn: () => boolean | Promise<boolean>, timeoutMs = 1000) {
 	}
 }
 
+afterEach(() => vi.useRealTimers());
+
+describe("AdaptivePoller", () => {
+	it("backs off while idle, resets after work, and never overlaps", async () => {
+		vi.useFakeTimers();
+		const work = [false, false, true, false];
+		let calls = 0;
+		let inFlight = 0;
+		let maxInFlight = 0;
+		const poller = new AdaptivePoller(async () => {
+			calls++;
+			inFlight++;
+			maxInFlight = Math.max(maxInFlight, inFlight);
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			inFlight--;
+			return work.shift() ?? false;
+		}, 100, 400);
+		poller.start();
+
+		await vi.advanceTimersByTimeAsync(100); // first starts
+		await vi.advanceTimersByTimeAsync(10); // first completes; next in 200
+		await vi.advanceTimersByTimeAsync(199);
+		assert.equal(calls, 1);
+		await vi.advanceTimersByTimeAsync(1); // second starts
+		await vi.advanceTimersByTimeAsync(10); // second completes; next in 400
+		await vi.advanceTimersByTimeAsync(400); // third starts
+		await vi.advanceTimersByTimeAsync(10); // work resets next delay to 100
+		await vi.advanceTimersByTimeAsync(100); // fourth starts
+		await vi.advanceTimersByTimeAsync(10);
+		assert.equal(calls, 4);
+		assert.equal(maxInFlight, 1);
+		poller.stop();
+		await vi.advanceTimersByTimeAsync(1000);
+		assert.equal(calls, 4);
+	});
+});
+
 describe("createLionRpcRunner", () => {
 	it("delivers pending live steering through RpcClient.steer exactly once", async () => {
 		const store = await makeStore();
@@ -84,6 +121,29 @@ describe("createLionRpcRunner", () => {
 		let exits = 0;
 		await assert.rejects(() => runner({ run, timeout_ms: 1000, onProcessExit: () => { exits++; } }), /prompt boom/);
 		assert.equal(exits, 1);
+	});
+
+	it("fails steering that arrives after RPC idle closes", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const run = (await store.mutate((l) => l.create({ objective: "do rpc work", runner_mode: "rpc" }))).result;
+		const runner = createLionRpcRunner({
+			cwd: process.cwd(),
+			store,
+			pollIntervalMs: 5,
+			clientFactory: () => fake,
+			onSteeringClosed: async () => {
+				await store.mutate((l) => l.steer(run.id, "Too late", { liveDeliveryAvailable: true }));
+			},
+		});
+		const promise = runner({ run, timeout_ms: 1000 });
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await promise;
+		assert.deepEqual(fake.steered, []);
+		const final = (await store.query((l) => l.get(run.id))).result!;
+		assert.equal(final.steering_messages?.[0]?.status, "delivery_failed");
+		assert.match(final.steering_messages?.[0]?.reason ?? "", /run finished/);
 	});
 
 	it("marks live steering delivery failures durably", async () => {

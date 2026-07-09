@@ -40,6 +40,8 @@ export interface LionRunRequest {
 	onProgress?: (progress: LionProgressSnapshot) => void;
 	/** Called once the subprocess PID is known so callers can persist control metadata and active ownership. */
 	onProcessStart?: (info: LionProcessInfo) => void;
+	/** Called when the worker no longer accepts live control, which may precede process exit for RPC workers. */
+	onControlClosed?: () => void;
 	/** Called once the subprocess exits; owning callers should keep finalization authority until they persist the final state. */
 	onProcessExit?: () => void;
 }

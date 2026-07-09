@@ -221,6 +221,7 @@ async function executeRun(args: {
 					console.warn(`[nervous-system/lion] pending cancellation replay failed for ${run.id}:`, err);
 				}));
 			},
+			onControlClosed: () => markActiveRunExited(activeOwner),
 			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
 		await drainProgress();

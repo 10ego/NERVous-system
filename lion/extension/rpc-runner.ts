@@ -39,11 +39,73 @@ export interface LionRpcRunnerOptions {
 	cwd: string;
 	store: LionStore;
 	extraArgs?: string[];
+	/** Initial adaptive pending-steering poll delay. */
 	pollIntervalMs?: number;
+	/** Maximum adaptive pending-steering poll delay. */
+	maxPollIntervalMs?: number;
 	clientFactory?: (config: LionRpcClientConfig) => Promise<LionRpcClient> | LionRpcClient;
+	/** Test/diagnostic hook invoked after the steering channel closes at idle. */
+	onSteeringClosed?: () => Promise<void> | void;
 }
 
-const DEFAULT_POLL_INTERVAL_MS = 500;
+const DEFAULT_POLL_INTERVAL_MS = 100;
+const DEFAULT_MAX_POLL_INTERVAL_MS = 2000;
+
+export class AdaptivePoller {
+	private timer: ReturnType<typeof setTimeout> | null = null;
+	private running = false;
+	private stopped = true;
+	private nextDelay: number;
+
+	constructor(
+		private readonly task: () => Promise<boolean>,
+		private readonly minDelayMs = DEFAULT_POLL_INTERVAL_MS,
+		private readonly maxDelayMs = DEFAULT_MAX_POLL_INTERVAL_MS,
+	) {
+		this.nextDelay = minDelayMs;
+	}
+
+	start(): void {
+		if (!this.stopped) return;
+		this.stopped = false;
+		this.schedule(this.minDelayMs);
+	}
+
+	stop(): void {
+		this.stopped = true;
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = null;
+	}
+
+	wake(): void {
+		this.nextDelay = this.minDelayMs;
+		if (this.stopped || this.running) return;
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = null;
+		this.schedule(0);
+	}
+
+	private schedule(delay: number): void {
+		if (this.stopped || this.timer) return;
+		this.timer = setTimeout(() => {
+			this.timer = null;
+			void this.tick();
+		}, Math.max(0, delay));
+		this.timer.unref?.();
+	}
+
+	private async tick(): Promise<void> {
+		if (this.stopped || this.running) return;
+		this.running = true;
+		let hadWork = false;
+		try { hadWork = await this.task(); }
+		catch { /* polling is best-effort; retry with backoff */ }
+		finally { this.running = false; }
+		if (this.stopped) return;
+		this.nextDelay = hadWork ? this.minDelayMs : Math.min(this.maxDelayMs, Math.max(this.minDelayMs, this.nextDelay * 2));
+		this.schedule(this.nextDelay);
+	}
+}
 
 async function writePromptToTempFile(label: string, prompt: string): Promise<{ dir: string; filePath: string }> {
 	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-lion-rpc-"));
@@ -63,9 +125,10 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let tmpDir: string | null = null;
 	let tmpPath: string | null = null;
 	let client: LionRpcClient | null = null;
-	let pollTimer: NodeJS.Timeout | null = null;
-	let deliveryPromise: Promise<void> | null = null;
-	let stopped = false;
+	let poller: AdaptivePoller | null = null;
+	let deliveryPromise: Promise<boolean> | null = null;
+	let channelOpen = true;
+	let steeringClosedHook: Promise<void> = Promise.resolve();
 	let processExitNotified = false;
 	const notifyProcessExit = () => {
 		if (processExitNotified) return;
@@ -73,15 +136,22 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		try { req.onProcessExit?.(); } catch { /* best effort */ }
 	};
 	const progressState = createLionProgressState({ includeText: req.include_progress_text ?? false });
+	const closeSteeringChannel = () => {
+		if (!channelOpen) return;
+		channelOpen = false;
+		poller?.stop();
+		try { req.onControlClosed?.(); } catch { /* best effort */ }
+		steeringClosedHook = Promise.resolve(opts.onSteeringClosed?.()).then(() => undefined);
+	};
 
-	const deliverPending = async () => {
+	const deliverPending = async (): Promise<boolean> => {
 		if (deliveryPromise) return deliveryPromise;
-		if (stopped || !client) return;
+		if (!channelOpen || !client) return false;
 		deliveryPromise = (async () => {
 			const activeClient = client;
-			if (!activeClient) return;
+			if (!activeClient) return false;
 			const { result: hasPending } = await opts.store.query((l) => l.hasPendingSteering(req.run.id));
-			if (!hasPending) return;
+			if (!hasPending) return false;
 			const { result: messages } = await opts.store.mutate((l) => l.reservePendingSteering(req.run.id));
 			for (const msg of messages) {
 				try {
@@ -91,12 +161,13 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 					await opts.store.mutate((l) => l.markSteeringFailed(req.run.id, msg.id, `RPC steer failed: ${err instanceof Error ? err.message : String(err)}`));
 				}
 			}
+			return messages.length > 0;
 		})().finally(() => { deliveryPromise = null; });
 		return deliveryPromise;
 	};
 
 	const waitForInFlightDelivery = async () => {
-		const inFlight: Promise<void> | null = deliveryPromise;
+		const inFlight: Promise<boolean> | null = deliveryPromise;
 		if (inFlight) await inFlight.catch(() => undefined);
 	};
 
@@ -133,33 +204,32 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 			} catch { /* process metadata is best-effort */ }
 		}
 
-		pollTimer = setInterval(() => { void deliverPending().catch(() => undefined); }, opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS);
-		pollTimer.unref?.();
-		const idle = client.waitForIdle(req.timeout_ms);
+		poller = new AdaptivePoller(deliverPending, opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, opts.maxPollIntervalMs ?? DEFAULT_MAX_POLL_INTERVAL_MS);
+		poller.start();
+		const idle = client.waitForIdle(req.timeout_ms).finally(closeSteeringChannel);
 		await client.prompt(buildLionUserPrompt(req.run));
-		await deliverPending();
+		if (await deliverPending()) poller.wake();
 		await raceAbort(idle, req.signal, async () => {
 			try { await client?.abort(); } catch { /* best effort */ }
 		});
-		if (pollTimer) clearInterval(pollTimer);
+		closeSteeringChannel();
+		await steeringClosedHook;
 		await waitForInFlightDelivery();
-		await deliverPending().catch(() => undefined);
-		stopped = true;
 		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, "run finished before pending steering could be delivered"));
 		const text = (await client.getLastAssistantText()) ?? "";
 		const report: LionReport | null = parseLionReport(text);
 		return { text, report };
 	} catch (err) {
 		notifyProcessExit();
-		if (pollTimer) clearInterval(pollTimer);
+		closeSteeringChannel();
+		await steeringClosedHook.catch(() => undefined);
 		await waitForInFlightDelivery();
-		stopped = true;
 		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
 		throw err;
 	} finally {
 		notifyProcessExit();
-		stopped = true;
-		if (pollTimer) clearInterval(pollTimer);
+		closeSteeringChannel();
+		poller?.stop();
 		if (client) {
 			try { await client.stop(); } catch { /* ignore */ }
 		}
