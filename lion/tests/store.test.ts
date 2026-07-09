@@ -67,6 +67,8 @@ describe("LionLedger", () => {
 		assert.equal(delivered.control?.cancel_delivery_status, "not_attached");
 		assert.equal(l.markCancelDelivery(running.id, "delivered").control?.cancel_delivery_status, "delivered");
 		assert.equal(l.markCancelDelivery(running.id, "not_alive").control?.cancel_delivery_status, "delivered");
+		const repeated = l.requestCancel(running.id, "repeat from another caller");
+		assert.equal(repeated.run.control?.cancel_delivery_status, "delivered");
 		const changed = l.reconcileControls(() => false, { now_ms: Date.now() + 60_000, stale_after_ms: 1 });
 		assert.equal(changed[0]?.status, "aborted");
 		assert.match(changed[0]?.error ?? "", /Cancelled/);

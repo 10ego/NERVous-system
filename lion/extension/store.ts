@@ -214,7 +214,10 @@ export class LionLedger {
 		if (["completed", "blocked", "failed", "aborted"].includes(r.status)) {
 			return { run: clone(r), already_terminal: true };
 		}
-		r.control = { ...(r.control ?? {}), cancel_requested_at: r.control?.cancel_requested_at ?? ts, cancel_reason: reason ?? r.control?.cancel_reason ?? null, cancel_signal: "SIGTERM", cancel_delivery_status: r.status === "running" ? "requested" : "not_needed", last_seen_at: ts };
+		const deliveryStatus = r.control?.cancel_delivery_status === "delivered"
+			? "delivered"
+			: r.status === "running" ? "requested" : "not_needed";
+		r.control = { ...(r.control ?? {}), cancel_requested_at: r.control?.cancel_requested_at ?? ts, cancel_reason: reason ?? r.control?.cancel_reason ?? null, cancel_signal: "SIGTERM", cancel_delivery_status: deliveryStatus, last_seen_at: ts };
 		if (r.status === "queued") {
 			this.transition(r, "aborted");
 			r.error = reason ? `Cancelled before start: ${reason}` : "Cancelled before start";

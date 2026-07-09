@@ -117,6 +117,9 @@ describe("lion extension factory", () => {
 			} finally {
 				finishActiveRun(owner);
 			}
+			const repeated = await lion.execute("call-cancel-repeat-unattached", { action: "cancel", id: run.id, reason: "repeat elsewhere" }, undefined, undefined, ctx);
+			assert.match(repeated.content[0].text, /no owned active worker was signaled/);
+			assert.equal(repeated.details.run.control.cancel_delivery_status, "delivered");
 		} finally {
 			clearActiveRunsForTests();
 			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH;
