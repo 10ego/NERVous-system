@@ -1,8 +1,8 @@
 # @nervous-system/cerebel
 
-> **CEREBEL** — orchestration controller for LION worker waves. It turns ready AXON tasks into LION assignments, tracks dispatch/results, and decides whether to dispatch more work, wait, complete, replan, or escalate.
+> **CEREBEL** — orchestration controller for LION worker waves. It turns ready AXON tasks into LION assignments, tracks dispatch/results, can actively run planned waves through LION with `run_wave`, and decides whether to dispatch more work, wait, complete, replan, or escalate.
 
-CEREBEL does not execute code itself. It controls a **wave** of assignments and persists orchestration state to `<cwd>/.pi/cerebel/cerebel.json` so work can resume after compaction/restart.
+CEREBEL primarily controls a **wave** of assignments and persists orchestration state to the active NERVous state namespace so work can resume after compaction/restart. Manual mode remains available (`plan_wave` → `lion run` → `dispatch`/`record`); `run_wave` is an opt-in active dispatcher for already-planned waves.
 
 ---
 
@@ -34,6 +34,7 @@ Package surfaces:
 | `decide` | Compute next controller decision |
 | `complete_wave` | Finish a successful wave |
 | `cancel` | Cancel a wave |
+| `run_wave` | Actively launch planned assignments through LION, dispatch links, and record grouped outcomes |
 | `get` | Show one wave/current wave |
 | `list` | List waves |
 | `summary` | Summarize orchestration state |
@@ -61,6 +62,14 @@ cerebel record assignment_id="assign-002" lion_run_id="run-002" outcome="blocked
 cerebel decide
 ```
 
+Or use the bounded active dispatcher after planning a wave:
+
+```text
+cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
+```
+
+`run_wave` creates LION run records, executes LION subprocesses up to the wave's `max_parallel` (or the supplied smaller/larger bounded value), dispatches assignment→run links, records completed/partial/blocked/failed outcomes, releases linked GANGLION allocations when possible, and returns a grouped wave summary. It skips already-terminal assignments, stops dispatching new batches after blocked/failed outcomes, and keeps all state in the durable CEREBEL/LION ledgers.
+
 ---
 
 ## Decision logic
@@ -80,7 +89,7 @@ CEREBEL decision reports are simple and explicit:
 
 | Aspect | Behavior |
 |--------|----------|
-| Location | `<cwd>/.pi/cerebel/cerebel.json` (override with `CEREBEL_PATH`) |
+| Location | Active NERVous namespace `cerebel/cerebel.json` (override with `CEREBEL_PATH`) |
 | Atomicity | Write to `cerebel.json.tmp` then rename |
 | Backup | Previous file copied to `cerebel.json.bak` |
 | Concurrency | Advisory lock (`cerebel.json.lock`) with stale-lock detection |
@@ -97,6 +106,7 @@ cerebel/
 │   ├── schema.ts       # wave/assignment/decision/tool schemas
 │   ├── store.ts        # pure orchestration state machine
 │   ├── backend.ts      # durable file backend
+│   ├── run-wave.ts     # active run_wave dispatcher helper
 │   └── render.ts       # markdown/TUI summaries
 ├── skills/cerebel/SKILL.md
 ├── prompts/cerebel.md
@@ -114,7 +124,9 @@ cerebel/
 - **SYNAPSE**: transient coordination notes.
 - **AMYGDALA**: future risk escalation target for blocked waves.
 
-CEREBEL deliberately has no hard runtime imports from AXON/LION/SYNAPSE. The agent bridges tools, which keeps each package independently installable.
+CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. The `run_wave` action dynamically loads the LION runtime only when invoked; if LION is unavailable, it fails clearly without affecting the rest of CEREBEL.
+
+`run_wave` does **not** implement cancellation or steering. Current LION workers are headless subprocesses without a persisted process/control channel, so those controls require a separate design for PID/process-group ownership, durable cancellation states, orphan cleanup, restart reconciliation, and a real steering channel.
 
 ---
 
