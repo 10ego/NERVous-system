@@ -95,6 +95,9 @@ async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, sig
 					run,
 					signal,
 					timeout_ms: p.timeout_ms ?? DEFAULT_RUN_WAVE_TIMEOUT_MS,
+					onProcessStart: (info) => {
+						void lionStore.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).catch(() => undefined);
+					},
 					onProgress: (progress: LionProgressSnapshot) => {
 						try { onUpdate?.({ content: [{ type: "text", text: `${run.id}/${run.agent_id}: ${progress.activity}` }], details: { action: "run_wave", run } }); } catch { /* progress display is best-effort */ }
 						onProgress(progress);

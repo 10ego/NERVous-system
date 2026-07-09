@@ -27,6 +27,8 @@ export function summarizeRun(r: LionRun): string {
 	const lines = [`# ${r.id} — ${r.agent_id}`, ""];
 	lines.push(`**status:** ${r.status}${r.task_id ? ` · **AXON:** \`${r.task_id}\`` : ""}${r.model ? ` · **model:** ${r.model}` : ""}`);
 	if (r.progress) lines.push(`**progress:** ${formatProgress(r)}`);
+	if (r.control?.pid || r.control?.cancel_requested_at) lines.push(`**control:** ${formatControl(r)}`);
+	if (r.steering_messages?.length) lines.push(`**steering:** ${formatSteering(r)}`);
 	lines.push("");
 	lines.push(`## Objective\n${r.objective || "_(none)_"}`);
 	if (r.context) lines.push("", `## Context\n${r.context}`);
@@ -49,7 +51,7 @@ export function summarizeList(runs: LionRun[]): string {
 	return [
 		"# LION runs",
 		"",
-		...runs.map((r) => `${ICON[r.status]} \`${r.id}\` **${r.agent_id}** _${r.status}_ ${r.task_id ? `→ \`${r.task_id}\`` : ""} — ${truncate(r.progress?.activity || r.objective, 80)}`),
+		...runs.map((r) => `${ICON[r.status]} \`${r.id}\` **${r.agent_id}** _${r.status}_ ${r.task_id ? `→ \`${r.task_id}\`` : ""} — ${truncate(r.control?.cancel_requested_at ? `cancelling: ${r.control.cancel_reason ?? "requested"}` : r.progress?.activity || r.objective, 80)}`),
 	].join("\n");
 }
 
@@ -92,6 +94,21 @@ function formatProgress(r: LionRun): string {
 	if (p.turn_count > 0) bits.push(`turns:${p.turn_count}`);
 	if (typeof p.token_total === "number" && p.token_total > 0) bits.push(`tokens:${p.token_total}`);
 	return bits.join(" · ");
+}
+
+function formatControl(r: LionRun): string {
+	const c = r.control;
+	if (!c) return "—";
+	const bits: string[] = [];
+	if (c.pid) bits.push(`pid:${c.pid}`);
+	if (c.pgid) bits.push(`pgid:${c.pgid}`);
+	if (c.cancel_requested_at) bits.push(`cancel requested${c.cancel_reason ? ` (${c.cancel_reason})` : ""}`);
+	if (c.reconciled_at) bits.push(`reconciled:${c.reconciled_at}`);
+	return bits.join(" · ") || "—";
+}
+
+function formatSteering(r: LionRun): string {
+	return (r.steering_messages ?? []).map((m) => `${m.id}:${m.status}`).join(" · ");
 }
 
 function truncate(s: string, n: number): string {

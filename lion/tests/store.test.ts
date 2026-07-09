@@ -55,6 +55,41 @@ describe("LionLedger", () => {
 		assert.equal(l.all().length, 1);
 	});
 
+	it("tracks process control, cancellation, and stale PID reconciliation", () => {
+		const l = new LionLedger();
+		const running = l.create({ objective: "run" });
+		const controlled = l.updateControl(running.id, { pid: 123, pgid: 123, started_at: "2026-01-01T00:00:00.000Z" });
+		assert.equal(controlled.control?.pid, 123);
+		const cancel = l.requestCancel(running.id, "user asked");
+		assert.equal(cancel.signal, "SIGTERM");
+		assert.equal(cancel.pid, 123);
+		const changed = l.reconcileControls(() => false);
+		assert.equal(changed[0]?.status, "aborted");
+		assert.match(changed[0]?.error ?? "", /Cancelled/);
+		const again = l.requestCancel(running.id, "again");
+		assert.equal(again.already_terminal, true);
+
+		const queued = l.create({ objective: "queued", start: false });
+		const queuedCancel = l.requestCancel(queued.id, "not needed");
+		assert.equal(queuedCancel.run.status, "aborted");
+		assert.equal(queuedCancel.signal, undefined);
+	});
+
+	it("supports queued pre-start steering and rejects running steering", () => {
+		const l = new LionLedger();
+		const queued = l.create({ objective: "queued", start: false });
+		const accepted = l.steer(queued.id, "Prefer tests first");
+		assert.equal(accepted.accepted, true);
+		assert.equal(accepted.message.status, "queued");
+		const started = l.start(queued.id);
+		assert.equal(started.status, "running");
+		assert.equal(started.steering_messages?.[0]?.status, "applied");
+
+		const rejected = l.steer(started.id, "Change now");
+		assert.equal(rejected.accepted, false);
+		assert.equal(rejected.message.status, "rejected_running");
+	});
+
 	it("updates and round-trips bounded live progress snapshots", () => {
 		const l = new LionLedger();
 		const r = l.create({ objective: "stream" });

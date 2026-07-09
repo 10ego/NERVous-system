@@ -13,9 +13,11 @@ import {
 	type LionFile,
 	type LionModelRole,
 	type LionProgressEvent,
+	type LionControlState,
 	type LionProgressSnapshot,
 	type LionReport,
 	type LionRun,
+	type LionSteeringMessage,
 	type LionRunStatus,
 	type LionSummary,
 } from "./schema.ts";
@@ -24,6 +26,7 @@ const VERSION = 1;
 
 const STATUS_SET = new Set<string>(LION_RUN_STATUSES);
 const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
+const STEERING_STATUS_SET = new Set<string>(["queued", "applied", "rejected_running", "rejected_terminal"]);
 const MAX_PROGRESS_TEXT = 1000;
 
 function now(): string {
@@ -67,6 +70,22 @@ export type UpdateProgressInput = Partial<Omit<LionProgressSnapshot, "last_event
 	last_event_at?: string;
 };
 
+export type UpdateControlInput = Partial<LionControlState>;
+
+export interface CancelRunResult {
+	run: LionRun;
+	signal?: "SIGTERM";
+	pid?: number;
+	pgid?: number | null;
+	already_terminal?: boolean;
+}
+
+export interface SteerRunResult {
+	run: LionRun;
+	message: LionSteeringMessage;
+	accepted: boolean;
+}
+
 export interface ListFilter {
 	status?: LionRunStatus;
 	agent_id?: string;
@@ -105,6 +124,8 @@ export class LionLedger {
 			output: null,
 			report: null,
 			progress: null,
+			control: null,
+			steering_messages: [],
 			error: null,
 		};
 		this.runsById.set(id, run);
@@ -113,8 +134,17 @@ export class LionLedger {
 
 	start(id: string): LionRun {
 		const r = this.require(id);
+		if (r.status !== "queued") throw new LionError("invalid_transition", `cannot start ${r.id} from ${r.status}`);
 		this.transition(r, "running");
-		r.updated_at = now();
+		const ts = now();
+		for (const msg of r.steering_messages ?? []) {
+			if (msg.status === "queued") {
+				msg.status = "applied";
+				msg.applied_at = ts;
+			}
+		}
+		r.started_at = ts;
+		r.updated_at = ts;
 		return clone(r);
 	}
 
@@ -151,6 +181,74 @@ export class LionLedger {
 		};
 		r.updated_at = ts;
 		return clone(r);
+	}
+
+	updateControl(id: string, input: UpdateControlInput): LionRun {
+		const r = this.require(id);
+		if (r.status !== "running" && r.status !== "queued") throw new LionError("invalid_transition", `cannot update control for ${r.id} while ${r.status}`);
+		const ts = now();
+		r.control = { ...(r.control ?? {}), ...input, last_seen_at: input.last_seen_at ?? ts };
+		r.updated_at = ts;
+		return clone(r);
+	}
+
+	requestCancel(id: string, reason?: string | null): CancelRunResult {
+		const r = this.require(id);
+		const ts = now();
+		if (["completed", "blocked", "failed", "aborted"].includes(r.status)) {
+			return { run: clone(r), already_terminal: true };
+		}
+		r.control = { ...(r.control ?? {}), cancel_requested_at: r.control?.cancel_requested_at ?? ts, cancel_reason: reason ?? r.control?.cancel_reason ?? null, cancel_signal: "SIGTERM", last_seen_at: ts };
+		if (r.status === "queued") {
+			this.transition(r, "aborted");
+			r.error = reason ? `Cancelled before start: ${reason}` : "Cancelled before start";
+			r.finished_at = ts;
+			r.duration_ms = Math.max(0, Date.parse(ts) - Date.parse(r.started_at));
+		}
+		r.updated_at = ts;
+		return { run: clone(r), signal: r.status === "running" ? "SIGTERM" : undefined, pid: r.control.pid ?? undefined, pgid: r.control.pgid ?? null };
+	}
+
+	steer(id: string, message: string): SteerRunResult {
+		const r = this.require(id);
+		const text = message.trim();
+		if (!text) throw new LionError("invalid_arg", "steer requires non-empty message");
+		const ts = now();
+		const msg: LionSteeringMessage = {
+			id: this.nextSteeringId(r),
+			message: text,
+			status: "queued",
+			created_at: ts,
+			applied_at: null,
+			rejected_at: null,
+			reason: null,
+		};
+		if (r.status !== "queued") {
+			msg.status = ["running"].includes(r.status) ? "rejected_running" : "rejected_terminal";
+			msg.rejected_at = ts;
+			msg.reason = r.status === "running" ? "running subprocess backend does not support live steering" : `cannot steer terminal run ${r.status}`;
+		}
+		r.steering_messages ??= [];
+		r.steering_messages.push(msg);
+		r.updated_at = ts;
+		return { run: clone(r), message: clone(msg), accepted: msg.status === "queued" };
+	}
+
+	reconcileControls(isAlive: (pid: number) => boolean): LionRun[] {
+		const changed: LionRun[] = [];
+		for (const r of this.runsById.values()) {
+			if (r.status !== "running" || typeof r.control?.pid !== "number") continue;
+			if (isAlive(r.control.pid)) continue;
+			const ts = now();
+			this.transition(r, r.control.cancel_requested_at ? "aborted" : "failed");
+			r.error = r.control.cancel_requested_at ? (r.control.cancel_reason ? `Cancelled: ${r.control.cancel_reason}` : "Cancelled") : "Subprocess is no longer running";
+			r.finished_at = ts;
+			r.updated_at = ts;
+			r.duration_ms = Math.max(0, Date.parse(ts) - Date.parse(r.started_at));
+			r.control = { ...r.control, reconciled_at: ts, last_seen_at: ts };
+			changed.push(clone(r));
+		}
+		return changed;
 	}
 
 	delete(id: string): LionRun {
@@ -222,6 +320,15 @@ export class LionLedger {
 		r.status = to;
 	}
 
+	private nextSteeringId(run: LionRun): string {
+		let max = 0;
+		for (const msg of run.steering_messages ?? []) {
+			const m = /^steer-(\d+)$/.exec(msg.id);
+			if (m) max = Math.max(max, Number(m[1]));
+		}
+		return `steer-${String(max + 1).padStart(3, "0")}`;
+	}
+
 	private nextId(): string {
 		let max = 0;
 		for (const id of this.runsById.keys()) {
@@ -287,6 +394,8 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 		output: typeof value.output === "string" ? value.output : null,
 		report: coerceReport(value.report),
 		progress: coerceProgress(value.progress),
+		control: coerceControl(value.control),
+		steering_messages: Array.isArray(value.steering_messages) ? value.steering_messages.map(coerceSteering).filter((x): x is LionSteeringMessage => Boolean(x)) : [],
 		error: typeof value.error === "string" ? value.error : null,
 	};
 }
@@ -318,6 +427,35 @@ function coerceProgress(value: unknown): LionProgressSnapshot | null {
 		token_total: typeof value.token_total === "number" ? Math.max(0, Math.floor(value.token_total)) : null,
 		last_text: typeof value.last_text === "string" ? trimText(value.last_text) : null,
 		last_event_at: typeof value.last_event_at === "string" ? value.last_event_at : now(),
+	};
+}
+
+function coerceControl(value: unknown): LionControlState | null {
+	if (!isObject(value)) return null;
+	return {
+		pid: typeof value.pid === "number" ? Math.floor(value.pid) : null,
+		pgid: typeof value.pgid === "number" ? Math.floor(value.pgid) : null,
+		started_at: typeof value.started_at === "string" ? value.started_at : null,
+		last_seen_at: typeof value.last_seen_at === "string" ? value.last_seen_at : null,
+		cancel_requested_at: typeof value.cancel_requested_at === "string" ? value.cancel_requested_at : null,
+		cancel_reason: typeof value.cancel_reason === "string" ? value.cancel_reason : null,
+		cancel_signal: typeof value.cancel_signal === "string" ? value.cancel_signal : null,
+		exit_signal: typeof value.exit_signal === "string" ? value.exit_signal : null,
+		reconciled_at: typeof value.reconciled_at === "string" ? value.reconciled_at : null,
+	};
+}
+
+function coerceSteering(value: unknown): LionSteeringMessage | null {
+	if (!isObject(value) || typeof value.message !== "string") return null;
+	const status = typeof value.status === "string" && STEERING_STATUS_SET.has(value.status) ? value.status as LionSteeringMessage["status"] : "rejected_terminal";
+	return {
+		id: typeof value.id === "string" ? value.id : "steer-unknown",
+		message: value.message,
+		status,
+		created_at: typeof value.created_at === "string" ? value.created_at : now(),
+		applied_at: typeof value.applied_at === "string" ? value.applied_at : null,
+		rejected_at: typeof value.rejected_at === "string" ? value.rejected_at : null,
+		reason: typeof value.reason === "string" ? value.reason : null,
 	};
 }
 

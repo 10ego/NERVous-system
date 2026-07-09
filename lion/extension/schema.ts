@@ -37,7 +37,7 @@ export const LION_PROGRESS_EVENTS = [
 ] as const;
 export type LionProgressEvent = (typeof LION_PROGRESS_EVENTS)[number];
 
-export const LION_ACTIONS = ["run", "get", "list", "summary", "delete"] as const;
+export const LION_ACTIONS = ["run", "start", "cancel", "steer", "get", "list", "summary", "delete"] as const;
 export type LionAction = (typeof LION_ACTIONS)[number];
 
 export const LION_MODEL_ROLES = ["implementation", "review", "default"] as const;
@@ -75,6 +75,30 @@ export interface LionProgressSnapshot {
 	last_event_at: string;
 }
 
+export interface LionControlState {
+	pid?: number | null;
+	pgid?: number | null;
+	started_at?: string | null;
+	last_seen_at?: string | null;
+	cancel_requested_at?: string | null;
+	cancel_reason?: string | null;
+	cancel_signal?: string | null;
+	exit_signal?: string | null;
+	reconciled_at?: string | null;
+}
+
+export type LionSteeringStatus = "queued" | "applied" | "rejected_running" | "rejected_terminal";
+
+export interface LionSteeringMessage {
+	id: string;
+	message: string;
+	status: LionSteeringStatus;
+	created_at: string;
+	applied_at?: string | null;
+	rejected_at?: string | null;
+	reason?: string | null;
+}
+
 export interface LionRun {
 	id: string;
 	agent_id: string;
@@ -97,6 +121,10 @@ export interface LionRun {
 	report?: LionReport | null;
 	/** Latest bounded live progress snapshot, when the subprocess emitted usable events. */
 	progress?: LionProgressSnapshot | null;
+	/** Best-effort subprocess control metadata for cancellation/reconciliation. */
+	control?: LionControlState | null;
+	/** Pre-start steering messages; running workers reject new steering under the subprocess backend. */
+	steering_messages?: LionSteeringMessage[];
 	error?: string | null;
 }
 
@@ -125,7 +153,7 @@ export const LION_MODEL_ROLE_SCHEMA = StringEnum(LION_MODEL_ROLES);
 
 export const LionToolParams = Type.Object({
 	action: StringEnum(LION_ACTIONS, {
-		description: "What to do. run/get/list/summary/delete.",
+		description: "What to do. run/start/cancel/steer/get/list/summary/delete.",
 	}),
 	// run
 	task_id: Type.Optional(Type.String({ description: "AXON task id assigned to this worker (run/get/delete)." })),
@@ -137,8 +165,10 @@ export const LionToolParams = Type.Object({
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional pi tool allow-list for the worker subprocess." })),
 	timeout_ms: Type.Optional(Type.Number({ description: "Subprocess timeout in milliseconds. Default 10 minutes." })),
 	dry_run: Type.Optional(Type.Boolean({ description: "Create a run record without spawning a subprocess." })),
-	// query/list
-	id: Type.Optional(Type.String({ description: "LION run id (get/delete)." })),
+	// start/cancel/steer/query/list
+	id: Type.Optional(Type.String({ description: "LION run id (start/cancel/steer/get/delete)." })),
+	message: Type.Optional(Type.String({ description: "Pre-start steering message for action=steer. Accepted only while queued; running workers are rejected." })),
+	reason: Type.Optional(Type.String({ description: "Reason for cancellation or rejection/audit note." })),
 	status_filter: Type.Optional(LION_RUN_STATUS_SCHEMA),
 	agent_filter: Type.Optional(Type.String({ description: "Filter list by agent_id." })),
 	limit: Type.Optional(Type.Number({ description: "Max runs to return for list/summary. Default 20." })),

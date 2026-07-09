@@ -23,12 +23,19 @@ export interface LionRunnerOptions {
 	forcePiBinary?: boolean;
 }
 
+export interface LionProcessInfo {
+	pid: number;
+	pgid: number | null;
+}
+
 export interface LionRunRequest {
-	run: Pick<LionRun, "id" | "agent_id" | "task_id" | "objective" | "context" | "model" | "tools">;
+	run: Pick<LionRun, "id" | "agent_id" | "task_id" | "objective" | "context" | "model" | "tools" | "steering_messages">;
 	signal?: AbortSignal;
 	timeout_ms?: number;
 	/** Optional live progress callback. Called opportunistically and defensively. */
 	onProgress?: (progress: LionProgressSnapshot) => void;
+	/** Called once the subprocess PID is known so callers can persist control metadata. */
+	onProcessStart?: (info: LionProcessInfo) => void;
 }
 
 export interface LionRunOutput {
@@ -48,6 +55,28 @@ export function getPiInvocation(args: string[], opts?: { forceBinary?: boolean }
 	const execName = path.basename(process.execPath).toLowerCase();
 	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
 	return isGenericRuntime ? { command: "pi", args } : { command: process.execPath, args };
+}
+
+export function isPidAlive(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		return code !== "ESRCH" && code !== "EINVAL";
+	}
+}
+
+export function signalProcessTree(pid: number, signal: NodeJS.Signals = "SIGTERM"): void {
+	if (process.platform !== "win32") {
+		try {
+			process.kill(-pid, signal);
+			return;
+		} catch {
+			/* fall back to direct process signal */
+		}
+	}
+	process.kill(pid, signal);
 }
 
 async function writePromptToTempFile(label: string, prompt: string): Promise<{ dir: string; filePath: string }> {
@@ -211,6 +240,11 @@ export function buildLionUserPrompt(run: LionRunRequest["run"]): string {
 		run.objective,
 	];
 	if (run.context.trim()) lines.push("", "Context / constraints / acceptance criteria:", run.context);
+	const appliedSteering = (run.steering_messages ?? []).filter((m) => m.status === "applied");
+	if (appliedSteering.length) {
+		lines.push("", "Pre-start steering messages to incorporate before you begin:");
+		for (const msg of appliedSteering) lines.push(`- ${msg.message}`);
+	}
 	if (run.task_id) {
 		lines.push(
 			"",
@@ -294,7 +328,7 @@ async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<
 		args.push("--append-system-prompt", tmpPath);
 		args.push(buildLionUserPrompt(req.run));
 
-		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress);
+		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress, req.onProcessStart);
 		const text = getFinalOutput(messages);
 		return { text, report: parseLionReport(text) };
 	} finally {
@@ -319,14 +353,20 @@ function collectMessages(
 	signal?: AbortSignal,
 	timeout_ms = 10 * 60_000,
 	onProgress?: (progress: LionProgressSnapshot) => void,
+	onProcessStart?: (info: LionProcessInfo) => void,
 ): Promise<Message[]> {
 	return new Promise((resolve, reject) => {
 		const invocation = getPiInvocation([...args, ...(opts.extraArgs ?? [])], { forceBinary: opts.forcePiBinary });
+		const detached = process.platform !== "win32";
 		const proc = spawn(invocation.command, invocation.args, {
 			cwd: opts.cwd,
 			shell: false,
+			detached,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		if (proc.pid) {
+			try { onProcessStart?.({ pid: proc.pid, pgid: detached ? proc.pid : null }); } catch { /* control metadata is best-effort */ }
+		}
 
 		const messages: Message[] = [];
 		let buffer = "";
@@ -358,9 +398,15 @@ function collectMessages(
 
 		const killProc = (reason: string) => {
 			aborted = true;
-			proc.kill("SIGTERM");
+			if (proc.pid) {
+				try { signalProcessTree(proc.pid, "SIGTERM"); } catch { try { proc.kill("SIGTERM"); } catch { /* ignore */ } }
+			} else {
+				try { proc.kill("SIGTERM"); } catch { /* ignore */ }
+			}
 			setTimeout(() => {
-				if (!proc.killed) proc.kill("SIGKILL");
+				if (!proc.killed && proc.pid) {
+					try { signalProcessTree(proc.pid, "SIGKILL"); } catch { try { proc.kill("SIGKILL"); } catch { /* ignore */ } }
+				}
 			}, 5000);
 			return reason;
 		};
@@ -375,9 +421,10 @@ function collectMessages(
 		});
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
 		proc.on("error", (err) => done(() => reject(err)));
-		proc.on("close", () => {
+		proc.on("close", (_code, closeSignal) => {
 			if (buffer.trim()) processLine(buffer);
 			if (aborted) return done(() => reject(new Error("LION subprocess was aborted or timed out")));
+			if (closeSignal) return done(() => reject(new Error(`LION subprocess exited after signal ${closeSignal}`)));
 			if (messages.length === 0 && stderr.trim()) {
 				return done(() => reject(new Error(`LION subprocess produced no output. stderr: ${stderr.trim().slice(0, 1000)}`)));
 			}

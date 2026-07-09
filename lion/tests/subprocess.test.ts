@@ -1,6 +1,7 @@
 import * as assert from "node:assert";
+import { spawn } from "node:child_process";
 import { describe, it } from "vitest";
-import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, getFinalOutput, getPiInvocation, parseLionReport, progressFromEvent } from "../extension/subprocess.ts";
+import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, getFinalOutput, getPiInvocation, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree } from "../extension/subprocess.ts";
 import type { Message } from "@earendil-works/pi-ai";
 
 const run = {
@@ -18,10 +19,11 @@ describe("LION subprocess helpers", () => {
 		const sys = buildLionSystemPrompt(run);
 		assert.match(sys, /Local Intelligence Operations Node/);
 		assert.match(sys, /WORKER_REPORT/);
-		const user = buildLionUserPrompt(run);
+		const user = buildLionUserPrompt({ ...run, steering_messages: [{ id: "steer-001", message: "Prefer tests first", status: "applied", created_at: "now" }] });
 		assert.match(user, /run-001/);
 		assert.match(user, /task-001/);
 		assert.match(user, /Add tests/);
+		assert.match(user, /Prefer tests first/);
 		assert.match(user, /axon tool is available/);
 	});
 
@@ -73,6 +75,15 @@ describe("LION subprocess helpers", () => {
 		assert.ok(progressFromEvent({ type: "message_update", delta: "first" }, state, 2000));
 		assert.equal(progressFromEvent({ type: "message_update", delta: "second" }, state, 2500), null);
 		assert.ok(progressFromEvent({ type: "message_update", delta: "third" }, state, 3100));
+	});
+
+	it("signals a spawned process", async () => {
+		const proc = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: process.platform !== "win32", stdio: "ignore" });
+		assert.ok(proc.pid);
+		assert.equal(isPidAlive(proc.pid!), true);
+		signalProcessTree(proc.pid!, "SIGTERM");
+		await new Promise<void>((resolve) => proc.on("close", () => resolve()));
+		assert.equal(isPidAlive(proc.pid!), false);
 	});
 
 	it("resolves pi invocation without throwing", () => {

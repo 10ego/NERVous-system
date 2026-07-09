@@ -33,6 +33,27 @@ describe("lion extension factory", () => {
 		assert.ok(names.includes("lion:runs"));
 	});
 
+	it("supports queued steering and queued cancellation through the tool", async () => {
+		const { pi, tools } = stubPi();
+		factory(pi);
+		const lion = tools.find((t) => t.name === "lion");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-control-test-"));
+		const oldRunsPath = process.env.LION_RUNS_PATH;
+		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
+		try {
+			const ctx = { cwd: dir, isProjectTrusted: () => false };
+			const dry = await lion.execute("call-1", { action: "run", objective: "queued", dry_run: true }, undefined, undefined, ctx);
+			const id = dry.details.run.id;
+			const steer = await lion.execute("call-2", { action: "steer", id, message: "Prefer tests first" }, undefined, undefined, ctx);
+			assert.equal(steer.details.run.steering_messages[0].status, "queued");
+			const cancel = await lion.execute("call-3", { action: "cancel", id, reason: "not needed" }, undefined, undefined, ctx);
+			assert.equal(cancel.details.run.status, "aborted");
+		} finally {
+			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH;
+			else process.env.LION_RUNS_PATH = oldRunsPath;
+		}
+	});
+
 	it("uses configured LION model default when a run omits model", async () => {
 		const { pi, tools } = stubPi();
 		factory(pi);
