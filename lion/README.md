@@ -30,7 +30,10 @@ Single tool, `action` discriminator:
 
 | Action | Purpose |
 |--------|---------|
-| `run` | Spawn one isolated pi subprocess worker and persist its report |
+| `run` | Spawn one isolated pi subprocess worker and persist its report; with `dry_run=true`, create a queued run |
+| `start` | Launch a queued dry-run, applying any queued pre-start steering messages |
+| `cancel` | Best-effort cancellation for queued/running runs with durable control metadata |
+| `steer` | Queue a pre-start steering message for a queued run; running workers reject steering explicitly |
 | `get` | Show one run |
 | `list` | List runs, optionally filtered by status/agent/task |
 | `summary` | Summary counts + recent/running runs |
@@ -60,7 +63,25 @@ While a run is active, LION now records a bounded `progress` snapshot in the run
 
 Progress is derived defensively from headless `pi --mode json` events such as tool start/end, text deltas, message end, and turn end. It is optional and backward-compatible: old ledgers without `progress` still load, malformed/missing subprocess events are ignored, and retained text is bounded so progress does not become an unbounded transcript.
 
-This PR intentionally does **not** add FleetView/widget UI, CEREBEL auto-dispatch/grouped notifications, steering, or subprocess cancellation. Those can consume the durable/evented progress contract in follow-up work.
+### Cancellation and pre-start steering
+
+LION stores best-effort process control metadata for running subprocesses (`pid`, process group where available, cancellation timestamps, and reconciliation timestamps). Use:
+
+```text
+lion cancel id="run-001" reason="superseded by newer plan"
+```
+
+Cancellation is honest but best-effort: it records the request durably, sends `SIGTERM` to the subprocess process group where supported, schedules a `SIGKILL` fallback from the current pi process, and reconciles dead/stale PIDs during `get`, `list`, and `summary`. Queued runs are aborted without launching.
+
+Pre-start steering is intentionally narrower than Claude-style live steering. It works only before launch:
+
+```text
+lion run objective="..." dry_run=true
+lion steer id="run-001" message="Prefer the test-first path."
+lion start id="run-001"
+```
+
+Queued messages are injected into the worker prompt when `start` launches the run. Steering an already-running subprocess is rejected and recorded as `rejected_running`, because the current headless `pi --mode json -p --no-session` backend has no live bidirectional control channel.
 
 ### Model selection
 
@@ -111,6 +132,7 @@ Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed
 |--------|----------|
 | Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`) |
 | Progress | Optional bounded `progress` snapshot is persisted while running and shown in summaries when present |
+| Control | Optional process metadata/cancellation state and pre-start steering messages are persisted with the run |
 | Atomicity | Write to `runs.json.tmp` then rename |
 | Backup | Previous file copied to `runs.json.bak` |
 | Concurrency | Advisory lock (`runs.json.lock`) with stale-lock detection |
