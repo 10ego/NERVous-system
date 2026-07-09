@@ -68,7 +68,7 @@ Or use the bounded active dispatcher after planning a wave:
 cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 ```
 
-`run_wave` creates LION run records, executes LION subprocesses up to the wave's `max_parallel` (or the supplied smaller/larger bounded value), dispatches assignment→run links, records completed/partial/blocked/failed outcomes, releases linked GANGLION allocations when possible, and returns a grouped wave summary. It skips already-terminal assignments, stops dispatching new batches after blocked/failed outcomes, and keeps all state in the durable CEREBEL/LION ledgers.
+`run_wave` reserves planned assignments under the CEREBEL lock before creating LION workers, creates LION run records, executes LION subprocesses up to the wave's `max_parallel` (or the supplied bounded value), dispatches assignment→run links, records completed/partial/blocked/failed outcomes, releases linked GANGLION allocations when possible, and returns a grouped wave summary. It skips already-terminal assignments, rejects terminal redispatch, treats missing/unparseable `WORKER_REPORT` output as failed, stops dispatching new batches after blocked/failed outcomes, coalesces progress writes, and keeps all state in the durable CEREBEL/LION ledgers.
 
 ---
 

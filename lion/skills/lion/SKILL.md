@@ -43,6 +43,7 @@ Useful controls:
 - `lion start id="run-001"` launches a queued run and applies queued steering.
 - `lion cancel id="run-001" reason="..."` records cancellation and only signals an actively owned live worker.
 - `runner_mode="rpc"` (or `LION_RUNNER=rpc`) opts into live mid-run steering through pi RPC; the default `json` runner rejects running steering.
+- `include_progress_text=true` opts into raw assistant text tails in progress telemetry; default progress text is redacted.
 
 ## Worker contract
 
