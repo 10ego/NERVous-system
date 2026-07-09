@@ -10,6 +10,7 @@ type AnyTheme = { fg(color: string, text: string): string; bold(text: string): s
 const WAVE_ICON: Record<WaveStatus, string> = { planned: "◇", dispatched: "▶", collecting: "…", completed: "✓", blocked: "■", needs_replan: "↻", cancelled: "⊘" };
 const WAVE_COLOR: Record<WaveStatus, string> = { planned: "accent", dispatched: "accent", collecting: "warning", completed: "success", blocked: "warning", needs_replan: "error", cancelled: "muted" };
 const ASSIGN_ICON: Record<AssignmentStatus, string> = { planned: "◇", dispatched: "▶", completed: "✓", partial: "◐", blocked: "■", failed: "✗", cancelled: "⊘" };
+export const RUN_WAVE_DASHBOARD_HINT = "Tip: open `/nervous:dashboard` for live LION/CEREBEL details.";
 
 export function summarizeWave(w: Wave): string {
 	const lines = [`# ${w.id}`, ""];
@@ -71,6 +72,7 @@ export function summarizeRunWaveResult(result: RunWaveResult): string {
 		"",
 		`**summary:** ${result.summary}`,
 		`**group:** ${summarizeAssignmentGroup(result.wave)}`,
+		`**dashboard:** ${RUN_WAVE_DASHBOARD_HINT}`,
 		"",
 		"## Results",
 	];

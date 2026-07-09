@@ -247,6 +247,7 @@ describe("runWave", () => {
 		assert.equal(summarizeAssignmentGroup(result.wave), "completed:1");
 		const text = summarizeRunWaveResult(result);
 		assert.match(text, /CEREBEL run_wave/);
+		assert.match(text, /\/nervous:dashboard/);
 		assert.match(text, /A done/);
 	});
 });

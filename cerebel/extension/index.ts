@@ -4,7 +4,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
 import { CerebelStore } from "./backend.ts";
 import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
-import { renderCerebelCall, renderCerebelResult, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
+import { renderCerebelCall, renderCerebelResult, RUN_WAVE_DASHBOARD_HINT, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
 import { runWave, type RunWaveLionAdapter } from "./run-wave.ts";
 import { LION_RUNNER_MODES, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunnerMode } from "../../lion/extension/schema.ts";
 
@@ -237,6 +237,7 @@ export default function (pi: ExtensionAPI) {
 				case "run_wave": {
 					try {
 						const adapter = await createLionAdapter(ctx, p, signal, onUpdate);
+						try { onUpdate?.({ content: [{ type: "text", text: RUN_WAVE_DASHBOARD_HINT.replace(/`/g, "") }], details: { action: "run_wave", hint: "dashboard" } }); } catch { /* dashboard hint is best-effort */ }
 						const result = await runWave(store, adapter, { wave_id: p.wave_id, max_parallel: p.max_parallel });
 						const ganglionMessages: string[] = [];
 						for (const r of result.assignment_results) {
