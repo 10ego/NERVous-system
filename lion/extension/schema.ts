@@ -43,6 +43,9 @@ export type LionAction = (typeof LION_ACTIONS)[number];
 export const LION_MODEL_ROLES = ["implementation", "review", "default"] as const;
 export type LionModelRole = (typeof LION_MODEL_ROLES)[number];
 
+export const LION_RUNNER_MODES = ["json", "rpc"] as const;
+export type LionRunnerMode = (typeof LION_RUNNER_MODES)[number];
+
 /* -------------------------------------------------------------------------- */
 /* Worker report and run ledger                                                */
 /* -------------------------------------------------------------------------- */
@@ -87,7 +90,15 @@ export interface LionControlState {
 	reconciled_at?: string | null;
 }
 
-export type LionSteeringStatus = "queued" | "applied" | "rejected_running" | "rejected_terminal";
+export type LionSteeringStatus =
+	| "queued"
+	| "applied"
+	| "pending_delivery"
+	| "delivering"
+	| "delivered"
+	| "delivery_failed"
+	| "rejected_running"
+	| "rejected_terminal";
 
 export interface LionSteeringMessage {
 	id: string;
@@ -95,6 +106,8 @@ export interface LionSteeringMessage {
 	status: LionSteeringStatus;
 	created_at: string;
 	applied_at?: string | null;
+	delivery_attempted_at?: string | null;
+	delivered_at?: string | null;
 	rejected_at?: string | null;
 	reason?: string | null;
 }
@@ -110,6 +123,8 @@ export interface LionRun {
 	model?: string | null;
 	/** Which configured LION model default was used when model was omitted. */
 	model_role?: LionModelRole | null;
+	/** Execution backend. json preserves legacy one-shot subprocess behavior; rpc enables live steering. */
+	runner_mode?: LionRunnerMode | null;
 	tools?: string[] | null;
 	started_at: string;
 	updated_at: string;
@@ -123,7 +138,7 @@ export interface LionRun {
 	progress?: LionProgressSnapshot | null;
 	/** Best-effort subprocess control metadata for cancellation/reconciliation. */
 	control?: LionControlState | null;
-	/** Pre-start steering messages; running workers reject new steering under the subprocess backend. */
+	/** Pre-start steering messages and RPC live steering delivery records. */
 	steering_messages?: LionSteeringMessage[];
 	error?: string | null;
 }
@@ -150,6 +165,7 @@ export interface LionSummary {
 export const LION_RUN_STATUS_SCHEMA = StringEnum(LION_RUN_STATUSES);
 export const LION_OUTCOME_SCHEMA = StringEnum(LION_OUTCOMES);
 export const LION_MODEL_ROLE_SCHEMA = StringEnum(LION_MODEL_ROLES);
+export const LION_RUNNER_MODE_SCHEMA = StringEnum(LION_RUNNER_MODES);
 
 export const LionToolParams = Type.Object({
 	action: StringEnum(LION_ACTIONS, {
@@ -162,12 +178,13 @@ export const LionToolParams = Type.Object({
 	agent_id: Type.Optional(Type.String({ description: "Worker id, e.g. lion-1. Defaults to auto id." })),
 	model: Type.Optional(Type.String({ description: "Explicit model for the subprocess worker. Overrides configured LION model defaults." })),
 	model_role: Type.Optional(LION_MODEL_ROLE_SCHEMA),
+	runner_mode: Type.Optional(LION_RUNNER_MODE_SCHEMA),
 	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional pi tool allow-list for the worker subprocess." })),
 	timeout_ms: Type.Optional(Type.Number({ description: "Subprocess timeout in milliseconds. Default 10 minutes." })),
 	dry_run: Type.Optional(Type.Boolean({ description: "Create a run record without spawning a subprocess." })),
 	// start/cancel/steer/query/list
 	id: Type.Optional(Type.String({ description: "LION run id (start/cancel/steer/get/delete)." })),
-	message: Type.Optional(Type.String({ description: "Pre-start steering message for action=steer. Accepted only while queued; running workers are rejected." })),
+	message: Type.Optional(Type.String({ description: "Steering message for action=steer. Accepted pre-start for queued runs and live only for running rpc-backed runs." })),
 	reason: Type.Optional(Type.String({ description: "Reason for cancellation or rejection/audit note." })),
 	status_filter: Type.Optional(LION_RUN_STATUS_SCHEMA),
 	agent_filter: Type.Optional(Type.String({ description: "Filter list by agent_id." })),

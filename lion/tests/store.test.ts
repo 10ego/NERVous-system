@@ -75,7 +75,7 @@ describe("LionLedger", () => {
 		assert.equal(queuedCancel.signal, undefined);
 	});
 
-	it("supports queued pre-start steering and rejects running steering", () => {
+	it("supports queued pre-start steering and rejects json running steering", () => {
 		const l = new LionLedger();
 		const queued = l.create({ objective: "queued", start: false });
 		const accepted = l.steer(queued.id, "Prefer tests first");
@@ -88,6 +88,28 @@ describe("LionLedger", () => {
 		const rejected = l.steer(started.id, "Change now");
 		assert.equal(rejected.accepted, false);
 		assert.equal(rejected.message.status, "rejected_running");
+	});
+
+	it("tracks rpc live steering delivery states", () => {
+		const l = new LionLedger();
+		const run = l.create({ objective: "rpc", runner_mode: "rpc" });
+		const pending = l.steer(run.id, "Change now", { liveDeliveryAvailable: true });
+		assert.equal(pending.accepted, true);
+		assert.equal(pending.message.status, "pending_delivery");
+		const reserved = l.reservePendingSteering(run.id);
+		assert.equal(reserved.length, 1);
+		assert.equal(reserved[0]?.status, "delivering");
+		assert.equal(l.reservePendingSteering(run.id).length, 0);
+		let current = l.get(run.id)!;
+		assert.equal(current.steering_messages?.[0]?.status, "delivering");
+		current = l.markSteeringDelivered(run.id, reserved[0]!.id);
+		assert.equal(current.steering_messages?.[0]?.status, "delivered");
+
+		const failed = l.steer(run.id, "Try again", { liveDeliveryAvailable: true });
+		const failedReserved = l.reservePendingSteering(run.id)[0]!;
+		current = l.markSteeringFailed(run.id, failedReserved.id, "boom");
+		assert.equal(current.steering_messages?.find((m) => m.id === failed.message.id)?.status, "delivery_failed");
+		assert.match(current.steering_messages?.find((m) => m.id === failed.message.id)?.reason ?? "", /boom/);
 	});
 
 	it("updates and round-trips bounded live progress snapshots", () => {

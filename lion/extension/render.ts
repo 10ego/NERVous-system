@@ -25,7 +25,7 @@ const COLOR: Record<LionRunStatus, string> = {
 
 export function summarizeRun(r: LionRun): string {
 	const lines = [`# ${r.id} — ${r.agent_id}`, ""];
-	lines.push(`**status:** ${r.status}${r.task_id ? ` · **AXON:** \`${r.task_id}\`` : ""}${r.model ? ` · **model:** ${r.model}` : ""}`);
+	lines.push(`**status:** ${r.status}${r.task_id ? ` · **AXON:** \`${r.task_id}\`` : ""}${r.model ? ` · **model:** ${r.model}` : ""}${r.runner_mode ? ` · **runner:** ${r.runner_mode}` : ""}`);
 	if (r.progress) lines.push(`**progress:** ${formatProgress(r)}`);
 	if (r.control?.pid || r.control?.cancel_requested_at) lines.push(`**control:** ${formatControl(r)}`);
 	if (r.steering_messages?.length) lines.push(`**steering:** ${formatSteering(r)}`);
@@ -108,7 +108,7 @@ function formatControl(r: LionRun): string {
 }
 
 function formatSteering(r: LionRun): string {
-	return (r.steering_messages ?? []).map((m) => `${m.id}:${m.status}`).join(" · ");
+	return (r.steering_messages ?? []).map((m) => `${m.id}:${m.status}${m.reason ? ` (${truncate(m.reason, 40)})` : ""}`).join(" · ");
 }
 
 function truncate(s: string, n: number): string {

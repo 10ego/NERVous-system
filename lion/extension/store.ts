@@ -13,6 +13,7 @@ import {
 	type LionFile,
 	type LionModelRole,
 	type LionProgressEvent,
+	type LionRunnerMode,
 	type LionControlState,
 	type LionProgressSnapshot,
 	type LionReport,
@@ -26,7 +27,7 @@ const VERSION = 1;
 
 const STATUS_SET = new Set<string>(LION_RUN_STATUSES);
 const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
-const STEERING_STATUS_SET = new Set<string>(["queued", "applied", "rejected_running", "rejected_terminal"]);
+const STEERING_STATUS_SET = new Set<string>(["queued", "applied", "pending_delivery", "delivering", "delivered", "delivery_failed", "rejected_running", "rejected_terminal"]);
 const MAX_PROGRESS_TEXT = 1000;
 
 function now(): string {
@@ -55,6 +56,7 @@ export interface CreateRunInput {
 	context?: string;
 	model?: string | null;
 	model_role?: LionModelRole | null;
+	runner_mode?: LionRunnerMode | null;
 	tools?: string[] | null;
 	start?: boolean;
 }
@@ -84,6 +86,11 @@ export interface SteerRunResult {
 	run: LionRun;
 	message: LionSteeringMessage;
 	accepted: boolean;
+}
+
+export interface SteerRunOptions {
+	liveDeliveryAvailable?: boolean;
+	reason?: string | null;
 }
 
 export interface ListFilter {
@@ -116,6 +123,7 @@ export class LionLedger {
 			context: input.context ?? "",
 			model: input.model ?? null,
 			model_role: input.model_role ?? null,
+			runner_mode: input.runner_mode ?? "json",
 			tools: input.tools ? [...input.tools] : null,
 			started_at: ts,
 			updated_at: ts,
@@ -209,7 +217,7 @@ export class LionLedger {
 		return { run: clone(r), signal: r.status === "running" ? "SIGTERM" : undefined, pid: r.control.pid ?? undefined, pgid: r.control.pgid ?? null };
 	}
 
-	steer(id: string, message: string): SteerRunResult {
+	steer(id: string, message: string, options: SteerRunOptions = {}): SteerRunResult {
 		const r = this.require(id);
 		const text = message.trim();
 		if (!text) throw new LionError("invalid_arg", "steer requires non-empty message");
@@ -220,18 +228,83 @@ export class LionLedger {
 			status: "queued",
 			created_at: ts,
 			applied_at: null,
+			delivery_attempted_at: null,
+			delivered_at: null,
 			rejected_at: null,
 			reason: null,
 		};
-		if (r.status !== "queued") {
-			msg.status = ["running"].includes(r.status) ? "rejected_running" : "rejected_terminal";
+		if (r.status === "running") {
+			if (options.liveDeliveryAvailable && r.runner_mode === "rpc") {
+				msg.status = "pending_delivery";
+				msg.reason = options.reason ?? "queued for live RPC delivery";
+			} else {
+				msg.status = "rejected_running";
+				msg.rejected_at = ts;
+				msg.reason = options.reason ?? (r.runner_mode === "rpc" ? "rpc steering channel is not attached to a live worker" : "running json subprocess backend does not support live steering");
+			}
+		} else if (r.status !== "queued") {
+			msg.status = "rejected_terminal";
 			msg.rejected_at = ts;
-			msg.reason = r.status === "running" ? "running subprocess backend does not support live steering" : `cannot steer terminal run ${r.status}`;
+			msg.reason = options.reason ?? `cannot steer terminal run ${r.status}`;
 		}
 		r.steering_messages ??= [];
 		r.steering_messages.push(msg);
 		r.updated_at = ts;
-		return { run: clone(r), message: clone(msg), accepted: msg.status === "queued" };
+		return { run: clone(r), message: clone(msg), accepted: msg.status === "queued" || msg.status === "pending_delivery" };
+	}
+
+	reservePendingSteering(id: string, limit = 10): LionSteeringMessage[] {
+		const r = this.require(id);
+		if (r.status !== "running" || r.runner_mode !== "rpc") return [];
+		const ts = now();
+		const out: LionSteeringMessage[] = [];
+		for (const msg of r.steering_messages ?? []) {
+			if (msg.status !== "pending_delivery") continue;
+			msg.status = "delivering";
+			msg.delivery_attempted_at = ts;
+			msg.reason = "delivering via RPC steer";
+			out.push(clone(msg));
+			if (out.length >= limit) break;
+		}
+		if (out.length) r.updated_at = ts;
+		return out;
+	}
+
+	markSteeringDelivered(id: string, steeringId: string): LionRun {
+		const r = this.require(id);
+		const msg = this.requireSteering(r, steeringId);
+		const ts = now();
+		msg.status = "delivered";
+		msg.delivered_at = ts;
+		msg.reason = "delivered via RPC steer";
+		r.updated_at = ts;
+		return clone(r);
+	}
+
+	markSteeringFailed(id: string, steeringId: string, reason: string): LionRun {
+		const r = this.require(id);
+		const msg = this.requireSteering(r, steeringId);
+		const ts = now();
+		msg.status = "delivery_failed";
+		msg.rejected_at = ts;
+		msg.reason = reason;
+		r.updated_at = ts;
+		return clone(r);
+	}
+
+	failOpenSteering(id: string, reason: string): LionRun {
+		const r = this.require(id);
+		const ts = now();
+		let changed = false;
+		for (const msg of r.steering_messages ?? []) {
+			if (msg.status !== "pending_delivery" && msg.status !== "delivering") continue;
+			msg.status = "delivery_failed";
+			msg.rejected_at = ts;
+			msg.reason = reason;
+			changed = true;
+		}
+		if (changed) r.updated_at = ts;
+		return clone(r);
 	}
 
 	reconcileControls(isAlive: (pid: number) => boolean): LionRun[] {
@@ -313,6 +386,12 @@ export class LionLedger {
 		return r;
 	}
 
+	private requireSteering(run: LionRun, steeringId: string): LionSteeringMessage {
+		const msg = (run.steering_messages ?? []).find((m) => m.id === steeringId);
+		if (!msg) throw new LionError("not_found", `steering message ${steeringId} not found on ${run.id}`);
+		return msg;
+	}
+
 	private transition(r: LionRun, to: LionRunStatus): void {
 		if (!canTransition(r.status, to)) {
 			throw new LionError("invalid_transition", `cannot transition ${r.id} from ${r.status} to ${to}`);
@@ -351,6 +430,10 @@ function isModelRole(value: unknown): value is LionModelRole {
 	return value === "implementation" || value === "review" || value === "default";
 }
 
+function isRunnerMode(value: unknown): value is LionRunnerMode {
+	return value === "json" || value === "rpc";
+}
+
 function isProgressEvent(value: unknown): value is LionProgressEvent {
 	return typeof value === "string" && PROGRESS_EVENT_SET.has(value);
 }
@@ -386,6 +469,7 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 		context: typeof value.context === "string" ? value.context : "",
 		model: typeof value.model === "string" ? value.model : null,
 		model_role: isModelRole(value.model_role) ? value.model_role : null,
+		runner_mode: isRunnerMode(value.runner_mode) ? value.runner_mode : "json",
 		tools: Array.isArray(value.tools) ? normalizeStringList(value.tools) : null,
 		started_at: started,
 		updated_at: updated,
@@ -454,6 +538,8 @@ function coerceSteering(value: unknown): LionSteeringMessage | null {
 		status,
 		created_at: typeof value.created_at === "string" ? value.created_at : now(),
 		applied_at: typeof value.applied_at === "string" ? value.applied_at : null,
+		delivery_attempted_at: typeof value.delivery_attempted_at === "string" ? value.delivery_attempted_at : null,
+		delivered_at: typeof value.delivered_at === "string" ? value.delivered_at : null,
 		rejected_at: typeof value.rejected_at === "string" ? value.rejected_at : null,
 		reason: typeof value.reason === "string" ? value.reason : null,
 	};

@@ -8,9 +8,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
 import { LionStore } from "./backend.ts";
-import { LionError, LionToolParams, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
+import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunnerMode, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createLionRunner, isPidAlive, signalProcessTree } from "./subprocess.ts";
+import { createLionRpcRunner } from "./rpc-runner.ts";
 
 interface LionDetails {
 	action: string;
@@ -77,6 +78,17 @@ function resolveConfiguredLionModel(ctx: ExtensionContext, role: LionModelRole):
 	return undefined;
 }
 
+function isRunnerMode(value: unknown): value is LionRunnerMode {
+	return typeof value === "string" && (LION_RUNNER_MODES as readonly string[]).includes(value);
+}
+
+function resolveRunnerMode(input?: string): LionRunnerMode {
+	const explicit = input?.trim();
+	if (isRunnerMode(explicit)) return explicit;
+	const env = process.env.LION_RUNNER?.trim();
+	return isRunnerMode(env) ? env : "json";
+}
+
 async function runQuery(store: LionStore, action: string, op: (l: import("./store.ts").LionLedger) => ToolResult): Promise<ToolResult> {
 	try {
 		const { result } = await store.query(op);
@@ -132,7 +144,9 @@ async function executeRun(args: {
 	enqueueProgress(initialProgress);
 
 	try {
-		const runner = createLionRunner({ cwd: args.ctx.cwd });
+		const runner = run.runner_mode === "rpc"
+			? createLionRpcRunner({ cwd: args.ctx.cwd, store: args.store })
+			: createLionRunner({ cwd: args.ctx.cwd });
 		const out = await runner({
 			run,
 			signal: args.signal,
@@ -168,7 +182,7 @@ export default function (pi: ExtensionAPI) {
 		label: "LION",
 		description: [
 			"Local Intelligence Operations Node: launch one isolated pi coding subagent for a concrete assignment.",
-			"A run persists to the active NERVous state namespace with status, bounded live progress, process control metadata, output, and parsed WORKER_REPORT.",
+			"A run persists to the active NERVous state namespace with status, bounded live progress, process control metadata, runner mode, output, and parsed WORKER_REPORT.",
 			"Use it as CEREBEL's worker abstraction: task_id/objective in, worker report out.",
 			"Actions: run, start, cancel, steer, get, list, summary, delete.",
 		].join(" "),
@@ -180,8 +194,9 @@ export default function (pi: ExtensionAPI) {
 			"Give each LION a narrow objective and enough context/acceptance criteria; avoid broad ambiguous assignments.",
 			"Pass an AXON task id when available so the worker can update durable task state if the axon tool is available.",
 			"Read LION progress when a worker is active, then read the final worker report before marking orchestration work complete; blocked/failed reports should feed AXON/AMYGDALA.",
-			"Use cancel for a running/queued worker only when stopping it is safer than letting it finish; cancellation is best-effort process-group signaling with durable reconciliation.",
-			"Use steer only for queued/pre-start runs; running subprocess workers reject steering because true live steering requires a separate control channel.",
+			"Use cancel for a running/queued worker only when stopping it is safer than letting it finish; cancellation is best-effort process signaling with durable reconciliation.",
+			"Use steer freely for queued/pre-start runs. Running steering is accepted only for explicit runner_mode='rpc' runs with a live RPC worker; legacy json subprocess runs reject running steering.",
+			"Use runner_mode='rpc' (or LION_RUNNER=rpc) when true live mid-run steering is required; json remains the default compatibility runner.",
 		],
 		parameters: LionToolParams,
 
@@ -195,6 +210,7 @@ export default function (pi: ExtensionAPI) {
 					if (!p.objective && !p.task_id) return fail(action, "run requires `objective` or `task_id`.");
 					const modelRole = (p.model_role as LionModelRole | undefined) ?? "implementation";
 					const model = p.model?.trim() || resolveConfiguredLionModel(ctx, modelRole);
+					const runnerMode = resolveRunnerMode(p.runner_mode);
 					const created = await store.mutate((l) =>
 						l.create({
 							agent_id: p.agent_id,
@@ -203,6 +219,7 @@ export default function (pi: ExtensionAPI) {
 							context: p.context,
 							model,
 							model_role: modelRole,
+							runner_mode: runnerMode,
 							tools: p.tools,
 							start: !p.dry_run,
 						}),
@@ -246,8 +263,18 @@ export default function (pi: ExtensionAPI) {
 					if (!p.id) return fail(action, "steer requires `id`.");
 					if (!p.message) return fail(action, "steer requires `message`.");
 					try {
-						const { result } = await store.mutate((l) => l.steer(p.id!, p.message!));
-						const status = result.accepted ? "queued for pre-start delivery" : `${result.message.status}: ${result.message.reason}`;
+						await reconcileStore(store);
+						const current = (await store.query((l) => l.get(p.id!))).result;
+						const liveRpc = current?.status === "running" && current.runner_mode === "rpc" && typeof current.control?.pid === "number" && isPidAlive(current.control.pid);
+						const reason = current?.status === "running"
+							? (liveRpc ? "queued for live RPC delivery" : (current?.runner_mode === "rpc" ? "rpc worker is not attached to a live process" : "running json subprocess backend does not support live steering"))
+							: undefined;
+						const { result } = await store.mutate((l) => l.steer(p.id!, p.message!, { liveDeliveryAvailable: liveRpc, reason }));
+						const status = result.message.status === "queued"
+							? "queued for pre-start delivery"
+							: result.message.status === "pending_delivery"
+								? "queued for live RPC delivery"
+								: `${result.message.status}: ${result.message.reason}`;
 						return ok(action, `Steering ${status}.`, { run: result.run });
 					} catch (e) {
 						return e instanceof LionError ? fail(action, `lion steer failed (${e.code}): ${e.message}`) : fail(action, `lion steer failed: ${e instanceof Error ? e.message : String(e)}`);

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "vitest";
 import factory from "../extension/index.ts";
+import { LionStore } from "../extension/backend.ts";
 
 function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 	const tools: any[] = [];
@@ -48,6 +49,31 @@ describe("lion extension factory", () => {
 			assert.equal(steer.details.run.steering_messages[0].status, "queued");
 			const cancel = await lion.execute("call-3", { action: "cancel", id, reason: "not needed" }, undefined, undefined, ctx);
 			assert.equal(cancel.details.run.status, "aborted");
+		} finally {
+			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH;
+			else process.env.LION_RUNS_PATH = oldRunsPath;
+		}
+	});
+
+	it("accepts running steering only for live rpc-backed runs", async () => {
+		const { pi, tools } = stubPi();
+		factory(pi);
+		const lion = tools.find((t) => t.name === "lion");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-live-steer-test-"));
+		const oldRunsPath = process.env.LION_RUNS_PATH;
+		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
+		try {
+			const ctx = { cwd: dir, isProjectTrusted: () => false };
+			const store = LionStore.fromCwd(dir);
+			const jsonRun = (await store.mutate((l) => l.create({ objective: "json", runner_mode: "json" }))).result;
+			await store.mutate((l) => l.updateControl(jsonRun.id, { pid: process.pid, pgid: null }));
+			const jsonSteer = await lion.execute("call-json", { action: "steer", id: jsonRun.id, message: "live?" }, undefined, undefined, ctx);
+			assert.equal(jsonSteer.details.run.steering_messages[0].status, "rejected_running");
+
+			const rpcRun = (await store.mutate((l) => l.create({ objective: "rpc", runner_mode: "rpc" }))).result;
+			await store.mutate((l) => l.updateControl(rpcRun.id, { pid: process.pid, pgid: null }));
+			const rpcSteer = await lion.execute("call-rpc", { action: "steer", id: rpcRun.id, message: "adjust" }, undefined, undefined, ctx);
+			assert.equal(rpcSteer.details.run.steering_messages[0].status, "pending_delivery");
 		} finally {
 			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH;
 			else process.env.LION_RUNS_PATH = oldRunsPath;
