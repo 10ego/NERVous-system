@@ -67,7 +67,8 @@ async function reservePlannedAssignments(store: CerebelStore, waveId: string, ma
 		ledger.recoverOrphanedReservations(waveId, { stale_after_ms: reservationStaleMs });
 		const current = ledger.get(waveId);
 		if (!current) throw new Error(`wave ${waveId} not found`);
-		if (current.assignments.some((a) => a.status === "blocked" || a.status === "failed")) return { wave: current, assignments: [] };
+		if (current.status === "cancelled" || current.status === "completed") return { wave: current, assignments: [] };
+		if (current.assignments.some((a) => a.status === "blocked" || a.status === "failed" || a.status === "cancelled")) return { wave: current, assignments: [] };
 		const plannedIds = current.assignments.filter((a) => a.status === "planned").slice(0, maxParallel).map((a) => a.id);
 		if (!plannedIds.length) return { wave: current, assignments: [] };
 		const wave = ledger.dispatch(waveId, { links: plannedIds.map((assignment_id) => ({ assignment_id })) });
