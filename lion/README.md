@@ -30,10 +30,10 @@ Single tool, `action` discriminator:
 
 | Action | Purpose |
 |--------|---------|
-| `run` | Spawn one isolated pi subprocess worker and persist its report; with `dry_run=true`, create a queued run |
+| `run` | Spawn one isolated pi worker and persist its report; with `dry_run=true`, create a queued run. `runner_mode="json"` is the default; `runner_mode="rpc"` enables live steering. |
 | `start` | Launch a queued dry-run, applying any queued pre-start steering messages |
 | `cancel` | Best-effort cancellation for queued/running runs with durable control metadata |
-| `steer` | Queue a pre-start steering message for a queued run; running workers reject steering explicitly |
+| `steer` | Queue a pre-start steering message for a queued run; for running runs, deliver live steering only when `runner_mode="rpc"` has a live RPC worker |
 | `get` | Show one run |
 | `list` | List runs, optionally filtered by status/agent/task |
 | `summary` | Summary counts + recent/running runs |
@@ -63,7 +63,7 @@ While a run is active, LION now records a bounded `progress` snapshot in the run
 
 Progress is derived defensively from headless `pi --mode json` events such as tool start/end, text deltas, message end, and turn end. It is optional and backward-compatible: old ledgers without `progress` still load, malformed/missing subprocess events are ignored, and retained text is bounded so progress does not become an unbounded transcript.
 
-### Cancellation and pre-start steering
+### Cancellation and steering
 
 LION stores best-effort process control metadata for running subprocesses (`pid`, process group where available, cancellation timestamps, and reconciliation timestamps). Use:
 
@@ -73,7 +73,7 @@ lion cancel id="run-001" reason="superseded by newer plan"
 
 Cancellation is honest but best-effort: it records the request durably, sends `SIGTERM` to the subprocess process group where supported, schedules a `SIGKILL` fallback from the current pi process, and reconciles dead/stale PIDs during `get`, `list`, and `summary`. Queued runs are aborted without launching.
 
-Pre-start steering is intentionally narrower than Claude-style live steering. It works only before launch:
+Pre-start steering works for all runner modes:
 
 ```text
 lion run objective="..." dry_run=true
@@ -81,7 +81,21 @@ lion steer id="run-001" message="Prefer the test-first path."
 lion start id="run-001"
 ```
 
-Queued messages are injected into the worker prompt when `start` launches the run. Steering an already-running subprocess is rejected and recorded as `rejected_running`, because the current headless `pi --mode json -p --no-session` backend has no live bidirectional control channel.
+Queued messages are injected into the worker prompt when `start` launches the run.
+
+True live mid-run steering is available through pi's RPC mode, but remains explicit opt-in so the existing JSON subprocess runner stays backward-compatible:
+
+```text
+lion run \
+  runner_mode="rpc" \
+  objective="Long task where I may need to steer mid-run."
+
+lion steer id="run-001" message="Narrow the change to tests only."
+```
+
+RPC live steering uses pi's official `RpcClient.steer()` control channel. Running steering is recorded as `pending_delivery`, the active RPC runner polls the durable ledger, calls `RpcClient.steer()` exactly once per reserved message, then marks the message `delivered` or `delivery_failed`. Running steering on the default `json` runner is still rejected as `rejected_running` because `pi --mode json -p --no-session` has no live bidirectional control channel.
+
+Set `LION_RUNNER=rpc` to make RPC the default for local/manual testing, or pass `runner_mode="rpc"` per run. Do not rely on restart reattachment yet: if the parent LION process exits, a persisted running record may have process metadata but no attached RPC bridge, so new steering may be rejected or pending messages may fail during reconciliation.
 
 ### Model selection
 
@@ -132,7 +146,7 @@ Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed
 |--------|----------|
 | Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`) |
 | Progress | Optional bounded `progress` snapshot is persisted while running and shown in summaries when present |
-| Control | Optional process metadata/cancellation state and pre-start steering messages are persisted with the run |
+| Control | Optional process metadata/cancellation state, runner mode, pre-start steering, and RPC live steering delivery records are persisted with the run |
 | Atomicity | Write to `runs.json.tmp` then rename |
 | Backup | Previous file copied to `runs.json.bak` |
 | Concurrency | Advisory lock (`runs.json.lock`) with stale-lock detection |
