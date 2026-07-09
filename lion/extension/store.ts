@@ -169,6 +169,7 @@ export class LionLedger {
 		const status = input.status ?? statusFromReport(input.report, input.error);
 		this.transition(r, status);
 		const ts = now();
+		this.failOpenSteeringForRun(r, `run finalized as ${status}`, ts);
 		r.output = input.output;
 		r.report = input.report ?? null;
 		r.error = input.error ?? null;
@@ -326,15 +327,7 @@ export class LionLedger {
 	failOpenSteering(id: string, reason: string): LionRun {
 		const r = this.require(id);
 		const ts = now();
-		let changed = false;
-		for (const msg of r.steering_messages ?? []) {
-			if (msg.status !== "pending_delivery" && msg.status !== "delivering") continue;
-			msg.status = "delivery_failed";
-			msg.rejected_at = ts;
-			msg.reason = reason;
-			changed = true;
-		}
-		if (changed) r.updated_at = ts;
+		if (this.failOpenSteeringForRun(r, reason, ts)) r.updated_at = ts;
 		return clone(r);
 	}
 
@@ -349,7 +342,9 @@ export class LionLedger {
 			if (!isReconcileStale(r, nowMs, staleAfterMs)) continue;
 			if (isAlive(r.control.pid)) continue;
 			const ts = new Date(nowMs).toISOString();
-			this.transition(r, r.control.cancel_requested_at ? "aborted" : "failed");
+			const terminalStatus = r.control.cancel_requested_at ? "aborted" : "failed";
+			this.transition(r, terminalStatus);
+			this.failOpenSteeringForRun(r, `run reconciled as ${terminalStatus}`, ts);
 			r.error = r.control.cancel_requested_at ? (r.control.cancel_reason ? `Cancelled: ${r.control.cancel_reason}` : "Cancelled") : "Subprocess is no longer running";
 			r.finished_at = ts;
 			r.updated_at = ts;
@@ -426,6 +421,18 @@ export class LionLedger {
 		const msg = (run.steering_messages ?? []).find((m) => m.id === steeringId);
 		if (!msg) throw new LionError("not_found", `steering message ${steeringId} not found on ${run.id}`);
 		return msg;
+	}
+
+	private failOpenSteeringForRun(run: LionRun, reason: string, ts: string): boolean {
+		let changed = false;
+		for (const msg of run.steering_messages ?? []) {
+			if (msg.status !== "pending_delivery" && msg.status !== "delivering") continue;
+			msg.status = "delivery_failed";
+			msg.rejected_at = ts;
+			msg.reason = reason;
+			changed = true;
+		}
+		return changed;
 	}
 
 	private transition(r: LionRun, to: LionRunStatus): void {

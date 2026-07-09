@@ -81,6 +81,12 @@ describe("lion extension factory", () => {
 			try {
 				const liveRpcSteer = await lion.execute("call-rpc-live", { action: "steer", id: rpcRun.id, message: "adjust live" }, undefined, undefined, ctx);
 				assert.equal(liveRpcSteer.details.run.steering_messages[1].status, "pending_delivery");
+				await store.mutate((l) => l.failOpenSteering(rpcRun.id, "simulated shutdown sweep"));
+				const postSweepSteer = await lion.execute("call-rpc-post-sweep", { action: "steer", id: rpcRun.id, message: "land after sweep" }, undefined, undefined, ctx);
+				assert.equal(postSweepSteer.details.run.steering_messages[2].status, "pending_delivery");
+				const terminal = (await store.mutate((l) => l.finish(rpcRun.id, { output: "done", report: null, status: "completed" }))).result;
+				assert.equal(terminal.steering_messages?.[2]?.status, "delivery_failed");
+				assert.match(terminal.steering_messages?.[2]?.reason ?? "", /finalized/);
 			} finally {
 				finishActiveRun(owner);
 			}

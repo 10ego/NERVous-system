@@ -97,6 +97,17 @@ describe("LionLedger", () => {
 		assert.equal(stale.some((r) => r.id === fresh.id && r.status === "failed"), true);
 	});
 
+	it("fails open steering when control reconciliation terminalizes a run", () => {
+		const l = new LionLedger();
+		const run = l.create({ objective: "rpc stale", runner_mode: "rpc" });
+		l.updateControl(run.id, { pid: 456, last_seen_at: "2026-01-01T00:00:00.000Z" });
+		l.steer(run.id, "pending at crash", { liveDeliveryAvailable: true });
+		const changed = l.reconcileControls(() => false, { now_ms: Date.now() + 60_000, stale_after_ms: 1 });
+		assert.equal(changed[0]?.status, "failed");
+		assert.equal(changed[0]?.steering_messages?.[0]?.status, "delivery_failed");
+		assert.match(changed[0]?.steering_messages?.[0]?.reason ?? "", /reconciled/);
+	});
+
 	it("supports queued pre-start steering and rejects json running steering", () => {
 		const l = new LionLedger();
 		const queued = l.create({ objective: "queued", start: false });
