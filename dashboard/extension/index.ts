@@ -225,6 +225,55 @@ function summary(counts: Record<string, number>): string {
 		.join(" ") || "empty";
 }
 
+const PROGRESS_STALE_MS = 2 * 60_000;
+
+function relativeAge(iso: string | null | undefined, nowMs = Date.now()): { label: string; stale: boolean } {
+	if (!iso) return { label: "unknown age", stale: false };
+	const ts = Date.parse(iso);
+	if (!Number.isFinite(ts)) return { label: "unknown age", stale: false };
+	const delta = Math.max(0, nowMs - ts);
+	const seconds = Math.floor(delta / 1000);
+	const label = seconds < 5 ? "just now"
+		: seconds < 60 ? `${seconds}s ago`
+		: seconds < 3600 ? `${Math.floor(seconds / 60)}m ago`
+		: `${Math.floor(seconds / 3600)}h ago`;
+	return { label, stale: delta > PROGRESS_STALE_MS };
+}
+
+export function describeLionProgress(run: LionRun, nowMs = Date.now()): string {
+	const p = run.progress;
+	if (!p) return run.status === "running" || run.status === "queued" ? "no progress snapshot yet" : "no progress snapshot";
+	const age = relativeAge(p.last_event_at, nowMs);
+	const bits = [p.activity || p.event];
+	if (p.active_tools.length) bits.push(`tools:${p.active_tools.join(",")}`);
+	if (p.tool_uses > 0) bits.push(`${p.tool_uses} tool${p.tool_uses === 1 ? "" : "s"}`);
+	if (p.turn_count > 0) bits.push(`turns:${p.turn_count}`);
+	if (typeof p.token_total === "number" && p.token_total > 0) bits.push(`${p.token_total} tokens`);
+	bits.push(`${age.stale && (run.status === "running" || run.status === "queued") ? "stale " : ""}${age.label}`);
+	return bits.join(" · ");
+}
+
+export function summarizeWaveProgress(wave: Wave, runs: LionRun[], nowMs = Date.now()): string {
+	if (!wave.assignments.length) return "no assignments";
+	const linkedRuns = wave.assignments
+		.map((a) => a.lion_run_id ? runs.find((r) => r.id === a.lion_run_id) : undefined)
+		.filter((r): r is LionRun => Boolean(r));
+	const assignmentCounts = countByStatus(wave.assignments);
+	const assignmentSummary = Object.entries(assignmentCounts)
+		.sort((a, b) => statusOrder(a[0]) - statusOrder(b[0]) || a[0].localeCompare(b[0]))
+		.map(([status, count]) => `${status}:${count}`)
+		.join(" ");
+	if (!linkedRuns.length) return `assignments ${assignmentSummary}; no linked LION runs`;
+	const runCounts = countByStatus(linkedRuns);
+	const runSummary = Object.entries(runCounts)
+		.sort((a, b) => statusOrder(a[0]) - statusOrder(b[0]) || a[0].localeCompare(b[0]))
+		.map(([status, count]) => `lion-${status}:${count}`)
+		.join(" ");
+	const active = linkedRuns.find((r) => r.status === "running" || r.status === "queued");
+	const activity = active ? `; active ${active.id}: ${describeLionProgress(active, nowMs)}` : "";
+	return `assignments ${assignmentSummary}; ${runSummary}${activity}`;
+}
+
 type Column = { text: string; width?: number };
 function columnLine(totalWidth: number, columns: Column[]): string {
 	const gap = "  ";
@@ -383,8 +432,8 @@ class NervousDashboard implements Component {
 			case "magi": return headerColumnLine(this.theme, inner, [{ text: "RECORD", width: 9 }, { text: "CONF", width: 8 }, { text: "COUNCIL", width: 16 }, { text: "ISSUE" }]);
 			case "axon": return headerColumnLine(this.theme, inner, [{ text: "TASK", width: 9 }, { text: "STATUS", width: 14 }, { text: "PRI", width: 8 }, { text: "REVIEW", width: 13 }, { text: "TITLE" }]);
 			case "synapse": return headerColumnLine(this.theme, inner, [{ text: "NOTE", width: 9 }, { text: "EVENT", width: 12 }, { text: "AGENT", width: 14 }, { text: "TASK", width: 17 }, { text: "MESSAGE" }]);
-			case "lion": return headerColumnLine(this.theme, inner, [{ text: "RUN", width: 9 }, { text: "AGENT", width: 18 }, { text: "STATUS", width: 20 }, { text: "TASK", width: 11 }, { text: "OBJECTIVE" }]);
-			case "cerebel": return headerColumnLine(this.theme, inner, [{ text: "WAVE", width: 9 }, { text: "STATUS", width: 14 }, { text: "ASSIGN", width: 8 }, { text: "DECISION" }]);
+			case "lion": return headerColumnLine(this.theme, inner, [{ text: "RUN", width: 9 }, { text: "AGENT", width: 18 }, { text: "STATUS", width: 20 }, { text: "TASK", width: 11 }, { text: "PROGRESS / OBJECTIVE" }]);
+			case "cerebel": return headerColumnLine(this.theme, inner, [{ text: "WAVE", width: 9 }, { text: "STATUS", width: 14 }, { text: "ASSIGN", width: 8 }, { text: "PROGRESS / DECISION" }]);
 			case "ganglion": return headerColumnLine(this.theme, inner, [{ text: "GROUP", width: 12 }, { text: "STATUS", width: 12 }, { text: "MEMBERS", width: 9 }, { text: "ACTIVE", width: 8 }, { text: "NAME" }]);
 			case "amygdala": return headerColumnLine(this.theme, inner, [{ text: "RISK", width: 9 }, { text: "STATUS", width: 14 }, { text: "SEV", width: 9 }, { text: "RECOMMEND", width: 18 }, { text: "TITLE" }]);
 		}
@@ -403,9 +452,10 @@ class NervousDashboard implements Component {
 			case "lion": {
 				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
 				const historical = task?.status === "completed" && ["failed", "blocked", "aborted"].includes(detail.item.status) ? this.theme.fg("muted", "+historical") : "";
-				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: detail.item.agent_id, width: 18 }, { text: `${styleStatus(this.theme, detail.item.status)}${historical ? ` ${historical}` : ""}`, width: 20 }, { text: detail.item.task_id ?? "—", width: 11 }, { text: detail.item.objective }]);
+				const progress = detail.item.progress ? describeLionProgress(detail.item) : detail.item.objective;
+				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: detail.item.agent_id, width: 18 }, { text: `${styleStatus(this.theme, detail.item.status)}${historical ? ` ${historical}` : ""}`, width: 20 }, { text: detail.item.task_id ?? "—", width: 11 }, { text: progress }]);
 			}
-			case "cerebel": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: String(detail.item.assignments.length), width: 8 }, { text: detail.item.decision?.decision ?? "" }]);
+			case "cerebel": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: String(detail.item.assignments.length), width: 8 }, { text: summarizeWaveProgress(detail.item, this.data.runs) || detail.item.decision?.decision || "" }]);
 			case "ganglion": {
 				const note = ganglionConsistencyNote(detail.item, this.data.runs, this.data.goals);
 				return columnLine(inner, [{ text: detail.item.id, width: 12 }, { text: styleStatus(this.theme, detail.item.status), width: 12 }, { text: String(detail.item.members.length), width: 9 }, { text: `${activeGanglionAllocations(detail.item).length}${note ? this.theme.fg("warning", " ⚠") : ""}`, width: 8 }, { text: detail.item.name }]);
@@ -508,6 +558,7 @@ class NervousDashboard implements Component {
 		this.title(lines, width, `LION ${r.agent_id}: ${r.id}`);
 		const task = r.task_id ? this.data.tasks.find((t) => t.id === r.task_id) : undefined;
 		pushWrapped(lines, "Status", r.status, width, this.theme);
+		pushWrapped(lines, "Progress", describeLionProgress(r), width, this.theme);
 		pushWrapped(lines, "Task", task ? `${r.task_id} • AXON ${task.status} • ${task.title}` : r.task_id, width, this.theme);
 		if (task?.status === "completed" && ["failed", "blocked", "aborted"].includes(r.status)) pushWrapped(lines, "Interpretation", "Historical failed/blocked LION attempt; linked AXON task is now completed by a later path.", width, this.theme);
 		pushWrapped(lines, "Objective", r.objective, width, this.theme);
@@ -516,7 +567,18 @@ class NervousDashboard implements Component {
 		pushWrapped(lines, "Blockers", r.report?.blockers.join(" | ") || r.error, width, this.theme);
 		pushWrapped(lines, "Next", r.report?.next_steps.join(" | "), width, this.theme);
 	}
-	private renderCerebel(lines: string[], width: number, w: Wave): void { this.title(lines, width, `CEREBEL ${w.id}`); pushWrapped(lines, "Status", w.status, width, this.theme); pushWrapped(lines, "Goal", w.goal_id, width, this.theme); pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme); pushWrapped(lines, "Assignments", w.assignments.map((a) => `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}${a.ganglion_allocation_id ? `/ganglion:${a.ganglion_id ?? "?"}/${a.ganglion_allocation_id}` : ""}`).join(" | "), width, this.theme); }
+	private renderCerebel(lines: string[], width: number, w: Wave): void {
+		this.title(lines, width, `CEREBEL ${w.id}`);
+		pushWrapped(lines, "Status", w.status, width, this.theme);
+		pushWrapped(lines, "Goal", w.goal_id, width, this.theme);
+		pushWrapped(lines, "Progress", summarizeWaveProgress(w, this.data.runs), width, this.theme);
+		pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme);
+		pushWrapped(lines, "Assignments", w.assignments.map((a) => {
+			const linked = a.lion_run_id ? this.data.runs.find((r) => r.id === a.lion_run_id) : undefined;
+			const progress = linked?.progress ? ` progress:${describeLionProgress(linked)}` : "";
+			return `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}${a.ganglion_allocation_id ? `/ganglion:${a.ganglion_id ?? "?"}/${a.ganglion_allocation_id}` : ""}${progress}`;
+		}).join(" | "), width, this.theme);
+	}
 	private renderGanglion(lines: string[], width: number, g: Ganglion): void {
 		this.title(lines, width, `GANGLION ${g.id}: ${g.name}`);
 		pushWrapped(lines, "Status", g.status, width, this.theme);
