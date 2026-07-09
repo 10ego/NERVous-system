@@ -244,6 +244,67 @@ describe("runWave", () => {
 		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-foreign");
 	});
 
+	it("does not overwrite a foreign terminal result recorded after local linking", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("local done") });
+		let localFinishStatus: string | undefined;
+		adapter.run = async (_run, assignment) => {
+			await store.mutate((l) => l.record(wave.id, {
+				assignment_id: assignment.id,
+				lion_run_id: "run-foreign",
+				outcome: "completed",
+				summary: "foreign done",
+			}));
+			return { text: "local", report: completedReport("local done") };
+		};
+		adapter.finishRun = async (runId, result) => {
+			localFinishStatus = result.status ?? "completed";
+			return { id: runId, agent_id: "lion", status: result.status ?? "completed", task_id: null, objective: "", context: "", started_at: new Date().toISOString(), updated_at: new Date().toISOString(), report: result.report, error: result.error ?? null } as LionRun;
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(localFinishStatus, "completed");
+		assert.equal(result.assignment_results[0]?.outcome, "skipped");
+		assert.match(result.assignment_results[0]?.summary ?? "", /owned by run-foreign/);
+		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-foreign");
+		assert.equal(result.wave.assignments[0]?.status, "completed");
+		assert.equal(result.wave.assignments[0]?.outcome_summary, "foreign done");
+	});
+
+	it("does not overwrite a foreign result when the local worker errors", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({});
+		adapter.run = async (_run, assignment) => {
+			await store.mutate((l) => l.record(wave.id, {
+				assignment_id: assignment.id,
+				lion_run_id: "run-foreign",
+				outcome: "failed",
+				summary: "foreign failed",
+			}));
+			throw new Error("local runner failed");
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(result.assignment_results[0]?.outcome, "skipped");
+		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-foreign");
+		assert.equal(result.wave.assignments[0]?.status, "failed");
+		assert.equal(result.wave.assignments[0]?.outcome_summary, "foreign failed");
+	});
+
+	it("treats wave cancellation during local execution as a superseded result", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("local done") });
+		adapter.run = async () => {
+			await store.mutate((l) => l.cancel(wave.id));
+			return { text: "local", report: completedReport("local done") };
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(result.assignment_results[0]?.outcome, "skipped");
+		assert.equal(result.wave.status, "cancelled");
+		assert.equal(result.wave.assignments[0]?.status, "cancelled");
+	});
+
 	it("records createRun failures against reserved assignments", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;

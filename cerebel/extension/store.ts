@@ -69,6 +69,12 @@ export interface RecordInput {
 	next_steps?: string[];
 }
 
+export interface RecordIfOwnedResult {
+	committed: boolean;
+	wave: Wave;
+	assignment: Assignment;
+}
+
 export class CerebelLedger {
 	readonly project?: string;
 	current_wave_id?: string;
@@ -150,6 +156,18 @@ export class CerebelLedger {
 		w.updated_at = now();
 		if (w.status === "completed") w.completed_at = w.updated_at;
 		return clone(w);
+	}
+
+	/** Atomically records an outcome only while the assignment remains linked to the expected live LION run. */
+	recordIfOwned(waveId: string, expectedLionRunId: string, input: RecordInput): RecordIfOwnedResult {
+		const wave = this.require(waveId);
+		const current = input.assignment_id ? requireAssignment(wave, input.assignment_id) : findAssignment(wave, input.task_id, input.lion_run_id);
+		if (!current) throw new CerebelError("not_found", "assignment not found for guarded record");
+		if (TERMINAL_ASSIGNMENT_STATUS_SET.has(current.status) || current.lion_run_id !== expectedLionRunId) {
+			return { committed: false, wave: clone(wave), assignment: clone(current) };
+		}
+		const recorded = this.record(waveId, input);
+		return { committed: true, wave: recorded, assignment: recorded.assignments.find((a) => a.id === current.id) ?? clone(current) };
 	}
 
 	decide(waveId: string): DecisionReport {
