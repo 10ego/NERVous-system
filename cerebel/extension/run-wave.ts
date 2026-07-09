@@ -78,30 +78,36 @@ async function reservePlannedAssignments(store: CerebelStore, waveId: string, ma
 }
 
 async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment): Promise<RunWaveAssignmentResult> {
-	let run: LionRun;
+	let run: LionRun | undefined;
 	try {
-		run = await adapter.createRun(assignment);
+		const createdRun = await adapter.createRun(assignment);
+		run = createdRun;
 		const { result: linkedWave } = await store.mutate((ledger) => ledger.dispatch(waveId, {
 			links: [{
 				assignment_id: assignment.id,
-				lion_run_id: run.id,
+				lion_run_id: createdRun.id,
 				ganglion_id: assignment.ganglion_id,
 				ganglion_allocation_id: assignment.ganglion_allocation_id,
 			}],
 		}));
 		const linkedAssignment = linkedWave.assignments.find((a) => a.id === assignment.id) ?? assignment;
-		return runOne(store, adapter, waveId, linkedAssignment, run);
+		return runOne(store, adapter, waveId, linkedAssignment, createdRun);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
+		const summary = run ? `LION run setup failed: ${message}` : `LION run creation failed: ${message}`;
+		if (run) {
+			await adapter.finishRun(run.id, { output: "", report: null, status: "failed", error: `CEREBEL dispatch/link failed after run creation: ${message}` }).catch(() => undefined);
+		}
 		await store.mutate((ledger) => ledger.record(waveId, {
 			assignment_id: assignment.id,
+			lion_run_id: run?.id,
 			ganglion_id: assignment.ganglion_id,
 			ganglion_allocation_id: assignment.ganglion_allocation_id,
 			outcome: "failed",
-			summary: `LION run creation failed: ${message}`,
+			summary,
 			blockers: [message],
 		}));
-		return { assignment_id: assignment.id, outcome: "failed", summary: `LION run creation failed: ${message}`, blockers: [message] };
+		return { assignment_id: assignment.id, lion_run_id: run?.id, outcome: "failed", summary, blockers: [message] };
 	}
 }
 

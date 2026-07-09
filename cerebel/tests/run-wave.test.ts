@@ -166,6 +166,37 @@ describe("runWave", () => {
 		assert.equal(result.assignment_results.at(-1)?.outcome, "skipped");
 	});
 
+	it("finalizes a created LION run when assignment linking fails", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("should not run") });
+		const baseCreateRun = adapter.createRun.bind(adapter);
+		let finishStatus: string | undefined;
+		let finishError: string | null | undefined;
+		let ran = false;
+		adapter.createRun = async (assignment) => {
+			const run = await baseCreateRun(assignment);
+			await store.mutate((l) => l.record(wave.id, { assignment_id: assignment.id, outcome: "failed", summary: "became terminal before link" }));
+			return run;
+		};
+		adapter.run = async () => {
+			ran = true;
+			return { text: "unexpected", report: completedReport("unexpected") };
+		};
+		adapter.finishRun = async (runId, result) => {
+			finishStatus = result.status;
+			finishError = result.error;
+			return { id: runId, agent_id: "lion", status: result.status ?? "failed", task_id: null, objective: "", context: "", started_at: new Date().toISOString(), updated_at: new Date().toISOString(), report: result.report, error: result.error ?? null } as LionRun;
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(ran, false);
+		assert.equal(finishStatus, "failed");
+		assert.match(finishError ?? "", /dispatch\/link failed/);
+		assert.equal(result.assignment_results[0]?.lion_run_id, "run-001");
+		assert.match(result.assignment_results[0]?.summary ?? "", /setup failed/);
+		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
+	});
+
 	it("records createRun failures against reserved assignments", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
