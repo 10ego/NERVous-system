@@ -76,6 +76,19 @@ describe("GanglionLedger", () => {
 		assert.equal(r.members[0]?.last_run_id, "run-001");
 	});
 
+	it("does not release a newer member lease when an old allocation is recorded again", () => {
+		const l = new GanglionLedger();
+		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+		l.allocate(g.id, { tasks: [{ id: "task-old", title: "Old" }] });
+		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "completed" });
+		l.allocate(g.id, { tasks: [{ id: "task-new", title: "New" }] });
+		const stale = l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "cancelled" });
+		assert.equal(stale.allocations[0]?.status, "cancelled");
+		assert.equal(stale.allocations[1]?.status, "assigned");
+		assert.equal(stale.members[0]?.status, "busy");
+		assert.equal(stale.members[0]?.current_allocation_id, "alloc-002");
+	});
+
 	it("reconciles busy members from terminal LION runs", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });

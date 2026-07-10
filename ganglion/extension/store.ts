@@ -160,8 +160,12 @@ export class GanglionLedger {
 		a.outcome_summary = input.summary ?? null;
 		a.updated_at = now();
 		const m = requireMember(g, a.member_id);
-		if (["completed", "blocked", "failed", "cancelled"].includes(a.status)) releaseMember(m, input.lion_run_id);
-		else m.status = "busy";
+		if (["completed", "blocked", "failed", "cancelled"].includes(a.status)) {
+			if (m.current_allocation_id === a.id) releaseMember(m, input.lion_run_id);
+		} else if (!m.current_allocation_id || m.current_allocation_id === a.id) {
+			m.status = "busy";
+			m.current_allocation_id = a.id;
+		}
 		g.updated_at = now();
 		return clone(g);
 	}
