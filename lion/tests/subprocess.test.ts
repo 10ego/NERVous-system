@@ -1,7 +1,7 @@
 import * as assert from "node:assert";
 import { spawn } from "node:child_process";
 import { describe, it } from "vitest";
-import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, getFinalOutput, getPiInvocation, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree } from "../extension/subprocess.ts";
+import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree } from "../extension/subprocess.ts";
 import type { Message } from "@earendil-works/pi-ai";
 
 const run = {
@@ -104,6 +104,21 @@ describe("LION subprocess helpers", () => {
 		signalProcessTree(proc.pid!, "SIGTERM");
 		await new Promise<void>((resolve) => proc.on("close", () => resolve()));
 		assert.equal(isPidAlive(proc.pid!), false);
+	});
+
+	it("notifies process exit once when spawn error is followed by close", async () => {
+		const previousPath = process.env.PATH;
+		process.env.PATH = "";
+		try {
+			const runner = createLionRunner({ cwd: process.cwd(), forcePiBinary: true });
+			let exits = 0;
+			await assert.rejects(() => runner({ run: { ...run, steering_messages: [] }, timeout_ms: 1000, onProcessExit: () => { exits++; } }), /ENOENT|spawn pi/);
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.equal(exits, 1);
+		} finally {
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+		}
 	});
 
 	it("resolves pi invocation without throwing", () => {
