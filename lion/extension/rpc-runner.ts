@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { LionStore } from "./backend.ts";
 import type { LionProgressSnapshot, LionReport } from "./schema.ts";
-import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, isPidAlive, parseLionReport, progressFromEvent, type LionProcessInfo, type LionRunOutput, type LionRunRequest } from "./subprocess.ts";
+import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree, type LionProcessInfo, type LionRunOutput, type LionRunRequest } from "./subprocess.ts";
 
 export interface LionRpcClient {
 	start(): Promise<void>;
@@ -54,6 +54,57 @@ export interface LionRpcRunnerOptions {
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_MAX_POLL_INTERVAL_MS = 2000;
 const DEFAULT_ABORT_GRACE_MS = 1000;
+
+interface DisposableWaiter<T> {
+	promise: Promise<T>;
+	dispose(reason?: Error): void;
+}
+
+function createDeadline(timeoutMs: number): DisposableWaiter<never> & { error(): Error | null } {
+	let rejectPromise!: (error: Error) => void;
+	let settled = false;
+	let timeoutError: Error | null = null;
+	const timer = setTimeout(() => {
+		if (settled) return;
+		settled = true;
+		timeoutError = new Error(`LION RPC runner timed out after ${timeoutMs}ms`);
+		rejectPromise(timeoutError);
+	}, Math.max(0, timeoutMs));
+	const promise = new Promise<never>((_, reject) => { rejectPromise = reject; });
+	void promise.catch(() => undefined);
+	return {
+		promise,
+		dispose() {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+		},
+		error: () => timeoutError,
+	};
+}
+
+function createIdleWaiter(client: LionRpcClient): DisposableWaiter<void> {
+	let resolvePromise!: () => void;
+	let rejectPromise!: (error: Error) => void;
+	let settled = false;
+	let unsubscribe: (() => void) | null = null;
+	const finish = (error?: Error) => {
+		if (settled) return;
+		settled = true;
+		try { unsubscribe?.(); } catch { /* ignore */ }
+		unsubscribe = null;
+		if (error) rejectPromise(error); else resolvePromise();
+	};
+	const promise = new Promise<void>((resolve, reject) => {
+		resolvePromise = resolve;
+		rejectPromise = reject;
+	});
+	unsubscribe = client.onEvent((event) => {
+		if (typeof event === "object" && event !== null && (event as { type?: unknown }).type === "agent_end") finish();
+	});
+	void promise.catch(() => undefined);
+	return { promise, dispose: (reason = new Error("RPC idle waiter disposed")) => finish(reason) };
+}
 
 export class AdaptivePoller {
 	private timer: ReturnType<typeof setTimeout> | null = null;
@@ -125,8 +176,43 @@ export function createLionRpcRunner(opts: LionRpcRunnerOptions) {
 	return async (req: LionRunRequest): Promise<LionRunOutput> => runRpcOnce(req, opts);
 }
 
+async function raceSession<T>(
+	operation: () => Promise<T>,
+	signal: AbortSignal | undefined,
+	deadline: DisposableWaiter<never> & { error(): Error | null },
+	onCancel: () => Promise<void>,
+): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		let settled = false;
+		const cleanup = () => signal?.removeEventListener("abort", abort);
+		const finish = (fn: () => void) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			fn();
+		};
+		const cancel = (reason: Error) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			void onCancel().then(() => reject(reason), reject);
+		};
+		const abort = () => cancel(new Error("LION RPC runner was aborted"));
+		if (signal?.aborted) return abort();
+		const expired = deadline.error();
+		if (expired) return cancel(expired);
+		signal?.addEventListener("abort", abort, { once: true });
+		deadline.promise.then(undefined, (error) => cancel(error instanceof Error ? error : new Error(String(error))));
+		let promise: Promise<T>;
+		try { promise = operation(); }
+		catch (error) { finish(() => reject(error)); return; }
+		promise.then((value) => finish(() => resolve(value)), (error) => finish(() => reject(error)));
+	});
+}
+
 async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Promise<LionRunOutput> {
 	if (req.signal?.aborted) throw new Error("LION RPC runner was aborted before prompt");
+	const deadline = createDeadline(req.timeout_ms ?? 10 * 60_000);
 	let tmpDir: string | null = null;
 	let tmpPath: string | null = null;
 	let client: LionRpcClient | null = null;
@@ -134,12 +220,17 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let deliveryPromise: Promise<boolean> | null = null;
 	let stopPromise: Promise<void> | null = null;
 	let unsubscribeEvents: (() => void) | null = null;
+	let idleWaiter: DisposableWaiter<void> | null = null;
+	let rawChildExit: Promise<void> | null = null;
+	let processInfo: LionProcessInfo | null = null;
+	let childAttached = false;
 	let channelOpen = true;
 	let childExited = false;
-	let childIsAlive = () => !childExited;
+	let childIsAlive = () => false;
 	let primaryError: unknown;
 	let ownedCancellationRequested = false;
 	let ownedCancellationPromise: Promise<void> | null = null;
+	let sessionCancellationPromise: Promise<void> | null = null;
 	let steeringClosedHook: Promise<void> = Promise.resolve();
 	let processExitNotified = false;
 	const notifyProcessExit = () => {
@@ -150,7 +241,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	const stopClient = async () => {
 		const activeClient = client;
 		if (!activeClient) return;
-		stopPromise ??= Promise.resolve().then(() => activeClient.stop()).then(() => { childExited = true; });
+		stopPromise ??= Promise.resolve().then(() => activeClient.stop());
 		return stopPromise;
 	};
 	const abortAndStop = async (activeClient: LionRpcClient) => {
@@ -164,6 +255,16 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		try { await stopClient(); } catch (err) { stopError = err; }
 		if (abortError) throw abortError;
 		if (stopError) throw stopError;
+	};
+	const waitForConfirmedChildExit = async () => {
+		while (childIsAlive()) {
+			if (rawChildExit) {
+				await rawChildExit;
+				break;
+			}
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		childExited = true;
 	};
 	const progressState = createLionProgressState({ includeText: req.include_progress_text ?? false });
 	const closeSteeringChannel = () => {
@@ -229,17 +330,26 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 				try { req.onProgress?.(progress); } catch { /* progress callbacks must not break runner */ }
 			}
 		});
-		await activeClient.start();
-		const info = activeClient.getProcessInfo?.();
-		if (info?.pid) {
-			const processIsAlive = info.isAlive ?? (() => !childExited);
+		const cancelSession = () => {
+			closeSteeringChannel();
+			sessionCancellationPromise ??= abortAndStop(activeClient);
+			return sessionCancellationPromise;
+		};
+		await raceSession(() => activeClient.start(), req.signal, deadline, cancelSession);
+		processInfo = activeClient.getProcessInfo?.() ?? null;
+		if (processInfo?.pid) {
+			childAttached = true;
+			const processIsAlive = processInfo.isAlive ?? (() => !childExited);
 			childIsAlive = () => !childExited && processIsAlive();
+			rawChildExit = activeClient.waitForExit?.().then(() => { childExited = true; }) ?? null;
+			if (rawChildExit) void rawChildExit.catch(() => undefined);
 			try {
 				req.onProcessStart?.({
-					...info,
-					cancel: async () => {
+					...processInfo,
+					cancel: async (signal = "SIGTERM") => {
 						if (!processIsAlive()) return false;
 						ownedCancellationRequested = true;
+						if (signal === "SIGKILL") return Boolean(await processInfo?.cancel?.("SIGKILL"));
 						ownedCancellationPromise ??= abortAndStop(activeClient);
 						await ownedCancellationPromise;
 						return true;
@@ -249,10 +359,10 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 			} catch { /* process metadata is best-effort */ }
 		}
 
-		const idle = activeClient.waitForIdle(req.timeout_ms).finally(closeSteeringChannel);
+		idleWaiter = createIdleWaiter(activeClient);
+		const idle = idleWaiter.promise.then(() => { closeSteeringChannel(); });
 		void idle.catch(() => undefined);
-		const childExit = activeClient.waitForExit?.().then(async () => {
-			childExited = true;
+		const childExit = rawChildExit?.then(async () => {
 			closeSteeringChannel();
 			if (ownedCancellationRequested) {
 				await ownedCancellationPromise;
@@ -261,12 +371,16 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 			throw new Error("LION RPC child exited before becoming idle");
 		});
 		if (childExit) void childExit.catch(() => undefined);
-		const prompt = activeClient.prompt(buildLionUserPrompt(req.run));
-		await raceAbort(childExit ? Promise.race([prompt, childExit]) : prompt, req.signal, () => abortAndStop(activeClient));
+		await raceSession(
+			() => childExit ? Promise.race([activeClient.prompt(buildLionUserPrompt(req.run)), childExit]) : activeClient.prompt(buildLionUserPrompt(req.run)),
+			req.signal,
+			deadline,
+			cancelSession,
+		);
 		poller = new AdaptivePoller(deliverPending, opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, opts.maxPollIntervalMs ?? DEFAULT_MAX_POLL_INTERVAL_MS);
 		if (channelOpen) poller.start();
-		if (await deliverPending()) poller.wake();
-		await raceAbort(childExit ? Promise.race([idle, childExit]) : idle, req.signal, () => abortAndStop(activeClient));
+		if (channelOpen && await raceSession(() => deliverPending(), req.signal, deadline, cancelSession)) poller.wake();
+		await raceSession(() => childExit ? Promise.race([idle, childExit]) : idle, req.signal, deadline, cancelSession);
 		if (ownedCancellationRequested) {
 			await ownedCancellationPromise;
 			throw new Error("LION RPC runner was cancelled");
@@ -282,16 +396,21 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		primaryError = err;
 		closeSteeringChannel();
 		await steeringClosedHook.catch(() => undefined);
-		await waitForInFlightDelivery();
 		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
 		throw err;
 	} finally {
+		deadline.dispose();
 		closeSteeringChannel();
+		idleWaiter?.dispose();
 		poller?.stop();
 		try { unsubscribeEvents?.(); } catch { /* ignore */ }
 		let stopError: unknown;
 		try { await stopClient(); } catch (err) { stopError = err; }
-		if (!childIsAlive()) notifyProcessExit();
+		if (childAttached && childIsAlive() && stopError) {
+			try { await processInfo?.cancel?.("SIGKILL"); } catch { /* retain ownership until actual exit */ }
+		}
+		if (childAttached && childIsAlive()) await waitForConfirmedChildExit();
+		if (!childAttached || !childIsAlive()) notifyProcessExit();
 		if (tmpPath)
 			try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
 		if (tmpDir)
@@ -315,31 +434,6 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 	}
 }
 
-async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, onAbort: () => Promise<void>): Promise<T> {
-	if (!signal) return promise;
-	if (signal.aborted) {
-		await onAbort();
-		throw new Error("LION RPC runner was aborted");
-	}
-	return new Promise<T>((resolve, reject) => {
-		let settled = false;
-		const finish = (fn: () => void) => {
-			if (settled) return;
-			settled = true;
-			signal.removeEventListener("abort", abort);
-			fn();
-		};
-		const abort = () => {
-			void onAbort().then(
-				() => finish(() => reject(new Error("LION RPC runner was aborted"))),
-				(err) => finish(() => reject(err)),
-			);
-		};
-		signal.addEventListener("abort", abort, { once: true });
-		promise.then((value) => finish(() => resolve(value)), (err) => finish(() => reject(err)));
-	});
-}
-
 async function createDefaultRpcClient(config: LionRpcClientConfig): Promise<LionRpcClient> {
 	const mod = await import("@earendil-works/pi-coding-agent");
 	const cliPath = path.join(mod.getPackageDir(), "dist", "cli.js");
@@ -360,7 +454,17 @@ async function createDefaultRpcClient(config: LionRpcClientConfig): Promise<Lion
 			const proc = (client as unknown as { process?: { pid?: number; exitCode?: number | null; signalCode?: string | null } | null }).process;
 			if (typeof proc?.pid !== "number") return null;
 			const pid = proc.pid;
-			return { pid, pgid: null, isAlive: () => proc.exitCode == null && proc.signalCode == null && isPidAlive(pid) };
+			const isAlive = () => proc.exitCode == null && proc.signalCode == null && isPidAlive(pid);
+			return {
+				pid,
+				pgid: null,
+				isAlive,
+				cancel: (signal = "SIGTERM") => {
+					if (!isAlive()) return false;
+					signalProcessTree(pid, signal);
+					return true;
+				},
+			};
 		},
 		waitForExit: async () => {
 			const proc = (client as unknown as { process?: { exitCode?: number | null; signalCode?: string | null; once?: (event: string, listener: () => void) => void } | null }).process;

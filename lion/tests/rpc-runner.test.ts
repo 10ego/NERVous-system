@@ -17,6 +17,8 @@ class FakeRpcClient implements LionRpcClient {
 	steered: string[] = [];
 	throwOnSteer = false;
 	throwOnPrompt = false;
+	hangOnPrompt = false;
+	startGate: Promise<void> | null = null;
 	throwOnAbort = false;
 	throwOnStop = false;
 	hangOnAbort = false;
@@ -25,7 +27,7 @@ class FakeRpcClient implements LionRpcClient {
 	private exitResolve: (() => void) | null = null;
 	private listeners: Array<(event: unknown) => void> = [];
 
-	async start() { this.started = true; }
+	async start() { this.started = true; if (this.startGate) await this.startGate; }
 	async stop() {
 		this.stopCalls++;
 		if (this.throwOnStop) throw new Error("stop boom");
@@ -35,6 +37,7 @@ class FakeRpcClient implements LionRpcClient {
 	}
 	async prompt(message: string) {
 		if (this.throwOnPrompt) throw new Error("prompt boom");
+		if (this.hangOnPrompt) return new Promise<void>(() => undefined);
 		this.prompted = message;
 		this.emit({ type: "message_update", delta: "working" });
 		if (this.finishDuringPrompt) this.finish();
@@ -151,6 +154,34 @@ describe("createLionRpcRunner", () => {
 		assert.equal(fake.waitForIdleCalls, 0);
 	});
 
+	it("does not prompt when cancellation arrives during client start", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		let releaseStart!: () => void;
+		fake.startGate = new Promise<void>((resolve) => { releaseStart = resolve; });
+		const run = (await store.mutate((l) => l.create({ objective: "abort during start", runner_mode: "rpc" }))).result;
+		const controller = new AbortController();
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, signal: controller.signal, timeout_ms: 1000 });
+		await until(() => fake.started);
+		controller.abort();
+		releaseStart();
+		await assert.rejects(() => promise, /aborted/);
+		assert.equal(fake.prompted, null);
+		assert.ok(fake.stopCalls >= 1);
+	});
+
+	it("bounds a prompt that never acknowledges by the session timeout", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.hangOnPrompt = true;
+		const run = (await store.mutate((l) => l.create({ objective: "hung prompt", runner_mode: "rpc" }))).result;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		await assert.rejects(() => runner({ run, timeout_ms: 20 }), /timed out after 20ms/);
+		assert.equal(fake.stopCalls, 1);
+		assert.equal(fake.listenerCount(), 0);
+	});
+
 	it("observes RPC idle emitted during prompt acknowledgement", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();
@@ -159,7 +190,7 @@ describe("createLionRpcRunner", () => {
 		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
 		const output = await runner({ run, timeout_ms: 50 });
 		assert.equal(output.report?.outcome, "completed");
-		assert.equal(fake.waitForIdleCalls, 1);
+		assert.equal(fake.waitForIdleCalls, 0);
 	});
 
 	it("calls process-exit callbacks only once on RPC errors", async () => {
@@ -171,7 +202,7 @@ describe("createLionRpcRunner", () => {
 		let exits = 0;
 		await assert.rejects(() => runner({ run, timeout_ms: 1000, onProcessExit: () => { exits++; } }), /prompt boom/);
 		assert.equal(exits, 1);
-		assert.equal(fake.waitForIdleCalls, 1);
+		assert.equal(fake.waitForIdleCalls, 0);
 		assert.equal(fake.listenerCount(), 0);
 		assert.equal(fake.stopCalls, 1);
 	});
@@ -187,9 +218,15 @@ describe("createLionRpcRunner", () => {
 		const promise = runner({ run, timeout_ms: 1000, onProcessStart: (info) => { processInfo = info; }, onProcessExit: () => { exits++; } });
 		await until(() => fake.prompted !== null);
 		fake.finish();
-		await assert.rejects(() => promise, /stop boom/);
+		let settled = false;
+		void promise.then(() => { settled = true; }, () => { settled = true; });
+		await until(() => fake.stopCalls === 1);
+		assert.equal(settled, false);
 		assert.equal(processInfo?.isAlive?.(), true);
 		assert.equal(exits, 0);
+		fake.exit();
+		await assert.rejects(() => promise, /stop boom/);
+		assert.equal(exits, 1);
 	});
 
 	it("rechecks the channel after a delayed pending query before steering", async () => {
@@ -216,6 +253,32 @@ describe("createLionRpcRunner", () => {
 		assert.deepEqual(fake.steered, []);
 		const final = (await originalQuery((l) => l.get(run.id))).result!;
 		assert.equal(final.steering_messages?.[0]?.status, "delivery_failed");
+	});
+
+	it("does not wait for blocked initial steering I/O after cancellation", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const run = (await store.mutate((l) => l.create({ objective: "cancel blocked delivery", runner_mode: "rpc" }))).result;
+		await store.mutate((l) => l.steer(run.id, "pending", { liveDeliveryAvailable: true }));
+		const originalQuery = store.query.bind(store);
+		let releaseQuery!: () => void;
+		let queryStarted!: () => void;
+		const queryEntered = new Promise<void>((resolve) => { queryStarted = resolve; });
+		const queryGate = new Promise<void>((resolve) => { releaseQuery = resolve; });
+		let delayed = false;
+		(store as unknown as { query: LionStore["query"] }).query = async (fn) => {
+			if (!delayed) { delayed = true; queryStarted(); await queryGate; }
+			return originalQuery(fn);
+		};
+		const controller = new AbortController();
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, signal: controller.signal, timeout_ms: 1000 });
+		await queryEntered;
+		controller.abort();
+		await assert.rejects(() => promise, /aborted/);
+		releaseQuery();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.deepEqual(fake.steered, []);
 	});
 
 	it("fails steering that arrives after RPC idle closes", async () => {
