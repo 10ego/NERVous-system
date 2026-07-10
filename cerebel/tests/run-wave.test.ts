@@ -81,7 +81,7 @@ describe("runWave", () => {
 	it("subtracts existing dispatched assignments from reservation capacity", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 2, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }, { agent_id: "lion-c", objective: "C" }] }))).result;
-		await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-existing" }] }));
+		await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-existing", lion_run_incarnation_id: "inc-existing" }] }));
 		const adapter = fakeAdapter({ "assign-002": { outcome: "blocked", summary: "pause", changed_files: [], tests_run: [], blockers: ["manual worker still running"], next_steps: [] }, "assign-003": completedReport("should not dispatch in same batch") });
 		const result = await runWave(store, adapter, { wave_id: wave.id, max_parallel: 2 });
 		assert.deepEqual(adapter.created, ["assign-002:run-001"]);
@@ -386,7 +386,7 @@ describe("runWave", () => {
 		adapter.createRun = async (assignment) => {
 			trace.push("create-local");
 			const run = await baseCreateRun(assignment);
-			await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: assignment.id, lion_run_id: "run-foreign" }] }));
+			await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: assignment.id, lion_run_id: "run-foreign", lion_run_incarnation_id: "inc-foreign" }] }));
 			trace.push("link-foreign");
 			return run;
 		};
@@ -417,6 +417,7 @@ describe("runWave", () => {
 			await store.mutate((l) => l.record(wave.id, {
 				assignment_id: assignment.id,
 				lion_run_id: "run-foreign",
+				lion_run_incarnation_id: "inc-foreign",
 				outcome: "completed",
 				summary: "foreign done",
 			}));
@@ -443,6 +444,7 @@ describe("runWave", () => {
 			await store.mutate((l) => l.record(wave.id, {
 				assignment_id: assignment.id,
 				lion_run_id: "run-foreign",
+				lion_run_incarnation_id: "inc-foreign",
 				outcome: "failed",
 				summary: "foreign failed",
 			}));
@@ -521,7 +523,7 @@ describe("runWave", () => {
 	it("does not rerun already terminal assignments", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
-		await store.mutate((l) => { l.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-existing" }] }); return l.record(wave.id, { assignment_id: "assign-001", lion_run_id: "run-existing", outcome: "completed", summary: "done" }); });
+		await store.mutate((l) => { l.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-existing", lion_run_incarnation_id: "inc-existing" }] }); return l.record(wave.id, { assignment_id: "assign-001", lion_run_id: "run-existing", outcome: "completed", summary: "done" }); });
 		const adapter = fakeAdapter({});
 		const result = await runWave(store, adapter, { wave_id: wave.id });
 		assert.equal(adapter.created.length, 0);

@@ -161,7 +161,7 @@ describe("cerebel extension factory", () => {
 			const cerebel = tools.find((t) => t.name === "cerebel");
 			const ctx = { cwd };
 			await cerebel.execute("tool", { action: "plan_wave", assignments: [{ task_id: "task-api", agent_id: "lion-api", objective: "API", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] }, undefined, undefined, ctx);
-			await cerebel.execute("tool", { action: "dispatch", links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] }, undefined, undefined, ctx);
+			await cerebel.execute("tool", { action: "dispatch", links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] }, undefined, undefined, ctx);
 			const result = await cerebel.execute("tool", { action: "record", assignment_id: "assign-001", lion_run_id: "run-001", outcome: "completed", summary: "done" }, undefined, undefined, ctx);
 			assert.match(result.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded/);
 			const { result: ganglion } = await ganglionStore.query((l) => l.get("ganglion-001"));

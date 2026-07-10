@@ -116,8 +116,9 @@ export class CerebelLedger {
 			if (TERMINAL_ASSIGNMENT_STATUS_SET.has(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch terminal assignment ${a.id} from ${a.status}`);
 			if (!["planned", "dispatched"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch assignment ${a.id} from ${a.status}`);
 			if (link.lion_run_incarnation_id && !link.lion_run_id) throw new CerebelError("invalid_arg", `LION incarnation for ${a.id} requires lion_run_id`);
+			if (link.lion_run_id && !a.lion_run_id && !link.lion_run_incarnation_id) throw new CerebelError("invalid_arg", `new LION link for ${a.id} requires lion_run_incarnation_id`);
 			if (link.lion_run_id && a.lion_run_id && a.lion_run_id !== link.lion_run_id) throw new CerebelError("invalid_transition", `cannot replace LION link for ${a.id} from ${a.lion_run_id} to ${link.lion_run_id}`);
-			if (link.lion_run_id && a.lion_run_id === link.lion_run_id && a.lion_run_incarnation_id && a.lion_run_incarnation_id !== (link.lion_run_incarnation_id ?? null)) {
+			if (link.lion_run_id && a.lion_run_id === link.lion_run_id && link.lion_run_incarnation_id !== undefined && a.lion_run_incarnation_id && a.lion_run_incarnation_id !== link.lion_run_incarnation_id) {
 				throw new CerebelError("invalid_transition", `cannot replace LION incarnation link for ${a.id}`);
 			}
 			a.status = "dispatched";
@@ -149,6 +150,9 @@ export class CerebelLedger {
 		if (["cancelled"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot record cancelled assignment ${a.id}`);
 		a.status = input.outcome;
 		if (input.lion_run_incarnation_id && !input.lion_run_id && !a.lion_run_id) throw new CerebelError("invalid_arg", `LION incarnation for ${a.id} requires lion_run_id`);
+		if (input.lion_run_id && input.lion_run_id !== a.lion_run_id && !input.lion_run_incarnation_id) {
+			throw new CerebelError("invalid_arg", `new LION result link for ${a.id} requires lion_run_incarnation_id`);
+		}
 		if (input.lion_run_id) {
 			a.lion_run_id = input.lion_run_id;
 			a.lion_run_incarnation_id = input.lion_run_incarnation_id ?? a.lion_run_incarnation_id ?? null;

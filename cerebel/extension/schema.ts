@@ -121,7 +121,7 @@ const AssignmentInputSchema = Type.Object({
 const DispatchLinkSchema = Type.Object({
 	assignment_id: Type.String(),
 	lion_run_id: Type.Optional(Type.String()),
-	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable incarnation id returned by the linked LION run." })),
+	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable incarnation id returned by the linked LION run; required for every new lion_run_id link." })),
 	ganglion_id: Type.Optional(Type.String({ description: "GANGLION id that owns this capacity lease." })),
 	ganglion_allocation_id: Type.Optional(Type.String({ description: "GANGLION allocation id to record/release when this assignment reaches a terminal outcome." })),
 });
