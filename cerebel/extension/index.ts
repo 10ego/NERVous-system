@@ -1,12 +1,11 @@
 /** CEREBEL — pi extension entry point. */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
 import { CerebelStore } from "./backend.ts";
 import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
 import { renderCerebelCall, renderCerebelResult, RUN_WAVE_DASHBOARD_HINT, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
 import { RunWaveBatchError, runWave, type RunWaveLionAdapter, type RunWaveResult } from "./run-wave.ts";
-import type { LionModelRole, LionProgressSnapshot, LionRun, LionRunnerMode } from "../../lion/extension/schema.ts";
+import type { LionModelRole, LionProgressSnapshot, LionRun } from "../../lion/extension/schema.ts";
 
 interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; run_wave?: import("./run-wave.ts").RunWaveResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: CerebelDetails; isError?: boolean };
@@ -18,6 +17,7 @@ interface LionAdapterDeps {
 	createLionRpcRunner?: (opts: { cwd: string; store: unknown }) => LionRunner;
 	activeRuns?: typeof import("../../lion/extension/active-runs.ts");
 	lifecycle?: typeof import("../../lion/extension/lifecycle.ts");
+	options?: typeof import("../../lion/extension/options.ts");
 }
 
 function ok(action: string, text: string, details: Omit<CerebelDetails, "action"> = {}): ToolResult {
@@ -44,32 +44,6 @@ function waveId(l: import("./store.ts").CerebelLedger, id?: string): string | un
 }
 
 const DEFAULT_RUN_WAVE_TIMEOUT_MS = 10 * 60_000;
-
-function modelKeyForRole(role: LionModelRole): NervousModelKey {
-	if (role === "review") return "lion.reviewDefault";
-	if (role === "implementation") return "lion.implementationDefault";
-	return "lion.default";
-}
-
-function resolveConfiguredLionModel(ctx: ExtensionContext, role: LionModelRole): string | undefined {
-	const config = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false });
-	const roleModel = resolveNervousModel(config, modelKeyForRole(role)).model;
-	if (roleModel) return roleModel;
-	if (role !== "default") return resolveNervousModel(config, "lion.default").model;
-	return undefined;
-}
-
-const RUNNER_MODES = new Set<string>(["json", "rpc"]);
-function isRunnerMode(value: unknown): value is LionRunnerMode {
-	return typeof value === "string" && RUNNER_MODES.has(value);
-}
-
-function resolveRunnerMode(input?: string): LionRunnerMode {
-	const explicit = input?.trim();
-	if (isRunnerMode(explicit)) return explicit;
-	const env = process.env.LION_RUNNER?.trim();
-	return isRunnerMode(env) ? env : "json";
-}
 
 function isTerminalAssignment(status: AssignmentStatus): boolean { return ["completed", "partial", "blocked", "failed", "cancelled"].includes(status); }
 function ganglionStatusFromAssignment(status: AssignmentStatus): "completed" | "blocked" | "failed" | "cancelled" { return status === "blocked" ? "blocked" : status === "failed" ? "failed" : status === "cancelled" ? "cancelled" : "completed"; }
@@ -208,12 +182,13 @@ export async function settleLinkedLionsBeforeCancel(
 
 export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}, pi?: ExtensionAPI): Promise<RunWaveLionAdapter> {
 	try {
-		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod] = await Promise.all([
+		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod, optionsMod] = await Promise.all([
 			deps.lionStore ? Promise.resolve({ LionStore: { fromCwd: () => deps.lionStore! as never } }) : import("../../lion/extension/backend.ts"),
 			deps.createLionRunner ? Promise.resolve({ createLionRunner: deps.createLionRunner }) : import("../../lion/extension/subprocess.ts"),
 			deps.createLionRpcRunner ? Promise.resolve({ createLionRpcRunner: deps.createLionRpcRunner }) : import("../../lion/extension/rpc-runner.ts"),
 			deps.activeRuns ? Promise.resolve(deps.activeRuns) : import("../../lion/extension/active-runs.ts"),
 			deps.lifecycle ? Promise.resolve(deps.lifecycle) : import("../../lion/extension/lifecycle.ts"),
+			deps.options ? Promise.resolve(deps.options) : import("../../lion/extension/options.ts"),
 		]);
 		const { createLionRunner } = jsonRunnerMod;
 		const { createLionRpcRunner } = rpcRunnerMod;
@@ -221,8 +196,8 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 		const lifecycle = lifecycleMod;
 		const lionStore = LionStore.fromCwd(ctx.cwd);
 		const modelRole = (p.model_role as LionModelRole | undefined) ?? "implementation";
-		const model = p.model?.trim() || resolveConfiguredLionModel(ctx, modelRole);
-		const runnerMode = resolveRunnerMode(p.runner_mode);
+		const model = p.model?.trim() || optionsMod.resolveConfiguredLionModel(ctx.cwd, () => ctx.isProjectTrusted?.() ?? false, modelRole);
+		const runnerMode = optionsMod.resolveLionRunnerMode(p.runner_mode);
 		const runner = runnerMode === "rpc" ? createLionRpcRunner({ cwd: ctx.cwd, store: lionStore }) : createLionRunner({ cwd: ctx.cwd });
 		const activeOwners = new Map<string, ReturnType<typeof activeRuns.beginActiveRun>>();
 		return {
@@ -372,47 +347,47 @@ export default function (pi: ExtensionAPI) {
 				}
 				case "cancel": {
 					try {
-					const initial = (await store.query((l) => {
-						const id = waveId(l, p.wave_id);
-						return id ? l.get(id) : undefined;
-					})).result;
-					if (!initial) return fail(action, "cancel requires wave_id or current wave.");
-					const settledRunRefs = new Set<string>();
-					let cancelledWave: Wave | undefined;
-					for (let pass = 0; pass < 10 && !cancelledWave; pass++) {
-						const latest = (await store.query((l) => l.get(initial.id))).result ?? initial;
-						const outstandingWave: Wave = {
-							...latest,
-							assignments: latest.assignments.filter((assignment) => assignment.lion_run_id && !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`)),
-						};
-						const settlements = await settleLinkedLionsBeforeCancel(ctx.cwd, outstandingWave, p.reason ?? "CEREBEL wave cancelled");
-						const failures = settlements.filter((settlement) => !settlement.settled);
-						if (failures.length) {
-							const message = failures.map((failure) => `${failure.assignment.id}: ${failure.error ?? "LION did not settle"}`).join("; ");
-							return fail(action, `cerebel cancel retained wave/capacity because linked LIONs did not settle: ${message}`, { wave: latest });
+						const initial = (await store.query((l) => {
+							const id = waveId(l, p.wave_id);
+							return id ? l.get(id) : undefined;
+						})).result;
+						if (!initial) return fail(action, "cancel requires wave_id or current wave.");
+						const settledRunRefs = new Set<string>();
+						let cancelledWave: Wave | undefined;
+						for (let pass = 0; pass < 10 && !cancelledWave; pass++) {
+							const latest = (await store.query((l) => l.get(initial.id))).result ?? initial;
+							const outstandingWave: Wave = {
+								...latest,
+								assignments: latest.assignments.filter((assignment) => assignment.lion_run_id && !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`)),
+							};
+							const settlements = await settleLinkedLionsBeforeCancel(ctx.cwd, outstandingWave, p.reason ?? "CEREBEL wave cancelled");
+							const failures = settlements.filter((settlement) => !settlement.settled);
+							if (failures.length) {
+								const message = failures.map((failure) => `${failure.assignment.id}: ${failure.error ?? "LION did not settle"}`).join("; ");
+								return fail(action, `cerebel cancel retained wave/capacity because linked LIONs did not settle: ${message}`, { wave: latest });
+							}
+							for (const settlement of settlements) if (settlement.assignment.lion_run_id) {
+								settledRunRefs.add(`${settlement.assignment.lion_run_id}\u0000${settlement.assignment.lion_run_incarnation_id ?? "legacy"}`);
+							}
+							const attempt = await store.mutate((l) => {
+								const current = l.get(initial.id);
+								if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
+								const pending = current.assignments.some((assignment) => assignment.lion_run_id
+									&& !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status)
+									&& !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`));
+								return pending ? undefined : l.cancel(initial.id);
+							});
+							cancelledWave = attempt.result;
 						}
-						for (const settlement of settlements) if (settlement.assignment.lion_run_id) {
-							settledRunRefs.add(`${settlement.assignment.lion_run_id}\u0000${settlement.assignment.lion_run_incarnation_id ?? "legacy"}`);
+						if (!cancelledWave) return fail(action, "cerebel cancel could not obtain a stable settled assignment set; no capacity was released", { wave: (await store.query((l) => l.get(initial.id))).result });
+						const result = ok(action, `Cancelled ${cancelledWave.id}.`, { wave: cancelledWave });
+						const releaseMessages: string[] = [];
+						for (const assignment of cancelledWave.assignments.filter((candidate) => candidate.status === "cancelled")) {
+							const message = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: assignment.lion_run_id ?? undefined, lion_run_incarnation_id: assignment.lion_run_incarnation_id ?? undefined, summary: "CEREBEL wave cancelled" } as CerebelToolInput, "cancelled");
+							if (message) releaseMessages.push(message);
 						}
-						const attempt = await store.mutate((l) => {
-							const current = l.get(initial.id);
-							if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
-							const pending = current.assignments.some((assignment) => assignment.lion_run_id
-								&& !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status)
-								&& !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`));
-							return pending ? undefined : l.cancel(initial.id);
-						});
-						cancelledWave = attempt.result;
-					}
-					if (!cancelledWave) return fail(action, "cerebel cancel could not obtain a stable settled assignment set; no capacity was released", { wave: (await store.query((l) => l.get(initial.id))).result });
-					const result = ok(action, `Cancelled ${cancelledWave.id}.`, { wave: cancelledWave });
-					const releaseMessages: string[] = [];
-					for (const assignment of cancelledWave.assignments.filter((candidate) => candidate.status === "cancelled")) {
-						const message = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: assignment.lion_run_id ?? undefined, lion_run_incarnation_id: assignment.lion_run_incarnation_id ?? undefined, summary: "CEREBEL wave cancelled" } as CerebelToolInput, "cancelled");
-						if (message) releaseMessages.push(message);
-					}
-					if (releaseMessages.length) result.content[0]!.text += ` ${releaseMessages.join(" ")}`;
-					return result;
+						if (releaseMessages.length) result.content[0]!.text += ` ${releaseMessages.join(" ")}`;
+						return result;
 					} catch (e) {
 						return e instanceof CerebelError
 							? fail(action, `cerebel cancel failed (${e.code}): ${e.message}`)

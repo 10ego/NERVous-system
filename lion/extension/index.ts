@@ -6,11 +6,11 @@
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
 import { LionStore } from "./backend.ts";
-import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunnerMode, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
+import { LionError, LionToolParams, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { emitLionEvent, startedProgress, terminalEventKind } from "./lifecycle.ts";
+import { resolveConfiguredLionModel, resolveLionRunnerMode } from "./options.ts";
 import { createLionRunner, getProcessIdentity, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
 import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunControlClosed, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
@@ -37,31 +37,6 @@ function ok(action: string, text: string, details: Omit<LionDetails, "action"> =
 }
 function fail(action: string, message: string): ToolResult {
 	return { content: [{ type: "text", text: message }], details: { action, error: message }, isError: true };
-}
-
-function modelKeyForRole(role: LionModelRole): NervousModelKey {
-	if (role === "review") return "lion.reviewDefault";
-	if (role === "implementation") return "lion.implementationDefault";
-	return "lion.default";
-}
-
-function resolveConfiguredLionModel(ctx: ExtensionContext, role: LionModelRole): string | undefined {
-	const config = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false });
-	const roleModel = resolveNervousModel(config, modelKeyForRole(role)).model;
-	if (roleModel) return roleModel;
-	if (role !== "default") return resolveNervousModel(config, "lion.default").model;
-	return undefined;
-}
-
-function isRunnerMode(value: unknown): value is LionRunnerMode {
-	return typeof value === "string" && (LION_RUNNER_MODES as readonly string[]).includes(value);
-}
-
-function resolveRunnerMode(input?: string): LionRunnerMode {
-	const explicit = input?.trim();
-	if (isRunnerMode(explicit)) return explicit;
-	const env = process.env.LION_RUNNER?.trim();
-	return isRunnerMode(env) ? env : "json";
 }
 
 async function runQuery(store: LionStore, action: string, op: (l: import("./store.ts").LionLedger) => ToolResult): Promise<ToolResult> {
@@ -240,8 +215,8 @@ export default function (pi: ExtensionAPI) {
 				case "run": {
 					if (!p.objective && !p.task_id) return fail(action, "run requires `objective` or `task_id`.");
 					const modelRole = (p.model_role as LionModelRole | undefined) ?? "implementation";
-					const model = p.model?.trim() || resolveConfiguredLionModel(ctx, modelRole);
-					const runnerMode = resolveRunnerMode(p.runner_mode);
+					const model = p.model?.trim() || resolveConfiguredLionModel(ctx.cwd, () => ctx.isProjectTrusted?.() ?? false, modelRole);
+					const runnerMode = resolveLionRunnerMode(p.runner_mode);
 					if (p.dry_run) {
 						const { result: run } = await store.mutate((l) => l.create({ agent_id: p.agent_id, task_id: p.task_id ?? null, objective: p.objective ?? "", context: p.context, model, model_role: modelRole, runner_mode: runnerMode, tools: p.tools, start: false }));
 						return ok(action, `Queued dry-run ${run.id}. Use lion start id=${run.id} to launch; queued steering may be added before start.`, { run });

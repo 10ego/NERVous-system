@@ -69,7 +69,26 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 # optional: runner_mode="rpc" to launch LION workers with RPC live steering support
 ```
 
-`run_wave` reserves planned assignments under the CEREBEL lock before creating LION workers, creates LION run records, executes LION subprocesses up to the wave's `max_parallel` (or the supplied bounded value), dispatches assignment→run links, records completed/partial/blocked/failed/cancelled outcomes, releases linked GANGLION allocations when possible, and returns a grouped wave summary with a `/nervous:dashboard` hint for live details. Every admitted batch is joined with all-settled semantics before `run_wave` returns or propagates an error, so sibling workers cannot continue mutating after the caller sees failure; successful siblings still flow through linked GANGLION release. Failed `run_wave` tool results preserve the settled partial `wave` and `run_wave.assignment_results` details for recovery. The exact host `AbortSignal` is passed through the adapter contract, checked before reservation, after reservation, before creation, after creation, before launch, and after adapter completion. Unlinked reservations are released when cancellation wins admission, and a custom adapter's late success after abort is classified as LION `aborted` / CEREBEL `cancelled` rather than completed. A CEREBEL terminal result is committed only after LION finalization succeeds; finalization or unlinked-run cleanup failures surface outward and do not release that assignment's linked GANGLION capacity. Host abort does not claim a separate durable `lion cancel` request. `run_wave` also skips already-terminal assignments, rejects terminal redispatch, treats missing/unparseable `WORKER_REPORT` output as failed, stops dispatching new batches after blocked/failed/cancelled outcomes, coalesces progress writes, recovers stale reserved assignments that never received a LION run id, and keeps all state in the durable CEREBEL/LION ledgers. Workers launched by `run_wave` are attached to LION's namespace-scoped active-run registry before their running records persist; ownership is retained until the LION ledger is finalized. Pass `runner_mode="rpc"` when live steering should also be available through LION's RPC path.
+### `run_wave` lifecycle
+
+- Reserves planned assignments under the CEREBEL lock before creating workers.
+- Creates exact LION run/incarnation links and executes up to the wave's stored `max_parallel` unless an explicit bounded override is supplied.
+- Emits the same `nervous:lion:started`, progress, and terminal telemetry as direct LION execution.
+- Time-throttles durable progress writes while sending UI progress immediately and forcing the final snapshot before terminalization.
+- Joins every admitted batch with all-settled semantics before returning or propagating failure.
+- Records completed, partial, blocked, failed, and cancelled outcomes; terminal GANGLION updates are batched once per group.
+- Returns grouped results plus a `/nervous:dashboard` hint. Failed batches retain structured partial `wave` and `run_wave.assignment_results` details, and the TUI renders them with the error.
+
+### Abort and failure behavior
+
+- The exact host `AbortSignal` is checked before and after reservation, creation, launch, adapter completion, and progress drain.
+- Unlinked reservations are released when abort wins admission; a custom adapter's late success after abort is classified as LION `aborted` / CEREBEL `cancelled`.
+- A CEREBEL terminal result is committed only after LION finalization succeeds. Finalization or unlinked cleanup failure surfaces and does not release linked capacity.
+- Host abort does not manufacture a separate durable `lion cancel` request.
+- Terminal assignments are not rerun, terminal links cannot be replaced, missing/unparseable `WORKER_REPORT` output fails, and later batches stop after blocked/failed/cancelled outcomes.
+- Stale reservations that never received a LION link are recovered. Active ownership remains registered until LION finalization.
+
+JSON remains the fallback runner. Explicit `runner_mode` wins, followed by `LION_RUNNER`; use `rpc` only when live steering is required.
 
 ---
 
@@ -127,7 +146,7 @@ cerebel/
 
 CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. The `run_wave` action dynamically loads the LION runtime only when invoked; if LION is unavailable, it fails clearly without affecting the rest of CEREBEL.
 
-CEREBEL provides whole-wave cancellation through `cerebel cancel`. Every new CEREBEL→LION link stores both `lion_run_id` and the immutable `lion_run_incarnation_id`; cancellation requests and settlement checks target that exact execution. CEREBEL waits for all verifiable linked LIONs to settle before terminalizing the wave or releasing GANGLION capacity. Missing/replaced exact runs are treated as superseded, while legacy links without an incarnation fail closed and retain the wave/capacity for operator resolution. Settlement polling is batched through one LION ledger snapshot per interval, and invalid timeout overrides fall back to the bounded default. Steering remains a per-run LION control, with RPC live steering explicitly opt-in.
+CEREBEL provides whole-wave cancellation through `cerebel cancel reason="..."`. Every new CEREBEL→LION link stores both `lion_run_id` and immutable `lion_run_incarnation_id`; cancellation and settlement target that exact execution. CEREBEL waits for verifiable linked LIONs before terminalizing the wave or releasing capacity. Legacy links without an incarnation fail closed for operator resolution. Settlement uses one batched ledger snapshot with adaptive backoff. `CEREBEL_CANCEL_SETTLE_TIMEOUT_MS` defaults to 15,000 ms, accepts positive safe integers through 120,000 ms, and falls back to the default for invalid values. Steering remains per-run and RPC live steering remains explicit opt-in.
 
 ---
 
