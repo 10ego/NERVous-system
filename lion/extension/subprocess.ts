@@ -6,7 +6,7 @@
  * plus any human-readable notes.
  */
 
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -70,16 +70,13 @@ export function getPiInvocation(args: string[], opts?: { forceBinary?: boolean }
 
 export function getProcessIdentity(pid: number): string | null {
 	try {
-		if (process.platform === "linux") {
-			const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-			const close = stat.lastIndexOf(")");
-			const fields = stat.slice(close + 2).trim().split(/\s+/);
-			const startTicks = fields[19]; // field 22 after removing pid/comm
-			const bootId = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
-			return startTicks && bootId ? `linux:${bootId}:${startTicks}` : null;
-		}
-		const started = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
-		return started ? `${process.platform}:${started}` : null;
+		if (process.platform !== "linux") return null;
+		const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+		const close = stat.lastIndexOf(")");
+		const fields = stat.slice(close + 2).trim().split(/\s+/);
+		const startTicks = fields[19]; // field 22 after removing pid/comm
+		const bootId = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+		return startTicks && bootId ? `linux:${bootId}:${startTicks}` : null;
 	} catch {
 		return null;
 	}

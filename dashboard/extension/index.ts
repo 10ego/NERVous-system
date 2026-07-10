@@ -74,7 +74,7 @@ const DASHBOARD_STATE_FILES = [
 async function dashboardStateFingerprint(cwd: string): Promise<string> {
 	return (await Promise.all(DASHBOARD_STATE_FILES.map(async ([component, file, env]) => {
 		const statePath = resolveNervousStateFile(cwd, component, file, env);
-		try { const stat = await fs.stat(statePath); return `${statePath}:${stat.mtimeMs}:${stat.size}`; }
+		try { const stat = await fs.stat(statePath); return `${statePath}:${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`; }
 		catch (error) { return `${statePath}:${(error as NodeJS.ErrnoException).code ?? "missing"}`; }
 	}))).join("|");
 }
@@ -521,7 +521,7 @@ export class NervousDashboard implements Component {
 			case "lion": {
 				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
 				const historical = task?.status === "completed" && ["failed", "blocked", "aborted"].includes(detail.item.status) ? this.theme.fg("muted", "+historical") : "";
-				const progress = detail.item.progress ? describeLionProgress(detail.item) : detail.item.objective;
+				const progress = ["queued", "running"].includes(detail.item.status) && detail.item.progress ? describeLionProgress(detail.item) : detail.item.objective;
 				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: detail.item.agent_id, width: 18 }, { text: `${styleStatus(this.theme, detail.item.status)}${historical ? ` ${historical}` : ""}`, width: 20 }, { text: detail.item.task_id ?? "—", width: 11 }, { text: progress }]);
 			}
 			case "cerebel": {

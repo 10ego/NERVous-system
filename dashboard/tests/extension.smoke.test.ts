@@ -1,6 +1,9 @@
 import * as assert from "node:assert";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
-import factory, { describeLionProgress, NervousDashboard, summarizeWaveProgress } from "../extension/index.ts";
+import factory, { createDashboardChangeDetector, describeLionProgress, NervousDashboard, summarizeWaveProgress } from "../extension/index.ts";
 
 function stubPi(): { pi: any; commands: Array<{ name: string; options: any }> } {
 	const commands: Array<{ name: string; options: any }> = [];
@@ -76,6 +79,25 @@ describe("dashboard extension factory", () => {
 		dashboard.dispose();
 	});
 
+	it("detects an atomic same-size replacement even when mtime is preserved", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-fingerprint-"));
+		const target = path.join(dir, "runs.json");
+		const replacement = path.join(dir, "replacement.json");
+		const oldPath = process.env.LION_RUNS_PATH;
+		process.env.LION_RUNS_PATH = target;
+		try {
+			await fs.writeFile(target, "aaaa");
+			const original = await fs.stat(target);
+			const changed = await createDashboardChangeDetector(dir);
+			await fs.writeFile(replacement, "bbbb");
+			await fs.utimes(replacement, original.atime, original.mtime);
+			await fs.rename(replacement, target);
+			assert.equal(await changed(), true);
+		} finally {
+			if (oldPath === undefined) delete process.env.LION_RUNS_PATH; else process.env.LION_RUNS_PATH = oldPath;
+		}
+	});
+
 	it("stops pending change-detection work when disposed", async () => {
 		vi.useFakeTimers();
 		let resolveDetection!: (changed: boolean) => void;
@@ -144,6 +166,15 @@ describe("dashboard extension factory", () => {
 		resolveRefresh?.(emptyDashboardData({ runs: [newRun] }));
 		await new Promise<void>((resolve) => setImmediate(resolve));
 		assert.equal((dashboard as any).detail, null);
+	});
+
+	it("shows objectives rather than stale progress activity for terminal LION rows", () => {
+		const run = { id: "run-001", agent_id: "lion-a", status: "completed", task_id: null, objective: "Implement exact provenance", progress: { activity: "message complete", last_event_at: new Date().toISOString() } } as any;
+		const dashboard = new NervousDashboard(emptyDashboardData({ runs: [run] }), { requestRender: vi.fn() } as any, theme, vi.fn(), vi.fn(), { autoRefreshMs: 0 });
+		const row = (dashboard as any).row({ kind: "lion", item: run }, 120);
+		assert.match(row, /Implement exact provenance/);
+		assert.doesNotMatch(row, /message complete/);
+		dashboard.dispose();
 	});
 
 	it("formats LION progress snapshots with activity and staleness", () => {
