@@ -56,7 +56,7 @@ function formatGanglionRecordMessage(
 	ganglionId: string,
 	allocationId: string,
 	disposition: import("../../ganglion/extension/store.ts").AllocationReleaseDisposition,
-	formatDisposition: typeof import("../../ganglion/extension/render.ts").formatAllocationReleaseDisposition,
+	formatDisposition: typeof import("../../ganglion/extension/disposition.ts").formatAllocationReleaseDisposition,
 ): string {
 	return `GANGLION ${ganglionId}/${allocationId} recorded; ${formatDisposition(disposition)}.`;
 }
@@ -70,7 +70,7 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 	try {
 		const [{ GanglionStore }, { formatAllocationReleaseDisposition }] = await Promise.all([
 			import("../../ganglion/extension/backend.ts"),
-			import("../../ganglion/extension/render.ts"),
+			import("../../ganglion/extension/disposition.ts"),
 		]);
 		const { result } = await GanglionStore.fromCwd(cwd).mutate((l) => l.recordWithResult(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
 		return formatGanglionRecordMessage(ganglionId, allocationId, result.release_disposition, formatAllocationReleaseDisposition);
@@ -99,7 +99,7 @@ export async function recordRunWaveGanglion(cwd: string, result: RunWaveResult):
 	try {
 		const [{ GanglionStore }, { formatAllocationReleaseDisposition }] = await Promise.all([
 			import("../../ganglion/extension/backend.ts"),
-			import("../../ganglion/extension/render.ts"),
+			import("../../ganglion/extension/disposition.ts"),
 		]);
 		for (const [ganglionId, entries] of grouped) {
 			try {

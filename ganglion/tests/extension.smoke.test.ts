@@ -1,7 +1,7 @@
 import * as assert from "node:assert";
 import { describe, it } from "vitest";
 import factory from "../extension/index.ts";
-import { formatAllocationReleaseDisposition } from "../extension/render.ts";
+import { formatAllocationReleaseDisposition } from "../extension/disposition.ts";
 
 function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 	const tools: any[] = [];

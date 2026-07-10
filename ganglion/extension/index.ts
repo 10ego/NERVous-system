@@ -6,7 +6,8 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { GanglionStore } from "./backend.ts";
 import { GanglionError, GanglionToolParams, type AllocationStatus, type Ganglion, type GanglionReconcileReport, type GanglionStatus, type GanglionSummary, type GanglionToolInput, type MemberStatus } from "./schema.ts";
 import type { GanglionRecordResult, LionRunBrief } from "./store.ts";
-import { formatAllocationReleaseDisposition, renderGanglionCall, renderGanglionResult, summarizeGanglion, summarizeList, summarizeSummary } from "./render.ts";
+import { formatAllocationReleaseDisposition } from "./disposition.ts";
+import { renderGanglionCall, renderGanglionResult, summarizeGanglion, summarizeList, summarizeSummary } from "./render.ts";
 
 interface GanglionDetails { action: string; ganglion?: Ganglion; ganglions?: Ganglion[]; summary?: GanglionSummary; reconcile?: GanglionReconcileReport; record?: GanglionRecordResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: GanglionDetails; isError?: boolean };
