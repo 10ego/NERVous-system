@@ -6,6 +6,7 @@ import { describe, it } from "vitest";
 import { createLionAdapter } from "../extension/index.ts";
 import { LionLedger } from "../../lion/extension/store.ts";
 import * as activeRuns from "../../lion/extension/active-runs.ts";
+import * as lifecycle from "../../lion/extension/lifecycle.ts";
 import type { Assignment } from "../extension/schema.ts";
 import type { LionReport } from "../../lion/extension/schema.ts";
 import type { LionRunRequest } from "../../lion/extension/subprocess.ts";
@@ -64,6 +65,36 @@ describe("createLionAdapter", () => {
 		await adapter.finishRun(run.id, { output: "ok", report });
 		assert.ok(!activeRuns.getActiveRunIds(lionStore.namespaceId).includes(run.id), "owner should be released after finishRun persists final state");
 		assert.equal(ledger.get(run.id)?.status, "completed");
+		activeRuns.clearActiveRunsForTests();
+	});
+
+	it("emits started progress and terminal LION telemetry for run_wave workers", async () => {
+		activeRuns.clearActiveRunsForTests();
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "telemetry-ledger",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const events: Array<{ name: string; payload: any }> = [];
+		const pi = { events: { emit(name: string, payload: unknown) { events.push({ name, payload }); } } } as never;
+		const runner = () => async (req: LionRunRequest) => {
+			req.onProgress?.({ event: "message", activity: "working", active_tools: [], tool_uses: 0, turn_count: 1, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
+			return { text: "ok", report };
+		};
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns, lifecycle },
+			pi,
+		);
+		const run = await adapter.createRun(assignment());
+		await adapter.updateProgress?.(run.id, { event: "message", activity: "working", active_tools: [], tool_uses: 0, turn_count: 1, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
+		await adapter.finishRun(run.id, { output: "ok", report });
+		assert.deepEqual(events.map((event) => event.name), ["nervous:lion:started", "nervous:lion:progress", "nervous:lion:completed"]);
+		assert.equal(events[0]?.payload.run_incarnation_id, run.incarnation_id);
 		activeRuns.clearActiveRunsForTests();
 	});
 

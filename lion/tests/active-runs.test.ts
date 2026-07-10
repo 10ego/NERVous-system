@@ -109,6 +109,23 @@ describe("namespace-scoped active LION ownership", () => {
 		assert.equal(mismatched.run?.control?.cancel_requested_at, undefined);
 	});
 
+	it("treats same-incarnation terminalization during delivery as settled", async () => {
+		const store = await makeStore("terminal-during-delivery");
+		const run = (await store.mutate((l) => l.create({ objective: "terminal during delivery" }))).result;
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id }, "rpc");
+		attachActiveRunProcess(owner, {
+			pid: 307,
+			pgid: null,
+			isAlive: () => true,
+			cancel: async () => { await store.mutate((l) => l.finish(run.id, { output: "", report: null, status: "aborted" })); return true; },
+		});
+		const result = await requestRunCancellation(store, run.id, "cancel", { expectedIncarnationId: run.incarnation_id });
+		assert.equal(result.superseded, false);
+		assert.equal(result.settled, true);
+		assert.equal(result.run?.status, "aborted");
+		finishActiveRun(owner);
+	});
+
 	it("treats replacement during cancellation delivery persistence as settled supersession", async () => {
 		const store = await makeStore("replacement-during-delivery");
 		const original = (await store.mutate((l) => l.create({ objective: "original" }))).result;

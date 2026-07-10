@@ -10,6 +10,7 @@ import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finish
 import factory, { resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel } from "../extension/index.ts";
 import { CerebelLedger } from "../extension/store.ts";
 import { RunWaveBatchError } from "../extension/run-wave.ts";
+import { renderCerebelResult } from "../extension/render.ts";
 
 function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 	const tools: any[] = [];
@@ -127,6 +128,8 @@ describe("cerebel extension factory", () => {
 		assert.equal(result.isError, true);
 		assert.equal(result.details.wave?.id, wave.id);
 		assert.equal(result.details.run_wave?.assignment_results[0]?.lion_run_id, "run-001");
+		const rendered = renderCerebelResult(result, { expanded: true }, { fg: (_color: string, text: string) => text, bold: (text: string) => text });
+		assert.equal(rendered.constructor.name, "Container");
 	});
 
 	it("returns structured tool errors when cancellation is invalid", async () => {
@@ -226,10 +229,11 @@ describe("cerebel extension factory", () => {
 			let signalResolve!: () => void;
 			const signalReceived = new Promise<void>((resolve) => { signalResolve = resolve; });
 			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { signalResolve(); return true; } });
-			const cancelling = cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, ctx);
+			const cancelling = cerebel.execute("cancel", { action: "cancel", reason: "operator requested wave stop" }, undefined, undefined, ctx);
 			await signalReceived;
 			const beforeSettlement = (await ganglionStore.query((l) => l.get("ganglion-001"))).result;
 			assert.equal(beforeSettlement?.members[0]?.status, "busy");
+			assert.equal((await lionStore.query((l) => l.get(lionRun.id))).result?.control?.cancel_reason, "operator requested wave stop");
 			await lionStore.mutate((l) => l.finish(lionRun.id, { output: "", report: null, status: "aborted", error: "cancelled" }));
 			finishActiveRun(owner);
 			const cancelled = await cancelling;

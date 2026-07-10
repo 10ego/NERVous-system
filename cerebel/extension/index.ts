@@ -17,6 +17,7 @@ interface LionAdapterDeps {
 	createLionRunner?: (opts: { cwd: string }) => LionRunner;
 	createLionRpcRunner?: (opts: { cwd: string; store: unknown }) => LionRunner;
 	activeRuns?: typeof import("../../lion/extension/active-runs.ts");
+	lifecycle?: typeof import("../../lion/extension/lifecycle.ts");
 }
 
 function ok(action: string, text: string, details: Omit<CerebelDetails, "action"> = {}): ToolResult {
@@ -27,7 +28,7 @@ function fail(action: string, message: string, details: Omit<CerebelDetails, "ac
 }
 
 export function runWaveBatchFailureResult(error: RunWaveBatchError, suffix = ""): ToolResult {
-	return fail("run_wave", `cerebel run_wave failed after all launched workers settled: ${error.message}.${suffix}`, { wave: error.result.wave, run_wave: error.result });
+	return fail("run_wave", `cerebel ${error.message}${suffix ? ` ${suffix.trim()}` : ""}`, { wave: error.result.wave, run_wave: error.result });
 }
 async function runOp(store: CerebelStore, action: string, op: (l: import("./store.ts").CerebelLedger) => ToolResult): Promise<ToolResult> {
 	try { const { result } = await store.mutate(op); return result; }
@@ -175,17 +176,19 @@ export async function settleLinkedLionsBeforeCancel(
 	return assignments.map((assignment) => results.get(assignment.id)!);
 }
 
-export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}): Promise<RunWaveLionAdapter> {
+export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}, pi?: ExtensionAPI): Promise<RunWaveLionAdapter> {
 	try {
-		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod] = await Promise.all([
+		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod] = await Promise.all([
 			deps.lionStore ? Promise.resolve({ LionStore: { fromCwd: () => deps.lionStore! as never } }) : import("../../lion/extension/backend.ts"),
 			deps.createLionRunner ? Promise.resolve({ createLionRunner: deps.createLionRunner }) : import("../../lion/extension/subprocess.ts"),
 			deps.createLionRpcRunner ? Promise.resolve({ createLionRpcRunner: deps.createLionRpcRunner }) : import("../../lion/extension/rpc-runner.ts"),
 			deps.activeRuns ? Promise.resolve(deps.activeRuns) : import("../../lion/extension/active-runs.ts"),
+			deps.lifecycle ? Promise.resolve(deps.lifecycle) : import("../../lion/extension/lifecycle.ts"),
 		]);
 		const { createLionRunner } = jsonRunnerMod;
 		const { createLionRpcRunner } = rpcRunnerMod;
 		const activeRuns = activeRunsMod;
+		const lifecycle = lifecycleMod;
 		const lionStore = LionStore.fromCwd(ctx.cwd);
 		const modelRole = (p.model_role as LionModelRole | undefined) ?? "implementation";
 		const model = p.model?.trim() || resolveConfiguredLionModel(ctx, modelRole);
@@ -196,6 +199,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 			async createRun(assignment) {
 				let activeOwner: ReturnType<typeof activeRuns.beginActiveRun> | undefined;
 				try {
+					const initialProgress = lifecycle.startedProgress();
 					const { result } = await lionStore.mutate((l) => {
 						const queued = l.create({
 							agent_id: assignment.agent_id,
@@ -209,9 +213,12 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 							start: false,
 						});
 						activeOwner = activeRuns.beginActiveRun({ namespaceId: lionStore.namespaceId, runId: queued.id, incarnationId: queued.incarnation_id ?? null }, runnerMode);
-						return l.start(queued.id);
+						const started = l.start(queued.id);
+						return l.updateProgress(started.id, initialProgress);
 					});
 					activeOwners.set(result.id, activeOwner!);
+					lifecycle.emitLionEvent(pi, "started", result, initialProgress);
+					try { onUpdate?.({ content: [{ type: "text", text: `${result.id}/${result.agent_id}: ${initialProgress.activity}` }], details: { action: "run_wave", run: result } }); } catch { /* progress display is best-effort */ }
 					return result;
 				} catch (err) {
 					if (activeOwner) activeRuns.finishActiveRun(activeOwner);
@@ -241,7 +248,9 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 			},
 			async finishRun(runId, result) {
 				try {
-					return (await lionStore.mutate((l) => l.finish(runId, result))).result;
+					const finished = (await lionStore.mutate((l) => l.finish(runId, result))).result;
+					lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(finished.status), finished);
+					return finished;
 				} finally {
 					const owner = activeOwners.get(runId);
 					if (owner) activeRuns.finishActiveRun(owner);
@@ -252,7 +261,8 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				return (await lionStore.query((l) => l.get(runId))).result;
 			},
 			async updateProgress(runId, progress) {
-				await lionStore.mutate((l) => l.updateProgress(runId, progress));
+				const updated = (await lionStore.mutate((l) => l.updateProgress(runId, progress))).result;
+				lifecycle.emitLionEvent(pi, "progress", updated, progress);
 			},
 		};
 	} catch (e) {
@@ -345,7 +355,7 @@ export default function (pi: ExtensionAPI) {
 							...latest,
 							assignments: latest.assignments.filter((assignment) => assignment.lion_run_id && !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`)),
 						};
-						const settlements = await settleLinkedLionsBeforeCancel(ctx.cwd, outstandingWave, p.context ?? "CEREBEL wave cancelled");
+						const settlements = await settleLinkedLionsBeforeCancel(ctx.cwd, outstandingWave, p.reason ?? "CEREBEL wave cancelled");
 						const failures = settlements.filter((settlement) => !settlement.settled);
 						if (failures.length) {
 							const message = failures.map((failure) => `${failure.assignment.id}: ${failure.error ?? "LION did not settle"}`).join("; ");
@@ -381,7 +391,7 @@ export default function (pi: ExtensionAPI) {
 				}
 				case "run_wave": {
 					try {
-						const adapter = await createLionAdapter(ctx, p, signal, onUpdate);
+						const adapter = await createLionAdapter(ctx, p, signal, onUpdate, {}, pi);
 						try { onUpdate?.({ content: [{ type: "text", text: RUN_WAVE_DASHBOARD_HINT.replace(/`/g, "") }], details: { action: "run_wave", hint: "dashboard" } }); } catch { /* dashboard hint is best-effort */ }
 						const result = await runWave(store, adapter, { wave_id: p.wave_id, max_parallel: p.max_parallel, signal });
 						const ganglionMessages = await recordRunWaveGanglion(ctx.cwd, result);

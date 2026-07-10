@@ -46,7 +46,13 @@ export function renderCerebelCall(args: { action: string; wave_id?: string }, th
 
 export function renderCerebelResult(result: { content: Array<{ type: string; text?: string }>; details?: unknown; isError?: boolean }, _options: { expanded: boolean }, theme: AnyTheme): Container | Text {
 	const d = result.details as { wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; run_wave?: RunWaveResult; error?: string } | undefined;
-	if (result.isError || d?.error) return new Text(`${theme.fg("error", "✗")} ${theme.fg("dim", result.content[0]?.text ?? "error")}`, 0, 0);
+	if (result.isError || d?.error) {
+		if (!d?.run_wave) return new Text(`${theme.fg("error", "✗")} ${theme.fg("dim", result.content[0]?.text ?? "error")}`, 0, 0);
+		const failed = new Container();
+		failed.addChild(new Text(`${theme.fg("error", "✗")} ${theme.fg("dim", result.content[0]?.text ?? "error")}`, 0, 0));
+		failed.addChild(new Markdown(summarizeRunWaveResult(d.run_wave), 0, 0, getMarkdownTheme()));
+		return failed;
+	}
 	const c = new Container();
 	if (d?.run_wave) c.addChild(new Markdown(summarizeRunWaveResult(d.run_wave), 0, 0, getMarkdownTheme()));
 	else if (d?.wave) c.addChild(new Markdown(summarizeWave(d.wave), 0, 0, getMarkdownTheme()));

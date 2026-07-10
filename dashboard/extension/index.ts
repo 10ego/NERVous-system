@@ -270,9 +270,9 @@ export function describeLionProgress(run: LionRun, nowMs = Date.now()): string {
 
 export function summarizeWaveProgress(wave: Wave, runs: LionRun[], nowMs = Date.now()): string {
 	if (!wave.assignments.length) return "no assignments";
-	const runsById = new Map(runs.map((run) => [run.id, run]));
+	const runsByRef = new Map(runs.map((run) => [`${run.id}\u0000${run.incarnation_id ?? "legacy"}`, run]));
 	const linkedRuns = wave.assignments
-		.map((a) => a.lion_run_id ? runsById.get(a.lion_run_id) : undefined)
+		.map((a) => a.lion_run_id ? runsByRef.get(`${a.lion_run_id}\u0000${a.lion_run_incarnation_id ?? "legacy"}`) : undefined)
 		.filter((r): r is LionRun => Boolean(r));
 	const assignmentCounts = countByStatus(wave.assignments);
 	const assignmentSummary = Object.entries(assignmentCounts)
@@ -480,7 +480,11 @@ export class NervousDashboard implements Component {
 				const progress = detail.item.progress ? describeLionProgress(detail.item) : detail.item.objective;
 				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: detail.item.agent_id, width: 18 }, { text: `${styleStatus(this.theme, detail.item.status)}${historical ? ` ${historical}` : ""}`, width: 20 }, { text: detail.item.task_id ?? "—", width: 11 }, { text: progress }]);
 			}
-			case "cerebel": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: String(detail.item.assignments.length), width: 8 }, { text: summarizeWaveProgress(detail.item, this.data.runs) || detail.item.decision?.decision || "" }]);
+			case "cerebel": {
+				const progress = summarizeWaveProgress(detail.item, this.data.runs);
+				const decision = detail.item.decision ? `decision:${detail.item.decision.decision}` : "";
+				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: String(detail.item.assignments.length), width: 8 }, { text: [progress, decision].filter(Boolean).join(" · ") }]);
+			}
 			case "ganglion": {
 				const note = ganglionConsistencyNote(detail.item, this.data.runs, this.data.goals);
 				return columnLine(inner, [{ text: detail.item.id, width: 12 }, { text: styleStatus(this.theme, detail.item.status), width: 12 }, { text: String(detail.item.members.length), width: 9 }, { text: `${activeGanglionAllocations(detail.item).length}${note ? this.theme.fg("warning", " ⚠") : ""}`, width: 8 }, { text: detail.item.name }]);

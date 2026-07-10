@@ -221,7 +221,8 @@ export async function requestRunCancellation(
 		const current = ledger.get(runId);
 		return current ? ledger.markCancelDeliveryIfCurrent(runId, requested.run.incarnation_id, status) : { run: undefined, committed: false };
 	})).result;
-	return { run: persisted.run, settled: !persisted.committed, superseded: !persisted.committed, delivery };
+	const terminal = Boolean(persisted.run && ["completed", "blocked", "failed", "aborted"].includes(persisted.run.status));
+	return { run: persisted.run, settled: !persisted.committed || terminal, superseded: !persisted.committed, delivery };
 }
 
 export async function waitForRunSettlements(

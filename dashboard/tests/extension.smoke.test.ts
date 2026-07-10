@@ -143,18 +143,26 @@ describe("dashboard extension factory", () => {
 			id: "wave-001",
 			status: "collecting",
 			assignments: [
-				{ id: "assign-001", agent_id: "lion-a", status: "dispatched", lion_run_id: "run-001" },
-				{ id: "assign-002", agent_id: "lion-b", status: "completed", lion_run_id: "run-002" },
+				{ id: "assign-001", agent_id: "lion-a", status: "dispatched", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" },
+				{ id: "assign-002", agent_id: "lion-b", status: "completed", lion_run_id: "run-002", lion_run_incarnation_id: "inc-002" },
 			],
 		} as any;
 		const runs = [
-			{ id: "run-001", status: "running", progress: { event: "message", activity: "writing tests", active_tools: [], tool_uses: 1, turn_count: 1, token_total: null, last_text: null, last_event_at: "2026-07-08T12:00:09.000Z" } },
-			{ id: "run-002", status: "completed" },
+			{ id: "run-001", incarnation_id: "inc-001", status: "running", progress: { event: "message", activity: "writing tests", active_tools: [], tool_uses: 1, turn_count: 1, token_total: null, last_text: null, last_event_at: "2026-07-08T12:00:09.000Z" } },
+			{ id: "run-002", incarnation_id: "inc-002", status: "completed" },
 		] as any;
 		const text = summarizeWaveProgress(wave, runs, now);
 		assert.match(text, /assignments completed:1 dispatched:1/);
 		assert.match(text, /lion-running:1/);
 		assert.match(text, /lion-completed:1/);
 		assert.match(text, /active run-001: writing tests/);
+	});
+
+	it("does not join a stale CEREBEL link to a reused LION id", () => {
+		const wave = { assignments: [{ status: "dispatched", lion_run_id: "run-001", lion_run_incarnation_id: "inc-old" }] } as any;
+		const runs = [{ id: "run-001", incarnation_id: "inc-new", status: "running", progress: { activity: "secret replacement progress" } }] as any;
+		const text = summarizeWaveProgress(wave, runs);
+		assert.match(text, /no linked LION runs/);
+		assert.doesNotMatch(text, /secret replacement/);
 	});
 });
