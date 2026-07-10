@@ -124,4 +124,32 @@ describe("cerebel extension factory", () => {
 			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
 		}
 	});
+
+	it("releases linked GANGLION capacity when cancelling a wave", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-cancel-ganglion-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const ganglionStore = GanglionStore.fromCwd(dir);
+			await ganglionStore.mutate((l) => { const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] }); l.allocate(g.id, { tasks: [{ id: "task-api", title: "API" }] }); });
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((t) => t.name === "cerebel");
+			const ctx = { cwd: dir };
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [{ task_id: "task-api", agent_id: "lion-api", objective: "API", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] }, undefined, undefined, ctx);
+			await cerebel.execute("dispatch", { action: "dispatch", links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] }, undefined, undefined, ctx);
+			const cancelled = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, ctx);
+			assert.match(cancelled.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded/);
+			const repeated = await cerebel.execute("cancel-again", { action: "cancel" }, undefined, undefined, ctx);
+			assert.match(repeated.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded/);
+			const { result: ganglion } = await ganglionStore.query((l) => l.get("ganglion-001"));
+			assert.equal(ganglion?.members[0]?.status, "available");
+			assert.equal(ganglion?.members[0]?.current_allocation_id, null);
+			assert.equal(ganglion?.allocations[0]?.status, "cancelled");
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
+	});
 });

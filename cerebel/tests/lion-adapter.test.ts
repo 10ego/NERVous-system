@@ -66,4 +66,44 @@ describe("createLionAdapter", () => {
 		assert.equal(ledger.get(run.id)?.status, "completed");
 		activeRuns.clearActiveRunsForTests();
 	});
+
+	it("does not let delayed process metadata mutate a reused run id", async () => {
+		activeRuns.clearActiveRunsForTests();
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-lion-stale-metadata-"));
+		const ledger = new LionLedger();
+		let mutationCount = 0;
+		let releaseMetadata!: () => void;
+		const metadataHeld = new Promise<void>((resolve) => { releaseMetadata = resolve; });
+		const lionStore = {
+			namespaceId: path.join(dir, "lion-runs.json"),
+			async mutate<T>(fn: (l: LionLedger) => T) {
+				mutationCount++;
+				if (mutationCount === 2) await metadataHeld;
+				return { result: fn(ledger) };
+			},
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const runner = () => async (req: LionRunRequest) => {
+			req.onProcessStart?.({ pid: 111, pgid: null, isAlive: () => true, cancel: () => true });
+			req.onProcessExit?.();
+			return { text: "ok", report };
+		};
+		const adapter = await createLionAdapter(
+			{ cwd: dir, isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns },
+		);
+		const original = await adapter.createRun(assignment());
+		await adapter.run(original, assignment(), () => undefined);
+		await adapter.finishRun(original.id, { output: "ok", report });
+		ledger.delete(original.id);
+		const replacement = ledger.create({ objective: "replacement" });
+		assert.equal(replacement.id, original.id);
+		releaseMetadata();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(ledger.get(replacement.id)?.control, null);
+		activeRuns.clearActiveRunsForTests();
+	});
 });

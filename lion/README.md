@@ -93,7 +93,7 @@ lion run \
 lion steer id="run-001" message="Narrow the change to tests only."
 ```
 
-RPC live steering uses pi's official `RpcClient.steer()` control channel. Running steering is recorded as `pending_delivery`, the active RPC runner query-checks for pending messages with non-overlapping adaptive polling, reserves them durably, rechecks the channel after every ledger await and immediately before `RpcClient.steer()`, then marks the message `delivered` or `delivery_failed`. The live-steering gate closes as soon as the worker becomes idle or the RPC child exits; messages not already in flight are failed rather than reported as delivered after the final response. A pre-aborted run is rejected before client creation/prompting, prompt failures cannot abandon an idle waiter, and cancellation attempts bounded graceful abort before always attempting child stop. Running steering on the default `json` runner is still rejected as `rejected_running` because `pi --mode json -p --no-session` has no live bidirectional control channel.
+RPC live steering uses pi's official `RpcClient.steer()` control channel. Running steering is recorded as `pending_delivery`, the active RPC runner query-checks for pending messages with non-overlapping adaptive polling, reserves them durably, rechecks the channel after every ledger await and immediately before `RpcClient.steer()`, then marks the message `delivered` or `delivery_failed`. The live-steering gate closes as soon as the worker becomes idle or the RPC child exits; messages not already in flight are failed rather than reported as delivered after the final response. A pre-aborted run is rejected before client creation/prompting, the consumed idle waiter is installed before prompting so immediate completion cannot be missed, prompt failures cannot abandon that waiter, and cancellation attempts bounded graceful abort before always attempting child stop. A failed normal stop is surfaced and is not reported as process exit while the child still appears alive. Running steering on the default `json` runner is still rejected as `rejected_running` because `pi --mode json -p --no-session` has no live bidirectional control channel.
 
 Set `LION_RUNNER=rpc` to make RPC the default for local/manual testing, or pass `runner_mode="rpc"` per run. Do not rely on restart reattachment yet: if the parent LION process exits, a persisted running record may have process metadata but no attached RPC bridge, so new steering may be rejected or pending messages may fail during reconciliation.
 
@@ -144,7 +144,7 @@ Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed
 
 | Aspect | Behavior |
 |--------|----------|
-| Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`); existing direct file symlinks resolve once to one canonical operational target used for data, lock, temp, backup, and active-owner identity |
+| Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`); direct file symlinks—including missing targets—resolve once to one canonical operational target used for data, lock, temp, backup, and active-owner identity |
 | Progress | Optional bounded `progress` snapshot is persisted while running and shown in summaries when present; raw text is redacted unless `include_progress_text=true` |
 | Control | Optional process metadata/cancellation state, runner mode, pre-start steering, and RPC live steering delivery records are persisted with the run |
 | Atomicity | Write to `runs.json.tmp` then rename |

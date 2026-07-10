@@ -136,6 +136,8 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let unsubscribeEvents: (() => void) | null = null;
 	let channelOpen = true;
 	let childExited = false;
+	let childIsAlive = () => !childExited;
+	let primaryError: unknown;
 	let ownedCancellationRequested = false;
 	let ownedCancellationPromise: Promise<void> | null = null;
 	let steeringClosedHook: Promise<void> = Promise.resolve();
@@ -148,7 +150,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	const stopClient = async () => {
 		const activeClient = client;
 		if (!activeClient) return;
-		stopPromise ??= Promise.resolve().then(() => activeClient.stop()).finally(() => { childExited = true; });
+		stopPromise ??= Promise.resolve().then(() => activeClient.stop()).then(() => { childExited = true; });
 		return stopPromise;
 	};
 	const abortAndStop = async (activeClient: LionRpcClient) => {
@@ -231,6 +233,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		const info = activeClient.getProcessInfo?.();
 		if (info?.pid) {
 			const processIsAlive = info.isAlive ?? (() => !childExited);
+			childIsAlive = () => !childExited && processIsAlive();
 			try {
 				req.onProcessStart?.({
 					...info,
@@ -241,14 +244,11 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 						await ownedCancellationPromise;
 						return true;
 					},
-					isAlive: () => !childExited && processIsAlive(),
+					isAlive: childIsAlive,
 				});
 			} catch { /* process metadata is best-effort */ }
 		}
 
-		await raceAbort(activeClient.prompt(buildLionUserPrompt(req.run)), req.signal, () => abortAndStop(activeClient));
-		poller = new AdaptivePoller(deliverPending, opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, opts.maxPollIntervalMs ?? DEFAULT_MAX_POLL_INTERVAL_MS);
-		poller.start();
 		const idle = activeClient.waitForIdle(req.timeout_ms).finally(closeSteeringChannel);
 		void idle.catch(() => undefined);
 		const childExit = activeClient.waitForExit?.().then(async () => {
@@ -261,6 +261,10 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 			throw new Error("LION RPC child exited before becoming idle");
 		});
 		if (childExit) void childExit.catch(() => undefined);
+		const prompt = activeClient.prompt(buildLionUserPrompt(req.run));
+		await raceAbort(childExit ? Promise.race([prompt, childExit]) : prompt, req.signal, () => abortAndStop(activeClient));
+		poller = new AdaptivePoller(deliverPending, opts.pollIntervalMs ?? DEFAULT_POLL_INTERVAL_MS, opts.maxPollIntervalMs ?? DEFAULT_MAX_POLL_INTERVAL_MS);
+		if (channelOpen) poller.start();
 		if (await deliverPending()) poller.wake();
 		await raceAbort(childExit ? Promise.race([idle, childExit]) : idle, req.signal, () => abortAndStop(activeClient));
 		if (ownedCancellationRequested) {
@@ -275,6 +279,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		const report: LionReport | null = parseLionReport(text);
 		return { text, report };
 	} catch (err) {
+		primaryError = err;
 		closeSteeringChannel();
 		await steeringClosedHook.catch(() => undefined);
 		await waitForInFlightDelivery();
@@ -284,12 +289,14 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		closeSteeringChannel();
 		poller?.stop();
 		try { unsubscribeEvents?.(); } catch { /* ignore */ }
-		try { await stopClient(); } catch { /* original runner outcome wins */ }
-		notifyProcessExit();
+		let stopError: unknown;
+		try { await stopClient(); } catch (err) { stopError = err; }
+		if (!childIsAlive()) notifyProcessExit();
 		if (tmpPath)
 			try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
 		if (tmpDir)
 			try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
+		if (stopError && !primaryError) throw stopError;
 	}
 }
 

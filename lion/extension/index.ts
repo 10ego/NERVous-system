@@ -12,7 +12,7 @@ import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type 
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createLionRunner, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
-import { attachActiveRunProcess, beginActiveRun, cancelActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, markActiveRunExited, replayPendingCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
+import { attachActiveRunProcess, beginActiveRun, cancelActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunExited, replayPendingCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
 interface LionDetails {
 	action: string;
@@ -216,7 +216,9 @@ async function executeRun(args: {
 			onProgress: enqueueProgress,
 			onProcessStart: (info) => {
 				attachActiveRunProcess(activeOwner, info);
-				void args.store.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).then((updated) => { run = updated.result; }).catch((err) => {
+				void args.store.mutate((l) => isActiveRunOwner(activeOwner)
+					? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })
+					: l.get(run.id)).then((updated) => { if (updated.result) run = updated.result; }).catch((err) => {
 					console.warn(`[nervous-system/lion] process metadata update failed for ${run.id}:`, err);
 				}).finally(() => replayPendingCancellation(activeOwner, args.store).catch((err) => {
 					console.warn(`[nervous-system/lion] pending cancellation replay failed for ${run.id}:`, err);

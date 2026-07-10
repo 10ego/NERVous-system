@@ -92,6 +92,10 @@ export function getActiveRunIds(namespaceId: string): string[] {
 	return Array.from(activeRuns.values()).filter((entry) => entry.namespaceId === namespaceId).map((entry) => entry.runId);
 }
 
+export function isActiveRunOwner(owner: ActiveRunOwner): boolean {
+	return activeRuns.get(scopeKey(owner))?.ownerId === owner.ownerId;
+}
+
 export function isActiveRunAttached(scope: ActiveRunScope, runnerMode?: LionRunnerMode): boolean {
 	const entry = activeRuns.get(scopeKey(scope));
 	if (!entry) return false;
@@ -128,11 +132,14 @@ export async function replayPendingCancellation(owner: ActiveRunOwner, store: {
 	query<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
 	mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
 }): Promise<ActiveCancelResult | null> {
+	if (!isActiveRunOwner(owner)) return null;
 	const current = (await store.query((ledger) => ledger.get(owner.runId))).result;
 	if (!current?.control?.cancel_requested_at) return null;
 	if (current.control.cancel_delivery_status === "delivered" || current.control.cancel_delivery_status === "not_needed") return null;
 	const result = await cancelActiveRun(owner, "SIGTERM");
-	await store.mutate((ledger) => ledger.markCancelDelivery(owner.runId, result.delivered ? "delivered" : result.reason));
+	await store.mutate((ledger) => isActiveRunOwner(owner)
+		? ledger.markCancelDelivery(owner.runId, result.delivered ? "delivered" : result.reason)
+		: ledger.get(owner.runId));
 	return result;
 }
 

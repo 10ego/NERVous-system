@@ -27,7 +27,20 @@ export function resolveLionLocation(cwd: string): LionLocation {
 }
 
 export function canonicalLionNamespace(runsPath: string): string {
-	const absolute = path.resolve(runsPath);
+	let absolute = path.resolve(runsPath);
+	const seenLinks = new Set<string>();
+	for (;;) {
+		try {
+			const stat = fsSync.lstatSync(absolute);
+			if (!stat.isSymbolicLink()) break;
+			if (seenLinks.has(absolute)) throw new Error(`lion: symlink cycle at ${absolute}`);
+			seenLinks.add(absolute);
+			absolute = path.resolve(path.dirname(absolute), fsSync.readlinkSync(absolute));
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			break;
+		}
+	}
 	let existing = absolute;
 	while (!fsSync.existsSync(existing)) {
 		const parent = path.dirname(existing);

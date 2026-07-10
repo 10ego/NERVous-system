@@ -104,6 +104,19 @@ describe("FileBackend", () => {
 		assert.equal((await second.query((l) => l.all())).result[0]?.objective, "through symlink");
 	});
 
+	it("preserves a direct symlink whose ledger target does not exist yet", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-dangling-symlink-test-"));
+		const target = path.join(dir, "missing-target", "runs.json");
+		const alias = path.join(dir, "alias-runs.json");
+		await fs.symlink(target, alias, "file");
+		const store = new LionStore(new FileBackend({ runsPath: alias, dir }));
+		await store.mutate((l) => l.create({ objective: "create target" }));
+
+		assert.equal((await fs.lstat(alias)).isSymbolicLink(), true);
+		assert.equal(store.backend.location.runsPath, await fs.realpath(target));
+		assert.equal(JSON.parse(await fs.readFile(target, "utf8")).runs["run-001"].objective, "create target");
+	});
+
 	it("recovers corrupt files", async () => {
 		const { backend, dir } = await tmpStore();
 		await fs.writeFile(backend.location.runsPath, "{ broken", "utf8");

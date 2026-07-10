@@ -150,7 +150,9 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					timeout_ms: p.timeout_ms ?? DEFAULT_RUN_WAVE_TIMEOUT_MS,
 					onProcessStart: (info) => {
 						activeRuns.attachActiveRunProcess(activeOwner, info);
-						void lionStore.mutate((l) => l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })).catch(() => undefined).finally(() => activeRuns.replayPendingCancellation(activeOwner, lionStore).catch(() => undefined));
+						void lionStore.mutate((l) => activeRuns.isActiveRunOwner(activeOwner)
+							? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })
+							: l.get(run.id)).catch(() => undefined).finally(() => activeRuns.replayPendingCancellation(activeOwner, lionStore).catch(() => undefined));
 					},
 					onControlClosed: () => activeRuns.markActiveRunExited(activeOwner),
 					onProcessExit: () => activeRuns.markActiveRunExited(activeOwner),
@@ -252,12 +254,19 @@ export default function (pi: ExtensionAPI) {
 					});
 				}
 				case "cancel": {
-					return runOp(store, action, (l) => {
+					const result = await runOp(store, action, (l) => {
 						const id = waveId(l, p.wave_id);
 						if (!id) return fail(action, "cancel requires wave_id or current wave.");
 						const wave = l.cancel(id);
 						return ok(action, `Cancelled ${wave.id}.`, { wave });
 					});
+					const releaseMessages: string[] = [];
+					for (const assignment of result.details.wave?.assignments.filter((candidate) => candidate.status === "cancelled") ?? []) {
+						const message = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: assignment.lion_run_id ?? undefined, summary: "CEREBEL wave cancelled" } as CerebelToolInput, "cancelled");
+						if (message) releaseMessages.push(message);
+					}
+					if (releaseMessages.length) result.content[0]!.text += ` ${releaseMessages.join(" ")}`;
+					return result;
 				}
 				case "run_wave": {
 					try {
