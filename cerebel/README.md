@@ -127,7 +127,7 @@ cerebel/
 
 CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. The `run_wave` action dynamically loads the LION runtime only when invoked; if LION is unavailable, it fails clearly without affecting the rest of CEREBEL.
 
-`run_wave` does **not** orchestrate cancellation or steering across a whole wave. LION owns per-run controls: best-effort active-owner cancellation, queued/pre-start steering, and explicit opt-in RPC live steering. `run_wave` attaches launched workers to that per-run control registry, but callers should still use LION actions directly for individual workers until CEREBEL has a higher-level wave control policy.
+CEREBEL provides whole-wave cancellation through `cerebel cancel`. Every new CEREBEL→LION link stores both `lion_run_id` and the immutable `lion_run_incarnation_id`; cancellation requests and settlement checks target that exact execution. CEREBEL waits for all verifiable linked LIONs to settle before terminalizing the wave or releasing GANGLION capacity. Missing/replaced exact runs are treated as superseded, while legacy links without an incarnation fail closed and retain the wave/capacity for operator resolution. Settlement polling is batched through one LION ledger snapshot per interval, and invalid timeout overrides fall back to the bounded default. Steering remains a per-run LION control, with RPC live steering explicitly opt-in.
 
 ---
 

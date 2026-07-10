@@ -31,7 +31,7 @@ LIONs complete → update AXON → CEREBEL assigns more → … → CORTEX check
 
 **Key principle:** AXON is durable state; SYNAPSE is transient coordination. Interrupted work resumes from AXON without the original context window.
 
-LION runs also expose optional bounded live progress snapshots and `nervous:lion:*` lifecycle/progress events. The dashboard can show those snapshots, and CEREBEL can optionally `run_wave` planned assignments through LION while recording grouped wave outcomes. LION supports best-effort process cancellation, queued/pre-start steering, and explicit opt-in RPC live steering via `runner_mode="rpc"`; the default JSON subprocess runner remains backward-compatible and rejects running steering.
+LION runs also expose optional bounded live progress snapshots and `nervous:lion:*` lifecycle/progress events. The dashboard can show those snapshots, and CEREBEL can optionally `run_wave` planned assignments through LION while recording grouped wave outcomes. CEREBEL links and settles exact immutable LION incarnations before wave cancellation can release GANGLION capacity; legacy links without an incarnation fail closed. LION supports best-effort process cancellation, queued/pre-start steering, and explicit opt-in RPC live steering via `runner_mode="rpc"`; the default JSON subprocess runner remains backward-compatible and rejects running steering.
 
 ## State isolation
 

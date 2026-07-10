@@ -112,7 +112,9 @@ describe("LION subprocess helpers", () => {
 	it("rejects after owner-issued cancellation even when the child exits numerically", async () => {
 		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lion-json-cancel-test-"));
 		const bin = path.join(dir, "pi");
-		await fs.promises.writeFile(bin, `#!/usr/bin/env node\nprocess.on("SIGTERM", () => process.exit(143));\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+		const ready = path.join(dir, "ready");
+		const handled = path.join(dir, "handled");
+		await fs.promises.writeFile(bin, `#!/usr/bin/env node\nconst fs = require("node:fs");\nprocess.on("SIGTERM", () => { fs.writeFileSync(${JSON.stringify(handled)}, "handled"); process.exit(143); });\nfs.writeFileSync(${JSON.stringify(ready)}, "ready");\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
 		const previousPath = process.env.PATH;
 		process.env.PATH = `${dir}${path.delimiter}${previousPath ?? ""}`;
 		try {
@@ -121,8 +123,13 @@ describe("LION subprocess helpers", () => {
 			const processStarted = new Promise<import("../extension/subprocess.ts").LionProcessInfo>((resolve) => { resolveProcess = resolve; });
 			const running = runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5000, onProcessStart: resolveProcess });
 			const processInfo = await processStarted;
+			for (let attempt = 0; attempt < 200; attempt++) {
+				try { await fs.promises.access(ready); break; }
+				catch { if (attempt === 199) throw new Error("fake child did not install SIGTERM handler"); await new Promise((resolve) => setTimeout(resolve, 5)); }
+			}
 			assert.equal(await processInfo.cancel?.("SIGTERM"), true);
 			await assert.rejects(() => running, /aborted or timed out/);
+			assert.equal(await fs.promises.readFile(handled, "utf8"), "handled");
 		} finally {
 			if (previousPath === undefined) delete process.env.PATH;
 			else process.env.PATH = previousPath;
