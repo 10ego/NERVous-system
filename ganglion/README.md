@@ -36,7 +36,7 @@ Package surfaces:
 | `remove_member` | Remove an idle member |
 | `set_status` | forming/active/paused/draining/completed/cancelled |
 | `allocate` | Allocate ready task briefs to available members by capability/capacity |
-| `record` | Record allocation result and release terminal members |
+| `record` | Record allocation result and release a terminal member only when `current_allocation_id` still matches that allocation; stale historical records cannot clear a newer lease |
 | `release` | Release a member/allocation manually |
 | `get` | Show one/current group |
 | `list` | List groups |

@@ -53,7 +53,7 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
 - `run_wave` — actively reserve planned assignments, create/run linked LION workers, attach them to LION per-run controls, recover stale reservations without run ids, join every admitted sibling before returning, stop/release admission after host abort, and record grouped outcomes.
 - `decide` — compute the next controller decision.
 - `complete_wave` — finish a successful wave.
-- `cancel` — cancel a wave and release linked GANGLION capacity for cancelled assignments.
+- `cancel` — cancel and settle every linked LION first, then cancel the wave and release only still-owned GANGLION capacity; unsettled workers retain their leases.
 - `get`, `list`, `summary` — inspect state.
 
 ## Good delegation

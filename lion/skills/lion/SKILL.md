@@ -41,7 +41,7 @@ Useful controls:
 - `lion run dry_run=true ...` queues a run without launching it.
 - `lion steer id="run-001" message="..."` adds pre-start steering to queued runs.
 - `lion start id="run-001"` launches a queued run and applies queued steering.
-- `lion cancel id="run-001" reason="..."` records cancellation and only reports delivery when the exact active owner confirms a JSON signal or RPC control action; delayed escalation cannot transfer to a replacement owner.
+- `lion cancel id="run-001" reason="..."` records cancellation and only reports delivery when the exact active owner and immutable run incarnation confirm a JSON signal or RPC control action; direct/replayed delivery arms owner-bound escalation immediately, and terminal settlement waits for process exit.
 - `runner_mode="rpc"` (or `LION_RUNNER=rpc`) opts into live mid-run steering through pi RPC; the default `json` runner rejects running steering.
 - `include_progress_text=true` opts into raw assistant text tails in progress telemetry; default progress text is redacted.
 - `LION_EVENT_INCLUDE_OBJECTIVE=true` opts into raw objectives on local event payloads; default events redact objectives.
