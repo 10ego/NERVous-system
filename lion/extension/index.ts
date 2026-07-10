@@ -12,7 +12,7 @@ import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type 
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createLionRunner, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
-import { attachActiveRunProcess, beginActiveRun, cancelActiveRunWithEscalation, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunExited, replayPendingCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
+import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
 interface LionDetails {
 	action: string;
@@ -320,21 +320,16 @@ export default function (pi: ExtensionAPI) {
 				case "cancel": {
 					if (!p.id) return fail(action, "cancel requires `id`.");
 					try {
-						const { result } = await store.mutate((l) => l.requestCancel(p.id!, p.reason ?? p.context));
-						if (result.already_terminal) return ok(action, `LION ${p.id} is already terminal (${result.run.status}).`, { run: result.run });
-						if (!result.signal) return ok(action, `Cancelled queued LION ${p.id}.`, { run: result.run });
-
-						const scope = activeRunScope(store, result.run);
-						const delivered = await cancelActiveRunWithEscalation(scope, result.signal);
-						const deliveryStatus = delivered.delivered ? "delivered" : delivered.reason;
-						const updated = await store.mutate((l) => l.markCancelDeliveryIfCurrent(p.id!, result.run.incarnation_id, deliveryStatus));
-						if (!updated.result.committed) {
-							return ok(action, `Cancellation result for ${p.id} was superseded by a replacement run.`, { run: updated.result.run });
+						const cancellation = await requestRunCancellation(store, p.id, p.reason ?? p.context);
+						const run = cancellation.run;
+						if (!run) return ok(action, `Cancellation result for ${p.id} was superseded by a removed run.`);
+						if (cancellation.superseded) return ok(action, `Cancellation result for ${p.id} was superseded by a replacement run.`, { run });
+						if (cancellation.settled) {
+							return ok(action, run.status === "aborted" ? `Cancelled LION ${p.id}.` : `LION ${p.id} is already terminal (${run.status}).`, { run });
 						}
-						if (delivered.delivered) {
-							return ok(action, `Cancellation delivered to active LION ${p.id}${delivered.pid ? ` (pid ${delivered.pid})` : ""}.`, { run: updated.result.run });
-						}
-						return ok(action, `Cancel recorded for ${p.id}, but no owned active worker was signaled (${delivered.reason}).`, { run: updated.result.run });
+						const delivery = cancellation.delivery;
+						if (delivery?.delivered) return ok(action, `Cancellation delivered to active LION ${p.id}${delivery.pid ? ` (pid ${delivery.pid})` : ""}.`, { run });
+						return ok(action, `Cancel recorded for ${p.id}, but no owned active worker was signaled (${delivery && !delivery.delivered ? delivery.reason : "not_attached"}).`, { run });
 					} catch (e) {
 						return e instanceof LionError ? fail(action, `lion cancel failed (${e.code}): ${e.message}`) : fail(action, `lion cancel failed: ${e instanceof Error ? e.message : String(e)}`);
 					}

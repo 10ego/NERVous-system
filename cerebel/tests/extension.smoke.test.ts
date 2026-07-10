@@ -5,7 +5,11 @@ import * as path from "node:path";
 import ts from "typescript";
 import { describe, it } from "vitest";
 import { GanglionStore } from "../../ganglion/extension/backend.ts";
-import factory from "../extension/index.ts";
+import { LionStore } from "../../lion/extension/backend.ts";
+import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun } from "../../lion/extension/active-runs.ts";
+import factory, { runWaveBatchFailureResult } from "../extension/index.ts";
+import { CerebelLedger } from "../extension/store.ts";
+import { RunWaveBatchError } from "../extension/run-wave.ts";
 
 function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 	const tools: any[] = [];
@@ -98,6 +102,16 @@ describe("cerebel extension factory", () => {
 		assert.ok(names.includes("cerebel:waves"));
 	});
 
+	it("preserves partial run_wave results in failed tool details", () => {
+		const ledger = new CerebelLedger();
+		const wave = ledger.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] });
+		const partial = { wave, assignment_results: [{ assignment_id: "assign-001", lion_run_id: "run-001", outcome: "completed" as const, summary: "done", blockers: [] }], summary: "partial" };
+		const result = runWaveBatchFailureResult(new RunWaveBatchError("finish failed", partial, [new Error("finish failed")]));
+		assert.equal(result.isError, true);
+		assert.equal(result.details.wave?.id, wave.id);
+		assert.equal(result.details.run_wave?.assignment_results[0]?.lion_run_id, "run-001");
+	});
+
 	it("releases linked GANGLION capacity when recording a terminal assignment", async () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-ganglion-"));
@@ -138,7 +152,20 @@ describe("cerebel extension factory", () => {
 			const ctx = { cwd: dir };
 			await cerebel.execute("plan", { action: "plan_wave", assignments: [{ task_id: "task-api", agent_id: "lion-api", objective: "API", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] }, undefined, undefined, ctx);
 			await cerebel.execute("dispatch", { action: "dispatch", links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] }, undefined, undefined, ctx);
-			const cancelled = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, ctx);
+			const lionStore = LionStore.fromCwd(dir);
+			const lionRun = (await lionStore.mutate((l) => l.create({ objective: "active API work" }))).result;
+			assert.equal(lionRun.id, "run-001");
+			const owner = beginActiveRun({ namespaceId: lionStore.namespaceId, runId: lionRun.id, incarnationId: lionRun.incarnation_id }, "json");
+			let signalResolve!: () => void;
+			const signalReceived = new Promise<void>((resolve) => { signalResolve = resolve; });
+			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { signalResolve(); return true; } });
+			const cancelling = cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, ctx);
+			await signalReceived;
+			const beforeSettlement = (await ganglionStore.query((l) => l.get("ganglion-001"))).result;
+			assert.equal(beforeSettlement?.members[0]?.status, "busy");
+			await lionStore.mutate((l) => l.finish(lionRun.id, { output: "", report: null, status: "aborted", error: "cancelled" }));
+			finishActiveRun(owner);
+			const cancelled = await cancelling;
 			assert.match(cancelled.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded/);
 			const repeated = await cerebel.execute("cancel-again", { action: "cancel" }, undefined, undefined, ctx);
 			assert.match(repeated.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded/);
@@ -147,6 +174,7 @@ describe("cerebel extension factory", () => {
 			assert.equal(ganglion?.members[0]?.current_allocation_id, null);
 			assert.equal(ganglion?.allocations[0]?.status, "cancelled");
 		} finally {
+			clearActiveRunsForTests();
 			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
 			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
 			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;

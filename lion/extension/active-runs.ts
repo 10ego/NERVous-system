@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { LionLedger } from "./store.ts";
-import type { LionRunnerMode } from "./schema.ts";
+import type { LionRun, LionRunnerMode } from "./schema.ts";
 import type { LionProcessInfo } from "./subprocess.ts";
 
 export type ActiveCancelSignal = "SIGTERM" | "SIGKILL";
@@ -167,6 +167,43 @@ export async function replayPendingCancellation(owner: ActiveRunOwner, store: {
 	return result;
 }
 
+export interface LionControlStore {
+	namespaceId: string;
+	query<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
+	mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
+}
+
+export interface RunCancellationResult {
+	run: LionRun | undefined;
+	settled: boolean;
+	superseded: boolean;
+	delivery?: ActiveCancelResult;
+}
+
+export async function requestRunCancellation(store: LionControlStore, runId: string, reason?: string | null): Promise<RunCancellationResult> {
+	const requested = (await store.mutate((ledger) => ledger.requestCancel(runId, reason))).result;
+	if (requested.already_terminal || !requested.signal) return { run: requested.run, settled: true, superseded: false };
+	const scope: ActiveRunScope = { namespaceId: store.namespaceId, runId, incarnationId: requested.run.incarnation_id ?? null };
+	const delivery = await cancelActiveRunWithEscalation(scope, requested.signal);
+	const status = delivery.delivered ? "delivered" : delivery.reason;
+	const persisted = (await store.mutate((ledger) => ledger.markCancelDeliveryIfCurrent(runId, requested.run.incarnation_id, status))).result;
+	return { run: persisted.run, settled: false, superseded: !persisted.committed, delivery };
+}
+
+export async function waitForRunSettlement(store: LionControlStore, run: Pick<LionRun, "id" | "incarnation_id">, timeoutMs = 15_000, pollMs = 25): Promise<RunCancellationResult> {
+	const deadline = Date.now() + Math.max(0, timeoutMs);
+	for (;;) {
+		const current = (await store.query((ledger) => ledger.get(run.id))).result;
+		if (!current || (current.incarnation_id ?? null) !== (run.incarnation_id ?? null)) {
+			return { run: current, settled: true, superseded: true };
+		}
+		if (["completed", "blocked", "failed", "aborted"].includes(current.status)) return { run: current, settled: true, superseded: false };
+		if (Date.now() >= deadline) return { run: current, settled: false, superseded: false };
+		await new Promise((resolve) => setTimeout(resolve, Math.max(1, pollMs)));
+	}
+}
+
 export function clearActiveRunsForTests(): void {
+	for (const entry of activeRuns.values()) if (entry.escalationTimer) clearTimeout(entry.escalationTimer);
 	activeRuns.clear();
 }

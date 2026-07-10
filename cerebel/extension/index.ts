@@ -22,8 +22,12 @@ interface LionAdapterDeps {
 function ok(action: string, text: string, details: Omit<CerebelDetails, "action"> = {}): ToolResult {
 	return { content: [{ type: "text", text }], details: { action, ...details } };
 }
-function fail(action: string, message: string): ToolResult {
-	return { content: [{ type: "text", text: message }], details: { action, error: message }, isError: true };
+function fail(action: string, message: string, details: Omit<CerebelDetails, "action" | "error"> = {}): ToolResult {
+	return { content: [{ type: "text", text: message }], details: { action, ...details, error: message }, isError: true };
+}
+
+export function runWaveBatchFailureResult(error: RunWaveBatchError, suffix = ""): ToolResult {
+	return fail("run_wave", `cerebel run_wave failed after all launched workers settled: ${error.message}.${suffix}`, { wave: error.result.wave, run_wave: error.result });
 }
 async function runOp(store: CerebelStore, action: string, op: (l: import("./store.ts").CerebelLedger) => ToolResult): Promise<ToolResult> {
 	try { const { result } = await store.mutate(op); return result; }
@@ -96,6 +100,39 @@ async function recordRunWaveGanglion(cwd: string, result: RunWaveResult): Promis
 		if (message) messages.push(message);
 	}
 	return messages;
+}
+
+interface LinkedLionSettlement {
+	assignment: Assignment;
+	settled: boolean;
+	run_status?: string;
+	error?: string;
+}
+
+async function settleLinkedLionsBeforeCancel(cwd: string, wave: Wave, reason: string, timeoutMs = Number(process.env.CEREBEL_CANCEL_SETTLE_TIMEOUT_MS ?? 15_000)): Promise<LinkedLionSettlement[]> {
+	const [{ LionStore }, controls] = await Promise.all([
+		import("../../lion/extension/backend.ts"),
+		import("../../lion/extension/active-runs.ts"),
+	]);
+	const lionStore = LionStore.fromCwd(cwd);
+	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id && !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status));
+	return Promise.all(assignments.map(async (assignment): Promise<LinkedLionSettlement> => {
+		try {
+			const cancellation = await controls.requestRunCancellation(lionStore, assignment.lion_run_id!, reason);
+			if (!cancellation.run) return { assignment, settled: cancellation.superseded, error: cancellation.superseded ? undefined : "LION run disappeared during cancellation" };
+			const settlement = cancellation.settled
+				? cancellation
+				: await controls.waitForRunSettlement(lionStore, cancellation.run, timeoutMs);
+			return {
+				assignment,
+				settled: settlement.settled,
+				run_status: settlement.run?.status,
+				error: settlement.settled ? undefined : `LION ${assignment.lion_run_id} remained ${settlement.run?.status ?? "unknown"}`,
+			};
+		} catch (error) {
+			return { assignment, settled: false, error: error instanceof Error ? error.message : String(error) };
+		}
+	}));
 }
 
 export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}): Promise<RunWaveLionAdapter> {
@@ -254,14 +291,38 @@ export default function (pi: ExtensionAPI) {
 					});
 				}
 				case "cancel": {
-					const result = await runOp(store, action, (l) => {
+					const initial = (await store.query((l) => {
 						const id = waveId(l, p.wave_id);
-						if (!id) return fail(action, "cancel requires wave_id or current wave.");
-						const wave = l.cancel(id);
-						return ok(action, `Cancelled ${wave.id}.`, { wave });
-					});
+						return id ? l.get(id) : undefined;
+					})).result;
+					if (!initial) return fail(action, "cancel requires wave_id or current wave.");
+					const settledRunIds = new Set<string>();
+					let cancelledWave: Wave | undefined;
+					for (let pass = 0; pass < 10 && !cancelledWave; pass++) {
+						const latest = (await store.query((l) => l.get(initial.id))).result ?? initial;
+						const outstandingWave: Wave = {
+							...latest,
+							assignments: latest.assignments.filter((assignment) => assignment.lion_run_id && !settledRunIds.has(assignment.lion_run_id)),
+						};
+						const settlements = await settleLinkedLionsBeforeCancel(ctx.cwd, outstandingWave, p.context ?? "CEREBEL wave cancelled");
+						const failures = settlements.filter((settlement) => !settlement.settled);
+						if (failures.length) {
+							const message = failures.map((failure) => `${failure.assignment.id}: ${failure.error ?? "LION did not settle"}`).join("; ");
+							return fail(action, `cerebel cancel retained wave/capacity because linked LIONs did not settle: ${message}`, { wave: latest });
+						}
+						for (const settlement of settlements) if (settlement.assignment.lion_run_id) settledRunIds.add(settlement.assignment.lion_run_id);
+						const attempt = await store.mutate((l) => {
+							const current = l.get(initial.id);
+							if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
+							const pending = current.assignments.some((assignment) => assignment.lion_run_id && !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status) && !settledRunIds.has(assignment.lion_run_id));
+							return pending ? undefined : l.cancel(initial.id);
+						});
+						cancelledWave = attempt.result;
+					}
+					if (!cancelledWave) return fail(action, "cerebel cancel could not obtain a stable settled assignment set; no capacity was released", { wave: (await store.query((l) => l.get(initial.id))).result });
+					const result = ok(action, `Cancelled ${cancelledWave.id}.`, { wave: cancelledWave });
 					const releaseMessages: string[] = [];
-					for (const assignment of result.details.wave?.assignments.filter((candidate) => candidate.status === "cancelled") ?? []) {
+					for (const assignment of cancelledWave.assignments.filter((candidate) => candidate.status === "cancelled")) {
 						const message = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: assignment.lion_run_id ?? undefined, summary: "CEREBEL wave cancelled" } as CerebelToolInput, "cancelled");
 						if (message) releaseMessages.push(message);
 					}
@@ -280,7 +341,7 @@ export default function (pi: ExtensionAPI) {
 						if (e instanceof RunWaveBatchError) {
 							const ganglionMessages = await recordRunWaveGanglion(ctx.cwd, e.result);
 							const suffix = ganglionMessages.length ? ` ${ganglionMessages.join(" ")}` : "";
-							return fail(action, `cerebel run_wave failed after all launched workers settled: ${e.message}.${suffix}`);
+							return runWaveBatchFailureResult(e, suffix);
 						}
 						return fail(action, `cerebel run_wave failed: ${e instanceof Error ? e.message : String(e)}`);
 					}
