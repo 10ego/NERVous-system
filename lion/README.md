@@ -144,7 +144,7 @@ Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed
 
 | Aspect | Behavior |
 |--------|----------|
-| Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`); direct file symlinks resolve once to one canonical operational target used for data, lock, temp, backup, and active-owner identity |
+| Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`); existing direct file symlinks resolve once to one canonical operational target used for data, lock, temp, backup, and active-owner identity |
 | Progress | Optional bounded `progress` snapshot is persisted while running and shown in summaries when present; raw text is redacted unless `include_progress_text=true` |
 | Control | Optional process metadata/cancellation state, runner mode, pre-start steering, and RPC live steering delivery records are persisted with the run |
 | Atomicity | Write to `runs.json.tmp` then rename |

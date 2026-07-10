@@ -127,10 +127,12 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 	}
 	let run: LionRun | undefined;
 	let linkedAssignment: Assignment | undefined;
+	let abortCleanupAttempted = false;
 	try {
 		const createdRun = await adapter.createRun(assignment);
 		run = createdRun;
 		if (signal?.aborted) {
+			abortCleanupAttempted = true;
 			await adapter.finishRun(run.id, { output: "", report: null, status: "aborted", error: "Host aborted before LION launch" });
 			await releaseReservations(store, waveId, [assignment], "host aborted before LION launch");
 			return { assignment_id: assignment.id, lion_run_id: run.id, outcome: "skipped", summary: "host aborted before LION launch", blockers: [] };
@@ -146,6 +148,7 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 		linkedAssignment = linkedWave.assignments.find((a) => a.id === assignment.id) ?? assignment;
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
+		if (abortCleanupAttempted && run) throw new Error(`LION cleanup failed for unlinked ${run.id} after host abort: ${message}`, { cause: err });
 		const summary = run ? `LION run setup failed: ${message}` : `LION run creation failed: ${message}`;
 		if (run) {
 			try {
@@ -191,6 +194,7 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		out = await adapter.run(run, assignment, progress.enqueue, signal);
 		if (signal?.aborted) throw new Error("Host aborted run_wave");
 		await progress.drain();
+		if (signal?.aborted) throw new Error("Host aborted run_wave during progress drain");
 	} catch (err) {
 		await progress.drain().catch(() => undefined);
 		return recordWorkerError(store, adapter, waveId, assignment, run, err, signal);
