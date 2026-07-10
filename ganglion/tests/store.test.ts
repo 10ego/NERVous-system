@@ -82,11 +82,12 @@ describe("GanglionLedger", () => {
 		l.allocate(g.id, { tasks: [{ id: "task-old", title: "Old" }] });
 		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "completed" });
 		l.allocate(g.id, { tasks: [{ id: "task-new", title: "New" }] });
-		const stale = l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "cancelled" });
-		assert.equal(stale.allocations[0]?.status, "cancelled");
-		assert.equal(stale.allocations[1]?.status, "assigned");
-		assert.equal(stale.members[0]?.status, "busy");
-		assert.equal(stale.members[0]?.current_allocation_id, "alloc-002");
+		const stale = l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "cancelled" });
+		assert.equal(stale.release_disposition, "retained_by_newer_allocation");
+		assert.equal(stale.ganglion.allocations[0]?.status, "cancelled");
+		assert.equal(stale.ganglion.allocations[1]?.status, "assigned");
+		assert.equal(stale.ganglion.members[0]?.status, "busy");
+		assert.equal(stale.ganglion.members[0]?.current_allocation_id, "alloc-002");
 	});
 
 	it("reconciles busy members from terminal LION runs", () => {

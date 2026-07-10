@@ -85,8 +85,11 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 	if (!ganglionId) return `GANGLION release skipped: assignment ${assignment.id} has allocation ${allocationId} but no ganglion_id.`;
 	try {
 		const { GanglionStore } = await import("../../ganglion/extension/backend.ts");
-		await GanglionStore.fromCwd(cwd).mutate((l) => l.record(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
-		return `GANGLION ${ganglionId}/${allocationId} recorded and capacity released.`;
+		const { result } = await GanglionStore.fromCwd(cwd).mutate((l) => l.recordWithResult(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
+		if (result.release_disposition === "released") return `GANGLION ${ganglionId}/${allocationId} recorded and capacity released.`;
+		if (result.release_disposition === "already_free") return `GANGLION ${ganglionId}/${allocationId} recorded; capacity was already free.`;
+		if (result.release_disposition === "retained_by_newer_allocation") return `GANGLION ${ganglionId}/${allocationId} recorded; capacity retained by a newer allocation.`;
+		return `GANGLION ${ganglionId}/${allocationId} recorded without a terminal capacity release.`;
 	} catch (e) {
 		return `GANGLION release failed for ${ganglionId}/${allocationId}: ${e instanceof Error ? e.message : String(e)}`;
 	}
@@ -327,6 +330,7 @@ export default function (pi: ExtensionAPI) {
 					});
 				}
 				case "cancel": {
+					try {
 					const initial = (await store.query((l) => {
 						const id = waveId(l, p.wave_id);
 						return id ? l.get(id) : undefined;
@@ -368,6 +372,11 @@ export default function (pi: ExtensionAPI) {
 					}
 					if (releaseMessages.length) result.content[0]!.text += ` ${releaseMessages.join(" ")}`;
 					return result;
+					} catch (e) {
+						return e instanceof CerebelError
+							? fail(action, `cerebel cancel failed (${e.code}): ${e.message}`)
+							: fail(action, `cerebel cancel failed: ${e instanceof Error ? e.message : String(e)}`);
+					}
 				}
 				case "run_wave": {
 					try {

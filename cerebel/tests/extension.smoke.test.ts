@@ -129,6 +129,25 @@ describe("cerebel extension factory", () => {
 		assert.equal(result.details.run_wave?.assignment_results[0]?.lion_run_id, "run-001");
 	});
 
+	it("returns structured tool errors when cancellation is invalid", async () => {
+		const previous = process.env.CEREBEL_PATH;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-structured-cancel-"));
+		process.env.CEREBEL_PATH = path.join(dir, "cerebel.json");
+		try {
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			const ctx = { cwd: dir };
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [{ agent_id: "lion-a", objective: "A" }] }, undefined, undefined, ctx);
+			await cerebel.execute("record", { action: "record", assignment_id: "assign-001", outcome: "completed", summary: "done" }, undefined, undefined, ctx);
+			const result = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, ctx);
+			assert.equal(result.isError, true);
+			assert.match(result.details.error, /cerebel cancel failed \(invalid_transition\)/);
+		} finally {
+			if (previous === undefined) delete process.env.CEREBEL_PATH; else process.env.CEREBEL_PATH = previous;
+		}
+	});
+
 	it("releases linked GANGLION capacity when recording a terminal assignment", async () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-ganglion-"));
@@ -214,12 +233,13 @@ describe("cerebel extension factory", () => {
 			await lionStore.mutate((l) => l.finish(lionRun.id, { output: "", report: null, status: "aborted", error: "cancelled" }));
 			finishActiveRun(owner);
 			const cancelled = await cancelling;
-			assert.match(cancelled.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded/);
+			assert.match(cancelled.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded and capacity released/);
+			await ganglionStore.mutate((l) => l.allocate("ganglion-001", { tasks: [{ id: "task-new", title: "New work" }] }));
 			const repeated = await cerebel.execute("cancel-again", { action: "cancel" }, undefined, undefined, ctx);
-			assert.match(repeated.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded/);
+			assert.match(repeated.content[0].text, /capacity retained by a newer allocation/);
 			const { result: ganglion } = await ganglionStore.query((l) => l.get("ganglion-001"));
-			assert.equal(ganglion?.members[0]?.status, "available");
-			assert.equal(ganglion?.members[0]?.current_allocation_id, null);
+			assert.equal(ganglion?.members[0]?.status, "busy");
+			assert.equal(ganglion?.members[0]?.current_allocation_id, "alloc-002");
 			assert.equal(ganglion?.allocations[0]?.status, "cancelled");
 		} finally {
 			clearActiveRunsForTests();

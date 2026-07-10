@@ -5,10 +5,10 @@ import { resolveNervousStateFile } from "@nervous-system/state";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { GanglionStore } from "./backend.ts";
 import { GanglionError, GanglionToolParams, type AllocationStatus, type Ganglion, type GanglionReconcileReport, type GanglionStatus, type GanglionSummary, type GanglionToolInput, type MemberStatus } from "./schema.ts";
-import type { LionRunBrief } from "./store.ts";
+import type { GanglionRecordResult, LionRunBrief } from "./store.ts";
 import { renderGanglionCall, renderGanglionResult, summarizeGanglion, summarizeList, summarizeSummary } from "./render.ts";
 
-interface GanglionDetails { action: string; ganglion?: Ganglion; ganglions?: Ganglion[]; summary?: GanglionSummary; reconcile?: GanglionReconcileReport; error?: string }
+interface GanglionDetails { action: string; ganglion?: Ganglion; ganglions?: Ganglion[]; summary?: GanglionSummary; reconcile?: GanglionReconcileReport; record?: GanglionRecordResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: GanglionDetails; isError?: boolean };
 const ok = (action: string, text: string, details: Omit<GanglionDetails, "action"> = {}): ToolResult => ({ content: [{ type: "text", text }], details: { action, ...details } });
 const fail = (action: string, message: string): ToolResult => ({ content: [{ type: "text", text: message }], details: { action, error: message }, isError: true });
@@ -61,7 +61,16 @@ export default function (pi: ExtensionAPI) {
 				case "remove_member": return runOp(store, action, (l) => { const id = gid(l, p.ganglion_id); if (!id || !p.member_id) return fail(action, "remove_member requires ganglion_id/current and member_id."); const g = l.removeMember(id, p.member_id); return ok(action, `Removed ${p.member_id}.`, { ganglion: g }); });
 				case "set_status": return runOp(store, action, (l) => { const id = gid(l, p.ganglion_id); if (!id || !p.status) return fail(action, "set_status requires ganglion_id/current and status."); const g = l.setStatus(id, p.status as GanglionStatus); return ok(action, `${g.id} → ${g.status}.`, { ganglion: g }); });
 				case "allocate": return runOp(store, action, (l) => { const id = gid(l, p.ganglion_id); if (!id) return fail(action, "allocate requires ganglion_id or current ganglion."); if (!p.tasks?.length) return fail(action, "allocate requires tasks."); const g = l.allocate(id, { tasks: p.tasks, context: p.context }); const latest = g.allocations.slice(-p.tasks.length); return ok(action, `Allocated ${latest.length} task(s) in ${g.id}.`, { ganglion: g }); });
-				case "record": return runOp(store, action, (l) => { const id = gid(l, p.ganglion_id); const status = p.allocation_status; if (!id || !status) return fail(action, "record requires ganglion_id/current and allocation_status."); const g = l.record(id, { allocation_id: p.allocation_id, task_id: p.task_id, lion_run_id: p.lion_run_id, status: status as AllocationStatus, summary: p.summary }); return ok(action, `Recorded allocation result in ${g.id}.`, { ganglion: g }); });
+				case "record": return runOp(store, action, (l) => {
+					const id = gid(l, p.ganglion_id); const status = p.allocation_status;
+					if (!id || !status) return fail(action, "record requires ganglion_id/current and allocation_status.");
+					const record = l.recordWithResult(id, { allocation_id: p.allocation_id, task_id: p.task_id, lion_run_id: p.lion_run_id, status: status as AllocationStatus, summary: p.summary });
+					const disposition = record.release_disposition === "released" ? "capacity released"
+						: record.release_disposition === "already_free" ? "capacity already free"
+						: record.release_disposition === "retained_by_newer_allocation" ? "capacity retained by newer allocation"
+						: "no terminal capacity release";
+					return ok(action, `Recorded allocation result in ${record.ganglion.id}; ${disposition}.`, { ganglion: record.ganglion, record });
+				});
 				case "release": return runOp(store, action, (l) => { const id = gid(l, p.ganglion_id); const target = p.allocation_id ?? p.member_id; if (!id || !target) return fail(action, "release requires ganglion_id/current and allocation_id or member_id."); const g = l.release(id, target); return ok(action, `Released ${target} in ${g.id}.`, { ganglion: g }); });
 				case "reconcile": {
 					let runs: LionRunBrief[];

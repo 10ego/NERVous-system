@@ -49,6 +49,8 @@ export interface CreateGanglionInput {
 }
 export interface AllocateInput { tasks: WorkItemBrief[]; context?: string }
 export interface RecordInput { allocation_id?: string; task_id?: string; lion_run_id?: string; status: AllocationStatus; summary?: string }
+export type AllocationReleaseDisposition = "released" | "already_free" | "retained_by_newer_allocation" | "not_terminal";
+export interface GanglionRecordResult { ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
 export interface LionRunBrief { id: string; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
 
 export class GanglionLedger {
@@ -151,6 +153,10 @@ export class GanglionLedger {
 	}
 
 	record(ganglionId: string, input: RecordInput): Ganglion {
+		return this.recordWithResult(ganglionId, input).ganglion;
+	}
+
+	recordWithResult(ganglionId: string, input: RecordInput): GanglionRecordResult {
 		const g = this.require(ganglionId);
 		if (!A_STATUS.has(input.status)) throw new GanglionError("invalid_arg", `invalid allocation status ${input.status}`);
 		const a = input.allocation_id ? requireAllocation(g, input.allocation_id) : findAllocation(g, input.task_id);
@@ -160,14 +166,22 @@ export class GanglionLedger {
 		a.outcome_summary = input.summary ?? null;
 		a.updated_at = now();
 		const m = requireMember(g, a.member_id);
+		let releaseDisposition: AllocationReleaseDisposition = "not_terminal";
 		if (["completed", "blocked", "failed", "cancelled"].includes(a.status)) {
-			if (m.current_allocation_id === a.id) releaseMember(m, input.lion_run_id);
+			if (m.current_allocation_id === a.id) {
+				releaseMember(m, input.lion_run_id);
+				releaseDisposition = "released";
+			} else if (!m.current_allocation_id && m.status === "available") {
+				releaseDisposition = "already_free";
+			} else {
+				releaseDisposition = "retained_by_newer_allocation";
+			}
 		} else if (!m.current_allocation_id || m.current_allocation_id === a.id) {
 			m.status = "busy";
 			m.current_allocation_id = a.id;
 		}
 		g.updated_at = now();
-		return clone(g);
+		return { ganglion: clone(g), allocation: clone(a), release_disposition: releaseDisposition };
 	}
 
 	release(ganglionId: string, memberOrAllocationId: string): Ganglion {
