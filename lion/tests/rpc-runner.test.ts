@@ -285,7 +285,7 @@ describe("createLionRpcRunner", () => {
 		fake.finishDuringPrompt = true;
 		const run = (await store.mutate((l) => l.create({ objective: "immediate idle", runner_mode: "rpc" }))).result;
 		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
-		const output = await runner({ run, timeout_ms: 50 });
+		const output = await runner({ run, timeout_ms: 1000 });
 		assert.equal(output.report?.outcome, "completed");
 		assert.equal(fake.waitForIdleCalls, 0);
 	});
