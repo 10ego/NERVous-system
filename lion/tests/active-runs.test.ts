@@ -14,7 +14,9 @@ import {
 	markActiveRunControlClosed,
 	replayPendingCancellation,
 	requestRunCancellation,
+	waitForRunSettlements,
 } from "../extension/active-runs.ts";
+import { LionLedger } from "../extension/store.ts";
 
 async function makeStore(label: string): Promise<LionStore> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), `lion-active-${label}-`));
@@ -105,6 +107,38 @@ describe("namespace-scoped active LION ownership", () => {
 		assert.equal(mismatched.superseded, true);
 		assert.equal(mismatched.run?.incarnation_id, replacement.incarnation_id);
 		assert.equal(mismatched.run?.control?.cancel_requested_at, undefined);
+	});
+
+	it("batches settlement checks for multiple runs into one ledger read per tick", async () => {
+		vi.useFakeTimers();
+		const ledger = new LionLedger();
+		const first = ledger.create({ objective: "first" });
+		const second = ledger.create({ objective: "second" });
+		let reads = 0;
+		const store = {
+			namespaceId: "batch-test",
+			async query<T>(fn: (current: LionLedger) => T) { return { result: fn(ledger) }; },
+			async mutate<T>(fn: (current: LionLedger) => T) { return { result: fn(ledger) }; },
+			async mutateMaybe<T>(fn: (current: LionLedger) => { result: T; changed: boolean }) { reads++; const outcome = fn(ledger); return { ...outcome }; },
+		};
+		const waiting = waitForRunSettlements(store, [first, second], 30, 10);
+		await vi.advanceTimersByTimeAsync(30);
+		const results = await waiting;
+		assert.equal(results.length, 2);
+		assert.equal(results.every((result) => !result.settled), true);
+		assert.equal(reads, 4);
+	});
+
+	it("reconciles a stale ownerless run before cancellation refreshes its grace", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const store = await makeStore("reconcile-before-cancel");
+		const run = (await store.mutate((l) => l.create({ objective: "lost owner" }))).result;
+		vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
+		const result = await requestRunCancellation(store, run.id, "cancel lost owner", { expectedIncarnationId: run.incarnation_id });
+		assert.equal(result.settled, true);
+		assert.equal(result.run?.status, "failed");
+		assert.match(result.run?.error ?? "", /owner was lost/i);
 	});
 
 	it("retains cancellation authority after RPC control closes but before process exit", async () => {

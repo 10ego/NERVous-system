@@ -220,7 +220,7 @@ export class LionLedger {
 		const deliveryStatus = r.control?.cancel_delivery_status === "delivered"
 			? "delivered"
 			: r.status === "running" ? "requested" : "not_needed";
-		r.control = { ...(r.control ?? {}), cancel_requested_at: r.control?.cancel_requested_at ?? ts, cancel_reason: reason ?? r.control?.cancel_reason ?? null, cancel_signal: "SIGTERM", cancel_delivery_status: deliveryStatus, last_seen_at: ts };
+		r.control = { ...(r.control ?? {}), cancel_requested_at: r.control?.cancel_requested_at ?? ts, cancel_reason: reason ?? r.control?.cancel_reason ?? null, cancel_signal: "SIGTERM", cancel_delivery_status: deliveryStatus, last_seen_at: r.control?.last_seen_at ?? null };
 		if (r.status === "queued") {
 			this.transition(r, "aborted");
 			this.failOpenSteeringForRun(r, "run cancelled before queued steering could be applied", ts);
@@ -530,7 +530,9 @@ function trimText(value: string): string {
 }
 
 function isReconcileStale(run: LionRun, nowMs: number, staleAfterMs: number): boolean {
-	const candidates = [run.control?.last_seen_at, run.updated_at, run.started_at]
+	// Cancellation and ledger bookkeeping are not owner heartbeats. Using updated_at
+	// here lets repeated control requests postpone owner-loss reconciliation forever.
+	const candidates = [run.control?.last_seen_at, run.started_at]
 		.filter((value): value is string => typeof value === "string")
 		.map((value) => Date.parse(value))
 		.filter((value) => Number.isFinite(value));

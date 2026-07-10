@@ -7,7 +7,7 @@ import { describe, it } from "vitest";
 import { GanglionStore } from "../../ganglion/extension/backend.ts";
 import { LionStore } from "../../lion/extension/backend.ts";
 import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun } from "../../lion/extension/active-runs.ts";
-import factory, { runWaveBatchFailureResult } from "../extension/index.ts";
+import factory, { resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel } from "../extension/index.ts";
 import { CerebelLedger } from "../extension/store.ts";
 import { RunWaveBatchError } from "../extension/run-wave.ts";
 
@@ -86,6 +86,23 @@ describe("cerebel extension factory", () => {
 			const runtime = require("../../lion/extension/store.ts");
 		`);
 		assert.equal(violations.length, 5);
+	});
+
+	it("validates cancellation settlement timeouts and skips LION loading for unlinked waves", async () => {
+		assert.equal(resolveCancelSettlementTimeout("250"), 250);
+		assert.equal(resolveCancelSettlementTimeout("bogus"), 15_000);
+		assert.equal(resolveCancelSettlementTimeout("Infinity"), 15_000);
+		assert.equal(resolveCancelSettlementTimeout("0"), 15_000);
+		assert.equal(resolveCancelSettlementTimeout("120001"), 15_000);
+		const ledger = new CerebelLedger();
+		const wave = ledger.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] });
+		let runtimeLoads = 0;
+		const settlements = await settleLinkedLionsBeforeCancel(process.cwd(), wave, "cancel", 10, async () => {
+			runtimeLoads++;
+			throw new Error("LION unavailable");
+		});
+		assert.deepEqual(settlements, []);
+		assert.equal(runtimeLoads, 0);
 	});
 
 	it("registers the cerebel tool and commands", () => {

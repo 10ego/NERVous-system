@@ -104,40 +104,71 @@ async function recordRunWaveGanglion(cwd: string, result: RunWaveResult): Promis
 	return messages;
 }
 
-interface LinkedLionSettlement {
+export interface LinkedLionSettlement {
 	assignment: Assignment;
 	settled: boolean;
 	run_status?: string;
 	error?: string;
 }
 
-async function settleLinkedLionsBeforeCancel(cwd: string, wave: Wave, reason: string, timeoutMs = Number(process.env.CEREBEL_CANCEL_SETTLE_TIMEOUT_MS ?? 15_000)): Promise<LinkedLionSettlement[]> {
-	const [{ LionStore }, controls] = await Promise.all([
-		import("../../lion/extension/backend.ts"),
-		import("../../lion/extension/active-runs.ts"),
-	]);
-	const lionStore = LionStore.fromCwd(cwd);
+const DEFAULT_CANCEL_SETTLE_TIMEOUT_MS = 15_000;
+const MAX_CANCEL_SETTLE_TIMEOUT_MS = 120_000;
+
+export function resolveCancelSettlementTimeout(value = process.env.CEREBEL_CANCEL_SETTLE_TIMEOUT_MS): number {
+	if (value === undefined || value.trim() === "") return DEFAULT_CANCEL_SETTLE_TIMEOUT_MS;
+	const parsed = Number(value);
+	return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= MAX_CANCEL_SETTLE_TIMEOUT_MS
+		? parsed
+		: DEFAULT_CANCEL_SETTLE_TIMEOUT_MS;
+}
+
+export async function settleLinkedLionsBeforeCancel(
+	cwd: string,
+	wave: Wave,
+	reason: string,
+	timeoutMs = resolveCancelSettlementTimeout(),
+	loadRuntime = () => Promise.all([import("../../lion/extension/backend.ts"), import("../../lion/extension/active-runs.ts")]),
+): Promise<LinkedLionSettlement[]> {
 	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id && !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status));
-	return Promise.all(assignments.map(async (assignment): Promise<LinkedLionSettlement> => {
+	if (!assignments.length) return [];
+	const results = new Map<string, LinkedLionSettlement>();
+	const verifiable = assignments.filter((assignment) => {
+		if (assignment.lion_run_incarnation_id) return true;
+		results.set(assignment.id, { assignment, settled: false, error: `LION ${assignment.lion_run_id} link is legacy/unverifiable because it has no incarnation id` });
+		return false;
+	});
+	if (!verifiable.length) return assignments.map((assignment) => results.get(assignment.id)!);
+
+	const [{ LionStore }, controls] = await loadRuntime();
+	const lionStore = LionStore.fromCwd(cwd);
+	const pending: Array<{ assignment: Assignment; run: NonNullable<Awaited<ReturnType<typeof controls.requestRunCancellation>>["run"]> }> = [];
+	await Promise.all(verifiable.map(async (assignment) => {
 		try {
-			if (!assignment.lion_run_incarnation_id) {
-				return { assignment, settled: false, error: `LION ${assignment.lion_run_id} link is legacy/unverifiable because it has no incarnation id` };
-			}
 			const cancellation = await controls.requestRunCancellation(lionStore, assignment.lion_run_id!, reason, { expectedIncarnationId: assignment.lion_run_incarnation_id });
-			if (!cancellation.run) return { assignment, settled: cancellation.superseded, error: cancellation.superseded ? undefined : "LION run disappeared during cancellation" };
-			const settlement = cancellation.settled
-				? cancellation
-				: await controls.waitForRunSettlement(lionStore, cancellation.run, timeoutMs);
-			return {
+			if (cancellation.settled) {
+				results.set(assignment.id, { assignment, settled: true, run_status: cancellation.run?.status });
+			} else if (cancellation.run) {
+				pending.push({ assignment, run: cancellation.run });
+			} else {
+				results.set(assignment.id, { assignment, settled: cancellation.superseded, error: cancellation.superseded ? undefined : "LION run disappeared during cancellation" });
+			}
+		} catch (error) {
+			results.set(assignment.id, { assignment, settled: false, error: error instanceof Error ? error.message : String(error) });
+		}
+	}));
+	if (pending.length) {
+		const settlements = await controls.waitForRunSettlements(lionStore, pending.map((entry) => entry.run), timeoutMs);
+		settlements.forEach((settlement, index) => {
+			const assignment = pending[index]!.assignment;
+			results.set(assignment.id, {
 				assignment,
 				settled: settlement.settled,
 				run_status: settlement.run?.status,
 				error: settlement.settled ? undefined : `LION ${assignment.lion_run_id} remained ${settlement.run?.status ?? "unknown"}`,
-			};
-		} catch (error) {
-			return { assignment, settled: false, error: error instanceof Error ? error.message : String(error) };
-		}
-	}));
+			});
+		});
+	}
+	return assignments.map((assignment) => results.get(assignment.id)!);
 }
 
 export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}): Promise<RunWaveLionAdapter> {

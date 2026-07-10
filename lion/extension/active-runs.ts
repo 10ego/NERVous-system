@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import type { LionLedger } from "./store.ts";
 import type { LionRun, LionRunnerMode } from "./schema.ts";
-import type { LionProcessInfo } from "./subprocess.ts";
+import { isPidAlive, type LionProcessInfo } from "./subprocess.ts";
 
 export type ActiveCancelSignal = "SIGTERM" | "SIGKILL";
 
@@ -184,6 +184,7 @@ export interface LionControlStore {
 	namespaceId: string;
 	query<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
 	mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
+	mutateMaybe<T>(fn: (ledger: LionLedger) => { result: T; changed: boolean }): Promise<{ result: T; changed: boolean }>;
 }
 
 export interface RunCancellationResult {
@@ -201,6 +202,7 @@ export async function requestRunCancellation(
 ): Promise<RunCancellationResult> {
 	const expectedProvided = Object.prototype.hasOwnProperty.call(options, "expectedIncarnationId");
 	const admission = (await store.mutate((ledger) => {
+		ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId) });
 		const current = ledger.get(runId);
 		if (!current) return { kind: "missing" as const };
 		if (expectedProvided && (current.incarnation_id ?? null) !== (options.expectedIncarnationId ?? null)) {
@@ -222,17 +224,39 @@ export async function requestRunCancellation(
 	return { run: persisted.run, settled: !persisted.run, superseded: !persisted.committed, delivery };
 }
 
-export async function waitForRunSettlement(store: LionControlStore, run: Pick<LionRun, "id" | "incarnation_id">, timeoutMs = 15_000, pollMs = 25): Promise<RunCancellationResult> {
-	const deadline = Date.now() + Math.max(0, timeoutMs);
+export async function waitForRunSettlements(
+	store: LionControlStore,
+	runs: Array<Pick<LionRun, "id" | "incarnation_id">>,
+	timeoutMs = 15_000,
+	pollMs = 25,
+): Promise<RunCancellationResult[]> {
+	if (!runs.length) return [];
+	const boundedTimeout = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 15_000;
+	const boundedPoll = Number.isFinite(pollMs) ? Math.max(1, pollMs) : 25;
+	const deadline = Date.now() + boundedTimeout;
 	for (;;) {
-		const current = (await store.query((ledger) => ledger.get(run.id))).result;
-		if (!current || (current.incarnation_id ?? null) !== (run.incarnation_id ?? null)) {
-			return { run: current, settled: true, superseded: true };
-		}
-		if (["completed", "blocked", "failed", "aborted"].includes(current.status)) return { run: current, settled: true, superseded: false };
-		if (Date.now() >= deadline) return { run: current, settled: false, superseded: false };
-		await new Promise((resolve) => setTimeout(resolve, Math.max(1, pollMs)));
+		const { result: currentRuns } = await store.mutateMaybe((ledger) => {
+			const changed = ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId) });
+			return { result: runs.map((run) => ledger.get(run.id)), changed: changed.length > 0 };
+		});
+		const results = runs.map((run, index): RunCancellationResult => {
+			const current = currentRuns[index];
+			if (!current || (current.incarnation_id ?? null) !== (run.incarnation_id ?? null)) {
+				return { run: current, settled: true, superseded: true };
+			}
+			return {
+				run: current,
+				settled: ["completed", "blocked", "failed", "aborted"].includes(current.status),
+				superseded: false,
+			};
+		});
+		if (results.every((result) => result.settled) || Date.now() >= deadline) return results;
+		await new Promise((resolve) => setTimeout(resolve, boundedPoll));
 	}
+}
+
+export async function waitForRunSettlement(store: LionControlStore, run: Pick<LionRun, "id" | "incarnation_id">, timeoutMs = 15_000, pollMs = 25): Promise<RunCancellationResult> {
+	return (await waitForRunSettlements(store, [run], timeoutMs, pollMs))[0]!;
 }
 
 export function clearActiveRunsForTests(): void {

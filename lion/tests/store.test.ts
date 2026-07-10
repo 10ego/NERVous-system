@@ -91,8 +91,9 @@ describe("LionLedger", () => {
 		assert.equal(l.get(active.id)?.status, "running");
 
 		const fresh = l.create({ objective: "fresh" });
-		l.updateControl(fresh.id, { pid: 222, last_seen_at: "2026-01-01T00:00:00.000Z" });
-		assert.equal(l.reconcileControls(() => false, { now_ms: Date.now(), stale_after_ms: 30_000 }).length, 0);
+		const freshNow = Date.now();
+		l.updateControl(fresh.id, { pid: 222, last_seen_at: new Date(freshNow).toISOString() });
+		assert.equal(l.reconcileControls(() => false, { now_ms: freshNow, stale_after_ms: 30_000 }).length, 0);
 		assert.equal(l.get(fresh.id)?.status, "running");
 
 		const stale = l.reconcileControls(() => false, { now_ms: Date.now() + 60_000, stale_after_ms: 30_000 });
@@ -108,6 +109,17 @@ describe("LionLedger", () => {
 		assert.match(changed[0]?.error ?? "", /owner was lost/i);
 		assert.equal(changed[0]?.control?.pid, undefined);
 		assert.equal(l.delete(run.id).id, run.id);
+	});
+
+	it("does not let cancellation bookkeeping postpone owner-loss reconciliation", () => {
+		const l = new LionLedger();
+		const run = l.create({ objective: "lost owner" });
+		const started = Date.parse(run.started_at);
+		l.requestCancel(run.id, "first request");
+		l.requestCancel(run.id, "repeated request");
+		const changed = l.reconcileControls(() => false, { now_ms: started + 30_001, stale_after_ms: 30_000, active_run_ids: [] });
+		assert.equal(changed[0]?.status, "aborted");
+		assert.match(changed[0]?.error ?? "", /Cancelled/);
 	});
 
 	it("fails open steering when control reconciliation terminalizes a run", () => {
