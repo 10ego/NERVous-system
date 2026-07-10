@@ -192,35 +192,74 @@ export interface RunCancellationResult {
 	delivery?: ActiveCancelResult;
 }
 
+export interface RunCancellationRequest {
+	runId: string;
+	reason?: string | null;
+	expectedIncarnationId?: string | null;
+	expectIncarnation?: boolean;
+}
+
+/** Admit all requests in one ledger transaction, deliver controls outside the lock, then persist all delivery outcomes together. */
+export async function requestRunCancellations(store: LionControlStore, requests: RunCancellationRequest[]): Promise<RunCancellationResult[]> {
+	if (!requests.length) return [];
+	const admissions = (await store.mutate((ledger) => {
+		ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId), get_process_identity: getProcessIdentity });
+		return requests.map((request) => {
+			const current = ledger.get(request.runId);
+			if (!current) return { kind: "missing" as const };
+			if (request.expectIncarnation && (current.incarnation_id ?? null) !== (request.expectedIncarnationId ?? null)) {
+				return { kind: "superseded" as const, run: current };
+			}
+			return { kind: "requested" as const, requested: ledger.requestCancel(request.runId, request.reason) };
+		});
+	})).result;
+
+	const deliveries = await Promise.all(admissions.map(async (admission) => {
+		if (admission.kind !== "requested" || admission.requested.already_terminal || !admission.requested.signal) return undefined;
+		const run = admission.requested.run;
+		const scope: ActiveRunScope = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null };
+		return cancelActiveRunWithEscalation(scope, admission.requested.signal);
+	}));
+
+	const deliveryIndexes = admissions.flatMap((admission, index) => admission.kind === "requested" && deliveries[index] ? [index] : []);
+	const persistedByIndex = new Map<number, { run: LionRun | undefined; committed: boolean }>();
+	if (deliveryIndexes.length) {
+		const persisted = (await store.mutate((ledger) => deliveryIndexes.map((index) => {
+			const admission = admissions[index]!;
+			if (admission.kind !== "requested") throw new Error("invalid cancellation admission index");
+			const delivery = deliveries[index]!;
+			const current = ledger.get(admission.requested.run.id);
+			return current
+				? ledger.markCancelDeliveryIfCurrent(admission.requested.run.id, admission.requested.run.incarnation_id, delivery.delivered ? "delivered" : delivery.reason)
+				: { run: undefined, committed: false };
+		}))).result;
+		deliveryIndexes.forEach((index, offset) => persistedByIndex.set(index, persisted[offset]!));
+	}
+
+	return admissions.map((admission, index): RunCancellationResult => {
+		if (admission.kind === "missing") return { run: undefined, settled: true, superseded: true };
+		if (admission.kind === "superseded") return { run: admission.run, settled: true, superseded: true };
+		const requested = admission.requested;
+		const delivery = deliveries[index];
+		if (!delivery) return { run: requested.run, settled: true, superseded: false };
+		const persisted = persistedByIndex.get(index)!;
+		const terminal = Boolean(persisted.run && ["completed", "blocked", "failed", "aborted"].includes(persisted.run.status));
+		return { run: persisted.run, settled: !persisted.committed || terminal, superseded: !persisted.committed, delivery };
+	});
+}
+
 export async function requestRunCancellation(
 	store: LionControlStore,
 	runId: string,
 	reason?: string | null,
 	options: { expectedIncarnationId?: string | null } = {},
 ): Promise<RunCancellationResult> {
-	const expectedProvided = Object.prototype.hasOwnProperty.call(options, "expectedIncarnationId");
-	const admission = (await store.mutate((ledger) => {
-		ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId), get_process_identity: getProcessIdentity });
-		const current = ledger.get(runId);
-		if (!current) return { kind: "missing" as const };
-		if (expectedProvided && (current.incarnation_id ?? null) !== (options.expectedIncarnationId ?? null)) {
-			return { kind: "superseded" as const, run: current };
-		}
-		return { kind: "requested" as const, requested: ledger.requestCancel(runId, reason) };
-	})).result;
-	if (admission.kind === "missing") return { run: undefined, settled: true, superseded: true };
-	if (admission.kind === "superseded") return { run: admission.run, settled: true, superseded: true };
-	const requested = admission.requested;
-	if (requested.already_terminal || !requested.signal) return { run: requested.run, settled: true, superseded: false };
-	const scope: ActiveRunScope = { namespaceId: store.namespaceId, runId, incarnationId: requested.run.incarnation_id ?? null };
-	const delivery = await cancelActiveRunWithEscalation(scope, requested.signal);
-	const status = delivery.delivered ? "delivered" : delivery.reason;
-	const persisted = (await store.mutate((ledger) => {
-		const current = ledger.get(runId);
-		return current ? ledger.markCancelDeliveryIfCurrent(runId, requested.run.incarnation_id, status) : { run: undefined, committed: false };
-	})).result;
-	const terminal = Boolean(persisted.run && ["completed", "blocked", "failed", "aborted"].includes(persisted.run.status));
-	return { run: persisted.run, settled: !persisted.committed || terminal, superseded: !persisted.committed, delivery };
+	return (await requestRunCancellations(store, [{
+		runId,
+		reason,
+		expectedIncarnationId: options.expectedIncarnationId,
+		expectIncarnation: Object.prototype.hasOwnProperty.call(options, "expectedIncarnationId"),
+	}]))[0]!;
 }
 
 export async function waitForRunSettlements(

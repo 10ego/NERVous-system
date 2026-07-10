@@ -143,32 +143,31 @@ export async function settleLinkedLionsBeforeCancel(
 	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id && !isTerminalAssignmentStatus(assignment.status));
 	if (!assignments.length) return [];
 	const results = new Map<string, LinkedLionSettlement>();
-	const verifiable = assignments.filter((assignment) => {
-		if (assignment.lion_run_incarnation_id) return true;
-		results.set(assignment.id, { assignment, settled: false, error: `LION ${assignment.lion_run_id} link is legacy/unverifiable because it has no incarnation id` });
-		return false;
-	});
-	if (!verifiable.length) return assignments.map((assignment) => results.get(assignment.id)!);
-
 	const [{ LionStore }, controls] = await loadRuntime();
 	const lionStore = LionStore.fromCwd(cwd);
-	const pending: Array<{ assignment: Assignment; run: NonNullable<Awaited<ReturnType<typeof controls.requestRunCancellation>>["run"]> }> = [];
-	// One LION ledger owns every linked run, so serialize the short admission
-	// mutations instead of racing many advisory-lock acquisitions.
-	for (const assignment of verifiable) {
-		try {
-			const cancellation = await controls.requestRunCancellation(lionStore, assignment.lion_run_id!, reason, { expectedIncarnationId: assignment.lion_run_incarnation_id });
-			if (cancellation.settled) {
-				results.set(assignment.id, { assignment, settled: true, run_status: cancellation.run?.status });
-			} else if (cancellation.run) {
-				pending.push({ assignment, run: cancellation.run });
-			} else {
-				results.set(assignment.id, { assignment, settled: cancellation.superseded, error: cancellation.superseded ? undefined : "LION run disappeared during cancellation" });
-			}
-		} catch (error) {
-			results.set(assignment.id, { assignment, settled: false, error: error instanceof Error ? error.message : String(error) });
-		}
+	const pending: Array<{ assignment: Assignment; run: NonNullable<Awaited<ReturnType<typeof controls.requestRunCancellations>>[number]["run"]> }> = [];
+	let cancellations: Awaited<ReturnType<typeof controls.requestRunCancellations>>;
+	try {
+		cancellations = await controls.requestRunCancellations(lionStore, assignments.map((assignment) => ({
+			runId: assignment.lion_run_id!,
+			reason,
+			expectedIncarnationId: assignment.lion_run_incarnation_id!,
+			expectIncarnation: true,
+		})));
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return assignments.map((assignment) => ({ assignment, settled: false, error: message }));
 	}
+	cancellations.forEach((cancellation, index) => {
+		const assignment = assignments[index]!;
+		if (cancellation.settled) {
+			results.set(assignment.id, { assignment, settled: true, run_status: cancellation.run?.status });
+		} else if (cancellation.run) {
+			pending.push({ assignment, run: cancellation.run });
+		} else {
+			results.set(assignment.id, { assignment, settled: cancellation.superseded, error: cancellation.superseded ? undefined : "LION run disappeared during cancellation" });
+		}
+	});
 	if (pending.length) {
 		const settlements = await controls.waitForRunSettlements(lionStore, pending.map((entry) => entry.run), timeoutMs);
 		settlements.forEach((settlement, index) => {

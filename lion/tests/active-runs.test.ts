@@ -14,6 +14,7 @@ import {
 	markActiveRunControlClosed,
 	replayPendingCancellation,
 	requestRunCancellation,
+	requestRunCancellations,
 	waitForRunSettlements,
 } from "../extension/active-runs.ts";
 import { LionLedger } from "../extension/store.ts";
@@ -92,6 +93,27 @@ describe("namespace-scoped active LION ownership", () => {
 		if (!result.delivered) assert.equal(result.reason, "owner_replaced");
 		assert.equal(signals, 0);
 		finishActiveRun(owner);
+	});
+
+	it("admits and persists a cancellation batch with two ledger mutations", async () => {
+		const store = await makeStore("batch-admission");
+		const runs = await Promise.all(["A", "B", "C"].map(async (objective) => (await store.mutate((ledger) => ledger.create({ objective }))).result));
+		let mutations = 0;
+		const counted = {
+			namespaceId: store.namespaceId,
+			query: store.query.bind(store),
+			mutateMaybe: store.mutateMaybe.bind(store),
+			mutate: async <T>(fn: (ledger: LionLedger) => T) => { mutations++; return store.mutate(fn); },
+		};
+		const results = await requestRunCancellations(counted, runs.map((run) => ({
+			runId: run.id,
+			reason: "batch stop",
+			expectedIncarnationId: run.incarnation_id,
+			expectIncarnation: true,
+		})));
+		assert.equal(mutations, 2, "one admission write plus one delivery-outcome write");
+		assert.equal(results.length, 3);
+		assert.equal(results.every((result) => !result.settled && result.delivery?.delivered === false && result.delivery.reason === "not_attached"), true);
 	});
 
 	it("treats missing and replacement cancellation targets as settled supersession", async () => {

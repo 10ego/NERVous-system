@@ -355,11 +355,11 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		sessionCancellationPromise ??= abortAndStop(activeClient);
 		return sessionCancellationPromise;
 	};
-	const failReserved = async (messages: Array<{ id: string }>, reason: string) => {
-		for (const msg of messages) {
-			await opts.store.mutate((l) => l.markSteeringFailedIfCurrent(req.run.id, runIncarnation, msg.id, reason)).catch(() => undefined);
-		}
+	const settleReserved = async (outcomes: Array<{ steering_id: string; delivered: boolean; reason?: string }>) => {
+		if (!outcomes.length) return;
+		await opts.store.mutate((l) => l.settleSteeringBatchIfCurrent(req.run.id, runIncarnation, outcomes)).catch(() => undefined);
 	};
+	const failReserved = (messages: Array<{ id: string }>, reason: string) => settleReserved(messages.map((msg) => ({ steering_id: msg.id, delivered: false, reason })));
 
 	const deliverPending = async (): Promise<boolean> => {
 		if (deliveryPromise) return deliveryPromise;
@@ -374,20 +374,22 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 				await failReserved(messages, "RPC steering channel closed before delivery");
 				return false;
 			}
+			const outcomes: Array<{ steering_id: string; delivered: boolean; reason?: string }> = [];
 			for (const msg of messages) {
 				if (!channelOpen) {
-					await opts.store.mutate((l) => l.markSteeringFailedIfCurrent(req.run.id, runIncarnation, msg.id, "RPC steering channel closed before delivery")).catch(() => undefined);
+					outcomes.push({ steering_id: msg.id, delivered: false, reason: "RPC steering channel closed before delivery" });
 					continue;
 				}
 				try {
 					// No await may occur between this final gate check and issuing steer().
 					const steering = activeClient.steer(msg.message);
 					await steering;
-					await opts.store.mutate((l) => l.markSteeringDeliveredIfCurrent(req.run.id, runIncarnation, msg.id));
+					outcomes.push({ steering_id: msg.id, delivered: true });
 				} catch (err) {
-					await opts.store.mutate((l) => l.markSteeringFailedIfCurrent(req.run.id, runIncarnation, msg.id, `RPC steer failed: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
+					outcomes.push({ steering_id: msg.id, delivered: false, reason: `RPC steer failed: ${err instanceof Error ? err.message : String(err)}` });
 				}
 			}
+			await settleReserved(outcomes);
 			return messages.length > 0;
 		})().finally(() => { deliveryPromise = null; });
 		return deliveryPromise;

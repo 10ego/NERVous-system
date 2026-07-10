@@ -158,6 +158,26 @@ describe("createLionRpcRunner", () => {
 		assert.equal(fake.stopped, true);
 	});
 
+	it("persists a reserved RPC steering batch with one acknowledgement mutation", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const run = (await store.mutate((l) => l.create({ objective: "batch steering", runner_mode: "rpc" }))).result;
+		for (const message of ["one", "two", "three"]) await store.mutate((l) => l.steer(run.id, message, { liveDeliveryAvailable: true }));
+		fake.steer = async (message: string) => {
+			fake.steered.push(message);
+			if (fake.steered.length === 3) fake.finish();
+		};
+		const originalMutate = store.mutate.bind(store);
+		let writes = 0;
+		(store as any).mutate = async (fn: unknown) => { writes++; return originalMutate(fn as never); };
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, pollIntervalMs: 5, clientFactory: () => fake });
+		await runner({ run, timeout_ms: 1000 });
+		assert.deepEqual(fake.steered, ["one", "two", "three"]);
+		assert.equal(writes, 3, "one reservation, one batched acknowledgement, and one channel-closure write");
+		const final = (await store.query((l) => l.get(run.id))).result!;
+		assert.equal(final.steering_messages?.every((message) => message.status === "delivered"), true);
+	});
+
 	it("rejects a pre-aborted run before client creation or prompt", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();

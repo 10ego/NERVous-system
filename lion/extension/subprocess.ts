@@ -107,6 +107,17 @@ export function signalProcessTree(pid: number, signal: NodeJS.Signals = "SIGTERM
 	process.kill(pid, signal);
 }
 
+export function signalOwnedProcessIfAlive(isAlive: () => boolean, signal: () => void): boolean {
+	if (!isAlive()) return false;
+	try {
+		signal();
+		return true;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException)?.code === "ESRCH") return false;
+		throw error;
+	}
+}
+
 async function writePromptToTempFile(label: string, prompt: string): Promise<{ dir: string; filePath: string }> {
 	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-lion-"));
 	const safeName = label.replace(/[^\w.-]+/g, "_");
@@ -411,10 +422,10 @@ function collectMessages(
 		let aborted = false;
 		const processIsAlive = () => proc.exitCode === null && proc.signalCode === null && Boolean(proc.pid && isPidAlive(proc.pid));
 		const cancelOwnedProcess = (signal: NodeJS.Signals = "SIGTERM"): boolean => {
-			if (!proc.pid || !processIsAlive()) return false;
-			aborted = true;
-			signalProcessTree(proc.pid, signal);
-			return true;
+			if (!proc.pid) return false;
+			const delivered = signalOwnedProcessIfAlive(processIsAlive, () => signalProcessTree(proc.pid!, signal));
+			if (delivered) aborted = true;
+			return delivered;
 		};
 		if (proc.pid) {
 			try { onProcessStart?.({ pid: proc.pid, pgid: detached ? proc.pid : null, process_identity: getProcessIdentity(proc.pid), cancel: cancelOwnedProcess, isAlive: processIsAlive }); } catch { /* control metadata is best-effort */ }

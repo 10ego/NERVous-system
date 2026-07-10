@@ -33,7 +33,9 @@ const STEERING_STATUS_SET = new Set<string>(LION_STEERING_STATUSES);
 const MAX_PROGRESS_TEXT = 1000;
 const DEFAULT_RECONCILE_GRACE_MS = 30_000;
 const MAX_STEERING_MESSAGE_CHARS = 4_000;
+const MAX_OPEN_STEERING_MESSAGES = 100;
 const MAX_TERMINAL_STEERING_HISTORY = 100;
+const OPEN_STEERING_STATUSES = new Set<LionSteeringMessage["status"]>(["queued", "pending_delivery", "delivering"]);
 
 function now(): string {
 	return new Date().toISOString();
@@ -165,7 +167,6 @@ export class LionLedger {
 				msg.applied_at = ts;
 			}
 		}
-		this.compactSteeringHistory(r);
 		r.started_at = ts;
 		r.updated_at = ts;
 		return clone(r);
@@ -289,6 +290,9 @@ export class LionLedger {
 			msg.reason = options.reason ?? `cannot steer terminal run ${r.status}`;
 		}
 		r.steering_messages ??= [];
+		if (OPEN_STEERING_STATUSES.has(msg.status) && r.steering_messages.filter((entry) => OPEN_STEERING_STATUSES.has(entry.status)).length >= MAX_OPEN_STEERING_MESSAGES) {
+			throw new LionError("invalid_arg", `run ${r.id} already has the maximum ${MAX_OPEN_STEERING_MESSAGES} open steering messages`);
+		}
 		r.steering_messages.push(msg);
 		this.compactSteeringHistory(r);
 		r.updated_at = ts;
@@ -362,6 +366,29 @@ export class LionLedger {
 		const r = this.runsById.get(id);
 		if (!r || (r.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: r ? clone(r) : undefined, committed: false };
 		return { run: this.markSteeringFailed(id, steeringId, reason), committed: true };
+	}
+
+	settleSteeringBatchIfCurrent(id: string, incarnationId: string | null | undefined, outcomes: Array<{ steering_id: string; delivered: boolean; reason?: string }>): { run: LionRun | undefined; committed: boolean } {
+		const r = this.runsById.get(id);
+		if (!r || (r.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: r ? clone(r) : undefined, committed: false };
+		const ts = now();
+		for (const outcome of outcomes) {
+			const msg = this.requireSteering(r, outcome.steering_id);
+			if (outcome.delivered) {
+				msg.status = "delivered";
+				msg.delivered_at = ts;
+				msg.reason = "delivered via RPC steer";
+			} else {
+				msg.status = "delivery_failed";
+				msg.rejected_at = ts;
+				msg.reason = outcome.reason ?? "RPC steer failed";
+			}
+		}
+		if (outcomes.length) {
+			this.compactSteeringHistory(r);
+			r.updated_at = ts;
+		}
+		return { run: clone(r), committed: true };
 	}
 
 	failOpenSteering(id: string, reason: string): LionRun {

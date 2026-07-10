@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "vitest";
-import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree } from "../extension/subprocess.ts";
+import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, parseLionReport, progressFromEvent, signalOwnedProcessIfAlive, signalProcessTree } from "../extension/subprocess.ts";
 import type { Message } from "@earendil-works/pi-ai";
 
 const run = {
@@ -18,6 +18,13 @@ const run = {
 };
 
 describe("LION subprocess helpers", () => {
+	it("treats an ESRCH cancellation race as undelivered", () => {
+		const error = Object.assign(new Error("gone"), { code: "ESRCH" });
+		assert.equal(signalOwnedProcessIfAlive(() => true, () => { throw error; }), false);
+		assert.equal(signalOwnedProcessIfAlive(() => false, () => { throw new Error("must not signal"); }), false);
+		assert.throws(() => signalOwnedProcessIfAlive(() => true, () => { throw Object.assign(new Error("denied"), { code: "EPERM" }); }), /denied/);
+	});
+
 	it("builds system and user prompts with worker contract", () => {
 		const sys = buildLionSystemPrompt(run);
 		assert.match(sys, /Local Intelligence Operations Node/);

@@ -207,15 +207,16 @@ describe("LionLedger", () => {
 		assert.equal(current.steering_messages?.at(-1)?.id, "steer-125");
 	});
 
-	it("compacts queued steering when start makes entries terminal", () => {
+	it("caps open steering while preserving every accepted queued instruction through start", () => {
 		const l = new LionLedger();
 		const run = l.create({ objective: "queued history", start: false });
-		for (let index = 0; index < 125; index++) l.steer(run.id, `queued-${index}`);
-		assert.equal(l.get(run.id)?.steering_messages?.length, 125, "open queued messages are retained");
+		for (let index = 0; index < 100; index++) l.steer(run.id, `queued-${index}`);
+		assert.throws(() => l.steer(run.id, "overflow"), /maximum 100 open steering messages/);
 		const started = l.start(run.id);
 		assert.equal(started.steering_messages?.length, 100);
 		assert.equal(started.steering_messages?.every((message) => message.status === "applied"), true);
-		assert.equal(started.steering_messages?.at(-1)?.id, "steer-125");
+		assert.equal(started.steering_messages?.[0]?.message, "queued-0");
+		assert.equal(started.steering_messages?.at(-1)?.id, "steer-100");
 	});
 
 	it("tracks rpc live steering delivery states", () => {
