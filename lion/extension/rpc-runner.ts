@@ -49,6 +49,8 @@ export interface LionRpcRunnerOptions {
 	onSteeringClosed?: () => Promise<void> | void;
 	/** Maximum wait for graceful RPC abort before stop is attempted. */
 	abortGraceMs?: number;
+	/** Test/embedding hook for prompt-file persistence. */
+	writePromptFile?: (filePath: string, prompt: string) => Promise<void>;
 }
 
 const DEFAULT_POLL_INTERVAL_MS = 100;
@@ -162,14 +164,31 @@ export class AdaptivePoller {
 	}
 }
 
-async function writePromptToTempFile(label: string, prompt: string): Promise<{ dir: string; filePath: string }> {
+async function writePromptToTempFile(
+	label: string,
+	prompt: string,
+	writer?: (filePath: string, prompt: string) => Promise<void>,
+	onAllocated?: (dir: string, filePath: string) => void,
+): Promise<{ dir: string; filePath: string }> {
 	const tmpDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-lion-rpc-"));
 	const safeName = label.replace(/[^\w.-]+/g, "_");
 	const filePath = path.join(tmpDir, `prompt-${safeName}.md`);
-	await withFileMutationQueue(filePath, async () => {
-		await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
-	});
-	return { dir: tmpDir, filePath };
+	onAllocated?.(tmpDir, filePath);
+	try {
+		if (writer) await writer(filePath, prompt);
+		else await withFileMutationQueue(filePath, async () => {
+			await fs.promises.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 });
+		});
+		return { dir: tmpDir, filePath };
+	} catch (error) {
+		try { await fs.promises.rm(tmpDir, { recursive: true, force: true }); }
+		catch (cleanupError) { throw new AggregateError([error, cleanupError], "RPC prompt creation and temporary-directory cleanup failed"); }
+		throw error;
+	}
+}
+
+async function removeTempDirectory(dir: string): Promise<void> {
+	await fs.promises.rm(dir, { recursive: true, force: true });
 }
 
 export function createLionRpcRunner(opts: LionRpcRunnerOptions) {
@@ -224,6 +243,10 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let rawChildExit: Promise<void> | null = null;
 	let processInfo: LionProcessInfo | null = null;
 	let childAttached = false;
+	let startInvoked = false;
+	let startSettled = false;
+	let startPromise: Promise<void> | null = null;
+	let adoptionTimer: ReturnType<typeof setInterval> | null = null;
 	let channelOpen = true;
 	let childExited = false;
 	let childIsAlive = () => false;
@@ -233,6 +256,8 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let sessionCancellationPromise: Promise<void> | null = null;
 	let steeringClosedHook: Promise<void> = Promise.resolve();
 	let processExitNotified = false;
+	let promptSetupAbandoned = false;
+	let clientSetupAbandoned = false;
 	const notifyProcessExit = () => {
 		if (processExitNotified) return;
 		processExitNotified = true;
@@ -256,6 +281,41 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		if (abortError) throw abortError;
 		if (stopError) throw stopError;
 	};
+	const attachProcessIfAvailable = (): boolean => {
+		if (childAttached || !client) return childAttached;
+		const attachedInfo = client.getProcessInfo?.() ?? null;
+		if (!attachedInfo?.pid) return false;
+		processInfo = attachedInfo;
+		childAttached = true;
+		const processIsAlive = attachedInfo.isAlive ?? (() => !childExited);
+		childIsAlive = () => !childExited && processIsAlive();
+		rawChildExit = client.waitForExit?.().then(() => { childExited = true; }) ?? null;
+		if (rawChildExit) void rawChildExit.catch(() => undefined);
+		try {
+			req.onProcessStart?.({
+				...attachedInfo,
+				cancel: async (signal = "SIGTERM") => {
+					if (!processIsAlive()) return false;
+					ownedCancellationRequested = true;
+					if (signal === "SIGKILL") return Boolean(await attachedInfo.cancel?.("SIGKILL"));
+					ownedCancellationPromise ??= abortAndStop(client!);
+					await ownedCancellationPromise;
+					return true;
+				},
+				isAlive: childIsAlive,
+			});
+		} catch { /* process metadata is best-effort */ }
+		return true;
+	};
+	const waitForInterruptedStartDisposition = async () => {
+		while (startInvoked && !startSettled && !attachProcessIfAvailable()) {
+			await Promise.race([
+				startPromise?.catch(() => undefined) ?? Promise.resolve(),
+				new Promise<void>((resolve) => setTimeout(resolve, 25)),
+			]);
+		}
+		attachProcessIfAvailable();
+	};
 	const waitForConfirmedChildExit = async () => {
 		while (childIsAlive()) {
 			if (rawChildExit) {
@@ -274,6 +334,14 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		poller?.stop();
 		try { req.onControlClosed?.(); } catch { /* best effort */ }
 		steeringClosedHook = Promise.resolve(opts.onSteeringClosed?.()).then(() => undefined);
+	};
+	const cancelSession = () => {
+		closeSteeringChannel();
+		attachProcessIfAvailable();
+		const activeClient = client;
+		if (!activeClient) return Promise.resolve();
+		sessionCancellationPromise ??= abortAndStop(activeClient);
+		return sessionCancellationPromise;
 	};
 	const failReserved = async (messages: Array<{ id: string }>, reason: string) => {
 		for (const msg of messages) {
@@ -319,10 +387,24 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	};
 
 	try {
-		const tmp = await writePromptToTempFile(req.run.agent_id, buildLionSystemPrompt(req.run));
+		const promptSetup = writePromptToTempFile(
+			req.run.agent_id,
+			buildLionSystemPrompt(req.run),
+			opts.writePromptFile,
+			(dir, filePath) => { tmpDir = dir; tmpPath = filePath; },
+		);
+		void promptSetup.then((late) => promptSetupAbandoned ? removeTempDirectory(late.dir).catch(() => undefined) : undefined, () => undefined);
+		let tmp: { dir: string; filePath: string };
+		try { tmp = await raceSession(() => promptSetup, req.signal, deadline, cancelSession); }
+		catch (error) { promptSetupAbandoned = true; throw error; }
 		tmpDir = tmp.dir;
 		tmpPath = tmp.filePath;
-		client = await (opts.clientFactory ?? createDefaultRpcClient)({ cwd: opts.cwd, model: req.run.model, tools: req.run.tools, systemPromptPath: tmpPath, extraArgs: opts.extraArgs });
+
+		const factory = opts.clientFactory ?? createDefaultRpcClient;
+		const clientSetup = Promise.resolve(factory({ cwd: opts.cwd, model: req.run.model, tools: req.run.tools, systemPromptPath: tmpPath, extraArgs: opts.extraArgs }));
+		void clientSetup.then((lateClient) => clientSetupAbandoned ? Promise.resolve(lateClient.stop()).catch(() => undefined) : undefined, () => undefined);
+		try { client = await raceSession(() => clientSetup, req.signal, deadline, cancelSession); }
+		catch (error) { clientSetupAbandoned = true; throw error; }
 		const activeClient = client;
 
 		unsubscribeEvents = activeClient.onEvent((event) => {
@@ -331,39 +413,27 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 				try { req.onProgress?.(progress); } catch { /* progress callbacks must not break runner */ }
 			}
 		});
-		const cancelSession = () => {
-			closeSteeringChannel();
-			sessionCancellationPromise ??= abortAndStop(activeClient);
-			return sessionCancellationPromise;
+		const beginStart = () => {
+			startInvoked = true;
+			let started: Promise<void>;
+			try { started = Promise.resolve(activeClient.start()); }
+			catch (error) { startSettled = true; throw error; }
+			startPromise = started.finally(() => { startSettled = true; attachProcessIfAvailable(); });
+			attachProcessIfAvailable();
+			adoptionTimer = setInterval(() => { attachProcessIfAvailable(); }, 10);
+			adoptionTimer.unref?.();
+			return startPromise;
 		};
-		await raceSession(() => activeClient.start(), req.signal, deadline, cancelSession);
-		processInfo = activeClient.getProcessInfo?.() ?? null;
-		if (processInfo?.pid) {
-			childAttached = true;
-			const processIsAlive = processInfo.isAlive ?? (() => !childExited);
-			childIsAlive = () => !childExited && processIsAlive();
-			rawChildExit = activeClient.waitForExit?.().then(() => { childExited = true; }) ?? null;
-			if (rawChildExit) void rawChildExit.catch(() => undefined);
-			try {
-				req.onProcessStart?.({
-					...processInfo,
-					cancel: async (signal = "SIGTERM") => {
-						if (!processIsAlive()) return false;
-						ownedCancellationRequested = true;
-						if (signal === "SIGKILL") return Boolean(await processInfo?.cancel?.("SIGKILL"));
-						ownedCancellationPromise ??= abortAndStop(activeClient);
-						await ownedCancellationPromise;
-						return true;
-					},
-					isAlive: childIsAlive,
-				});
-			} catch { /* process metadata is best-effort */ }
-		}
+		await raceSession(beginStart, req.signal, deadline, cancelSession);
+		if (adoptionTimer) clearInterval(adoptionTimer);
+		adoptionTimer = null;
+		attachProcessIfAvailable();
 
 		idleWaiter = createIdleWaiter(activeClient);
 		const idle = idleWaiter.promise.then(() => { closeSteeringChannel(); });
 		void idle.catch(() => undefined);
-		const childExit = rawChildExit?.then(async () => {
+		const observedChildExit = rawChildExit as Promise<void> | null;
+		const childExit = observedChildExit?.then(async () => {
 			closeSteeringChannel();
 			if (ownedCancellationRequested) {
 				await ownedCancellationPromise;
@@ -387,17 +457,26 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 			throw new Error("LION RPC runner was cancelled");
 		}
 		closeSteeringChannel();
-		await steeringClosedHook;
-		await waitForInFlightDelivery();
-		await opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, "run finished before pending steering could be delivered"));
-		const text = (await activeClient.getLastAssistantText()) ?? "";
+		await raceSession(() => steeringClosedHook, req.signal, deadline, cancelSession);
+		await raceSession(waitForInFlightDelivery, req.signal, deadline, cancelSession);
+		await raceSession(
+			() => opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, "run finished before pending steering could be delivered")),
+			req.signal,
+			deadline,
+			cancelSession,
+		);
+		const text = (await raceSession(() => activeClient.getLastAssistantText(), req.signal, deadline, cancelSession)) ?? "";
 		const report: LionReport | null = parseLionReport(text);
 		return { text, report };
 	} catch (err) {
 		primaryError = err;
 		closeSteeringChannel();
-		await steeringClosedHook.catch(() => undefined);
-		await opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
+		void steeringClosedHook.catch(() => undefined);
+		await withTimeout(
+			opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)),
+			opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS,
+			"RPC failure-state persistence timed out",
+		).catch(() => undefined);
 		throw err;
 	} finally {
 		deadline.dispose();
@@ -405,18 +484,25 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		idleWaiter?.dispose();
 		poller?.stop();
 		try { unsubscribeEvents?.(); } catch { /* ignore */ }
+		attachProcessIfAvailable();
 		let stopError: unknown;
 		try { await stopClient(); } catch (err) { stopError = err; }
+		attachProcessIfAvailable();
+		if (stopError && startInvoked && !startSettled && !childAttached) await waitForInterruptedStartDisposition();
+		if (adoptionTimer) clearInterval(adoptionTimer);
+		adoptionTimer = null;
 		if (childAttached && childIsAlive() && stopError) {
-			try { await processInfo?.cancel?.("SIGKILL"); } catch { /* retain ownership until actual exit */ }
+			const attachedProcess = processInfo as LionProcessInfo | null;
+			try { await attachedProcess?.cancel?.("SIGKILL"); } catch { /* retain ownership until actual exit */ }
 		}
 		if (childAttached && childIsAlive()) await waitForConfirmedChildExit();
-		if (!childAttached || !childIsAlive()) notifyProcessExit();
-		if (tmpPath)
-			try { fs.unlinkSync(tmpPath); } catch { /* ignore */ }
-		if (tmpDir)
-			try { fs.rmdirSync(tmpDir); } catch { /* ignore */ }
+		if ((childAttached && !childIsAlive()) || (!childAttached && !stopError)) notifyProcessExit();
+		let cleanupError: unknown;
+		if (tmpDir) {
+			try { await removeTempDirectory(tmpDir); } catch (error) { cleanupError = error; }
+		}
 		if (stopError && !primaryError) throw stopError;
+		if (cleanupError && !primaryError && !stopError) throw cleanupError;
 	}
 }
 

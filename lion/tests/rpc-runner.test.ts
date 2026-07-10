@@ -23,6 +23,7 @@ class FakeRpcClient implements LionRpcClient {
 	throwOnStop = false;
 	hangOnAbort = false;
 	finishDuringPrompt = false;
+	lastTextGate: Promise<void> | null = null;
 	private idleResolve: (() => void) | null = null;
 	private exitResolve: (() => void) | null = null;
 	private listeners: Array<(event: unknown) => void> = [];
@@ -59,6 +60,7 @@ class FakeRpcClient implements LionRpcClient {
 		return new Promise<void>((resolve) => { this.idleResolve = resolve; });
 	}
 	async getLastAssistantText() {
+		if (this.lastTextGate) await this.lastTextGate;
 		return JSON.stringify({ WORKER_REPORT: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
 	}
 	onEvent(listener: (event: unknown) => void) {
@@ -171,6 +173,31 @@ describe("createLionRpcRunner", () => {
 		assert.ok(fake.stopCalls >= 1);
 	});
 
+	it("adopts a child spawned by an interrupted start and retains ownership until exit", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.startGate = new Promise<void>(() => undefined);
+		fake.throwOnStop = true;
+		const run = (await store.mutate((l) => l.create({ objective: "spawn then hang", runner_mode: "rpc" }))).result;
+		const controller = new AbortController();
+		let starts = 0;
+		let exits = 0;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, signal: controller.signal, timeout_ms: 1000, onProcessStart: () => { starts++; }, onProcessExit: () => { exits++; } });
+		await until(() => fake.started && starts === 1);
+		controller.abort();
+		await until(() => fake.stopCalls === 1);
+		let settled = false;
+		void promise.then(() => { settled = true; }, () => { settled = true; });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(settled, false);
+		assert.equal(fake.alive, true);
+		assert.equal(exits, 0);
+		fake.exit();
+		await assert.rejects(() => promise, /stop boom/);
+		assert.equal(exits, 1);
+	});
+
 	it("bounds a prompt that never acknowledges by the session timeout", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();
@@ -182,6 +209,47 @@ describe("createLionRpcRunner", () => {
 		assert.equal(fake.listenerCount(), 0);
 	});
 
+	it("applies the session deadline while client setup is pending and stops a late client", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const run = (await store.mutate((l) => l.create({ objective: "hung factory", runner_mode: "rpc" }))).result;
+		let releaseFactory!: () => void;
+		const factoryGate = new Promise<void>((resolve) => { releaseFactory = resolve; });
+		const runner = createLionRpcRunner({
+			cwd: process.cwd(),
+			store,
+			clientFactory: async () => { await factoryGate; return fake; },
+		});
+		await assert.rejects(() => runner({ run, timeout_ms: 20 }), /timed out after 20ms/);
+		releaseFactory();
+		await until(() => fake.stopCalls === 1);
+		assert.equal(fake.started, false);
+	});
+
+	it("applies abort supervision while prompt persistence is pending and cleans its directory", async () => {
+		const store = await makeStore();
+		const run = (await store.mutate((l) => l.create({ objective: "hung prompt persistence", runner_mode: "rpc" }))).result;
+		const before = new Set((await fs.readdir(os.tmpdir())).filter((entry) => entry.startsWith("pi-lion-rpc-")));
+		let writerStarted!: () => void;
+		let releaseWriter!: () => void;
+		const entered = new Promise<void>((resolve) => { writerStarted = resolve; });
+		const gate = new Promise<void>((resolve) => { releaseWriter = resolve; });
+		const controller = new AbortController();
+		const runner = createLionRpcRunner({
+			cwd: process.cwd(),
+			store,
+			writePromptFile: async () => { writerStarted(); await gate; },
+			clientFactory: () => new FakeRpcClient(),
+		});
+		const promise = runner({ run, signal: controller.signal, timeout_ms: 1000 });
+		await entered;
+		controller.abort();
+		await assert.rejects(() => promise, /aborted/);
+		const leaked = (await fs.readdir(os.tmpdir())).filter((entry) => entry.startsWith("pi-lion-rpc-") && !before.has(entry));
+		assert.deepEqual(leaked, []);
+		releaseWriter();
+	});
+
 	it("observes RPC idle emitted during prompt acknowledgement", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();
@@ -191,6 +259,38 @@ describe("createLionRpcRunner", () => {
 		const output = await runner({ run, timeout_ms: 50 });
 		assert.equal(output.report?.outcome, "completed");
 		assert.equal(fake.waitForIdleCalls, 0);
+	});
+
+	it("keeps abort supervision active through final assistant-text I/O", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const run = (await store.mutate((l) => l.create({ objective: "hung final text", runner_mode: "rpc" }))).result;
+		let finalTextStarted!: () => void;
+		let releaseFinalText!: () => void;
+		const entered = new Promise<void>((resolve) => { finalTextStarted = resolve; });
+		const gate = new Promise<void>((resolve) => { releaseFinalText = resolve; });
+		fake.getLastAssistantText = async () => { finalTextStarted(); await gate; return "done"; };
+		const controller = new AbortController();
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, signal: controller.signal, timeout_ms: 1000 });
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await entered;
+		controller.abort();
+		await assert.rejects(() => promise, /aborted/);
+		releaseFinalText();
+	});
+
+	it("keeps deadline supervision active through final assistant-text I/O", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.lastTextGate = new Promise<void>(() => undefined);
+		const run = (await store.mutate((l) => l.create({ objective: "timed final text", runner_mode: "rpc" }))).result;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, timeout_ms: 30 });
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await assert.rejects(() => promise, /timed out after 30ms/);
 	});
 
 	it("calls process-exit callbacks only once on RPC errors", async () => {
@@ -375,6 +475,21 @@ describe("createLionRpcRunner", () => {
 		assert.equal(fake.stopCalls, 1);
 		assert.equal(fake.alive, false);
 		await assert.rejects(() => promise, /abort timed out/);
+	});
+
+	it("removes the RPC temporary directory when prompt writing fails", async () => {
+		const store = await makeStore();
+		const run = (await store.mutate((l) => l.create({ objective: "prompt write failure", runner_mode: "rpc" }))).result;
+		const before = new Set((await fs.readdir(os.tmpdir())).filter((entry) => entry.startsWith("pi-lion-rpc-")));
+		const runner = createLionRpcRunner({
+			cwd: process.cwd(),
+			store,
+			clientFactory: () => new FakeRpcClient(),
+			writePromptFile: async () => { throw Object.assign(new Error("disk full"), { code: "ENOSPC" }); },
+		});
+		await assert.rejects(() => runner({ run, timeout_ms: 1000 }), /disk full/);
+		const after = (await fs.readdir(os.tmpdir())).filter((entry) => entry.startsWith("pi-lion-rpc-") && !before.has(entry));
+		assert.deepEqual(after, []);
 	});
 
 	it("marks live steering delivery failures durably", async () => {
