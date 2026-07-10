@@ -1,4 +1,6 @@
+import * as fs from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { Key, matchesKey, truncateToWidth, type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { AmygdalaStore } from "../../amygdala/extension/backend.ts";
 import type { Incident } from "../../amygdala/extension/schema.ts";
@@ -38,10 +40,12 @@ type Detail =
 	| { kind: "ganglion"; item: Ganglion }
 	| { kind: "amygdala"; item: Incident };
 
-type RefreshTimer = ReturnType<typeof setInterval>;
+type RefreshTimer = ReturnType<typeof setTimeout>;
 
 interface DashboardRefreshOptions {
 	autoRefreshMs?: number;
+	maxAutoRefreshMs?: number;
+	changeDetector?: () => Promise<boolean>;
 }
 
 interface DashboardData {
@@ -54,6 +58,35 @@ interface DashboardData {
 	ganglions: Ganglion[];
 	incidents: Incident[];
 	warnings: string[];
+}
+
+const DASHBOARD_STATE_FILES = [
+	["cortex", "cortex.json", "CORTEX_PATH"],
+	["axon", "ledger.json", "AXON_LEDGER_PATH"],
+	["synapse", "synapse.json", "SYNAPSE_PATH"],
+	["lion", "runs.json", "LION_RUNS_PATH"],
+	["cerebel", "cerebel.json", "CEREBEL_PATH"],
+	["ganglion", "ganglion.json", "GANGLION_PATH"],
+	["amygdala", "amygdala.json", "AMYGDALA_PATH"],
+	["magi", "history.json", "MAGI_HISTORY_PATH"],
+] as const;
+
+async function dashboardStateFingerprint(cwd: string): Promise<string> {
+	return (await Promise.all(DASHBOARD_STATE_FILES.map(async ([component, file, env]) => {
+		const statePath = resolveNervousStateFile(cwd, component, file, env);
+		try { const stat = await fs.stat(statePath); return `${statePath}:${stat.mtimeMs}:${stat.size}`; }
+		catch (error) { return `${statePath}:${(error as NodeJS.ErrnoException).code ?? "missing"}`; }
+	}))).join("|");
+}
+
+export async function createDashboardChangeDetector(cwd: string): Promise<() => Promise<boolean>> {
+	let previous = await dashboardStateFingerprint(cwd);
+	return async () => {
+		const current = await dashboardStateFingerprint(cwd);
+		const changed = current !== previous;
+		previous = current;
+		return changed;
+	};
 }
 
 async function loadDashboardData(cwd: string): Promise<DashboardData> {
@@ -324,6 +357,9 @@ export class NervousDashboard implements Component {
 	private cachedLines?: string[];
 	private refreshTimer: RefreshTimer | null = null;
 	private readonly autoRefreshMs: number;
+	private readonly maxAutoRefreshMs: number;
+	private readonly changeDetector?: () => Promise<boolean>;
+	private nextAutoRefreshMs: number;
 
 	constructor(
 		private data: DashboardData,
@@ -334,6 +370,9 @@ export class NervousDashboard implements Component {
 		options: DashboardRefreshOptions = {},
 	) {
 		this.autoRefreshMs = options.autoRefreshMs ?? DASHBOARD_AUTO_REFRESH_MS;
+		this.maxAutoRefreshMs = Math.max(this.autoRefreshMs, options.maxAutoRefreshMs ?? 8_000);
+		this.changeDetector = options.changeDetector;
+		this.nextAutoRefreshMs = this.autoRefreshMs;
 		this.startAutoRefresh(this.autoRefreshMs);
 	}
 
@@ -603,7 +642,7 @@ export class NervousDashboard implements Component {
 		pushWrapped(lines, "Progress", summarizeWaveProgress(w, this.data.runs), width, this.theme);
 		pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme);
 		pushWrapped(lines, "Assignments", w.assignments.map((a) => {
-			const linked = a.lion_run_id ? this.data.runs.find((r) => r.id === a.lion_run_id) : undefined;
+			const linked = a.lion_run_id ? this.data.runs.find((r) => r.id === a.lion_run_id && (r.incarnation_id ?? null) === (a.lion_run_incarnation_id ?? null)) : undefined;
 			const progress = linked?.progress ? ` progress:${describeLionProgress(linked)}` : "";
 			return `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}${a.ganglion_allocation_id ? `/ganglion:${a.ganglion_id ?? "?"}/${a.ganglion_allocation_id}` : ""}${progress}`;
 		}).join(" | "), width, this.theme);
@@ -636,8 +675,18 @@ export class NervousDashboard implements Component {
 		this.tui.requestRender();
 	}
 	private startAutoRefresh(intervalMs: number): void {
-		if (intervalMs <= 0) return;
-		this.refreshTimer = setInterval(() => this.reload({ showIndicator: false }), intervalMs);
+		if (intervalMs <= 0 || this.closed) return;
+		this.refreshTimer = setTimeout(() => {
+			this.refreshTimer = null;
+			void (async () => {
+				let changed = true;
+				try { if (this.changeDetector) changed = await this.changeDetector(); }
+				catch { changed = true; }
+				if (changed) this.reload({ showIndicator: false });
+				this.nextAutoRefreshMs = changed ? this.autoRefreshMs : Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
+				this.startAutoRefresh(this.nextAutoRefreshMs);
+			})();
+		}, intervalMs);
 		const maybeUnref = this.refreshTimer as RefreshTimer & { unref?: () => void };
 		maybeUnref.unref?.();
 	}
@@ -710,9 +759,10 @@ export class NervousDashboard implements Component {
 }
 
 async function showDashboard(ctx: ExtensionCommandContext): Promise<void> {
+	const changeDetector = await createDashboardChangeDetector(ctx.cwd);
 	const initial = await loadDashboardData(ctx.cwd);
 	await ctx.ui.custom<void>(
-		(tui, theme, _keybindings, done) => new NervousDashboard(initial, tui, theme, done, () => loadDashboardData(ctx.cwd)),
+		(tui, theme, _keybindings, done) => new NervousDashboard(initial, tui, theme, done, () => loadDashboardData(ctx.cwd), { changeDetector }),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "90%", minWidth: 72, maxHeight: "85%", margin: 1 } },
 	);
 }

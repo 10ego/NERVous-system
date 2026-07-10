@@ -62,6 +62,20 @@ describe("dashboard extension factory", () => {
 		assert.equal(refresh.mock.calls.length, 1);
 	});
 
+	it("backs off without ledger reloads until state fingerprints change", async () => {
+		vi.useFakeTimers();
+		const refresh = vi.fn().mockResolvedValue(emptyDashboardData());
+		const changeDetector = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, maxAutoRefreshMs: 800, changeDetector });
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(refresh.mock.calls.length, 0);
+		await vi.advanceTimersByTimeAsync(199);
+		assert.equal(changeDetector.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(refresh.mock.calls.length, 1);
+		dashboard.dispose();
+	});
+
 	it("derives the auto-refresh footer label from the configured interval", () => {
 		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), vi.fn(), { autoRefreshMs: 2500 });
 		const text = dashboard.render(100).join("\n");

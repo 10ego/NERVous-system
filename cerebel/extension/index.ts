@@ -78,6 +78,14 @@ function findRecordedAssignment(wave: Wave, p: CerebelToolInput): Assignment | u
 		|| (p.task_id && a.task_id === p.task_id)
 		|| (p.lion_run_id && a.lion_run_id === p.lion_run_id && (!p.lion_run_incarnation_id || a.lion_run_incarnation_id === p.lion_run_incarnation_id)));
 }
+function formatGanglionRecordMessage(ganglionId: string, allocationId: string, disposition: import("../../ganglion/extension/store.ts").AllocationReleaseDisposition): string {
+	if (disposition === "released") return `GANGLION ${ganglionId}/${allocationId} recorded and capacity released.`;
+	if (disposition === "already_free") return `GANGLION ${ganglionId}/${allocationId} recorded; capacity was already free.`;
+	if (disposition === "member_unavailable") return `GANGLION ${ganglionId}/${allocationId} recorded; member has no active lease but remains unavailable.`;
+	if (disposition === "retained_by_newer_allocation") return `GANGLION ${ganglionId}/${allocationId} recorded; capacity retained by a newer allocation.`;
+	return `GANGLION ${ganglionId}/${allocationId} recorded without a terminal capacity release.`;
+}
+
 async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefined, p: CerebelToolInput, outcome: AssignmentStatus): Promise<string | null> {
 	if (!assignment || !isTerminalAssignment(outcome)) return null;
 	const ganglionId = p.ganglion_id ?? assignment.ganglion_id;
@@ -87,24 +95,44 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 	try {
 		const { GanglionStore } = await import("../../ganglion/extension/backend.ts");
 		const { result } = await GanglionStore.fromCwd(cwd).mutate((l) => l.recordWithResult(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
-		if (result.release_disposition === "released") return `GANGLION ${ganglionId}/${allocationId} recorded and capacity released.`;
-		if (result.release_disposition === "already_free") return `GANGLION ${ganglionId}/${allocationId} recorded; capacity was already free.`;
-		if (result.release_disposition === "member_unavailable") return `GANGLION ${ganglionId}/${allocationId} recorded; member has no active lease but remains unavailable.`;
-		if (result.release_disposition === "retained_by_newer_allocation") return `GANGLION ${ganglionId}/${allocationId} recorded; capacity retained by a newer allocation.`;
-		return `GANGLION ${ganglionId}/${allocationId} recorded without a terminal capacity release.`;
+		return formatGanglionRecordMessage(ganglionId, allocationId, result.release_disposition);
 	} catch (e) {
 		return `GANGLION release failed for ${ganglionId}/${allocationId}: ${e instanceof Error ? e.message : String(e)}`;
 	}
 }
 
-async function recordRunWaveGanglion(cwd: string, result: RunWaveResult): Promise<string[]> {
+export async function recordRunWaveGanglion(cwd: string, result: RunWaveResult): Promise<string[]> {
 	const messages: string[] = [];
+	const assignments = new Map(result.wave.assignments.map((assignment) => [assignment.id, assignment]));
+	const grouped = new Map<string, Array<{ assignment: Assignment; allocationId: string; lionRunId?: string; outcome: AssignmentStatus; summary: string }>>();
 	for (const assignmentResult of result.assignment_results) {
 		if (assignmentResult.outcome === "skipped") continue;
-		const assignment = result.wave.assignments.find((candidate) => candidate.id === assignmentResult.assignment_id);
-		if (!assignment) continue;
-		const message = await recordLinkedGanglion(cwd, assignment, { action: "record", lion_run_id: assignmentResult.lion_run_id, lion_run_incarnation_id: assignmentResult.lion_run_incarnation_id, summary: assignmentResult.summary } as CerebelToolInput, assignmentResult.outcome as AssignmentStatus);
-		if (message) messages.push(message);
+		const assignment = assignments.get(assignmentResult.assignment_id);
+		if (!assignment || !assignment.ganglion_allocation_id) continue;
+		if (!assignment.ganglion_id) {
+			messages.push(`GANGLION release skipped: assignment ${assignment.id} has allocation ${assignment.ganglion_allocation_id} but no ganglion_id.`);
+			continue;
+		}
+		const group = grouped.get(assignment.ganglion_id) ?? [];
+		group.push({ assignment, allocationId: assignment.ganglion_allocation_id, lionRunId: assignmentResult.lion_run_id, outcome: assignmentResult.outcome as AssignmentStatus, summary: assignmentResult.summary });
+		grouped.set(assignment.ganglion_id, group);
+	}
+	if (!grouped.size) return messages;
+	try {
+		const { GanglionStore } = await import("../../ganglion/extension/backend.ts");
+		for (const [ganglionId, entries] of grouped) {
+			try {
+				const { result: records } = await GanglionStore.fromCwd(cwd).mutate((ledger) => entries.map((entry) => ({
+					entry,
+					record: ledger.recordWithResult(ganglionId, { allocation_id: entry.allocationId, lion_run_id: entry.lionRunId, status: ganglionStatusFromAssignment(entry.outcome), summary: entry.summary }),
+				})));
+				for (const { entry, record } of records) messages.push(formatGanglionRecordMessage(ganglionId, entry.allocationId, record.release_disposition));
+			} catch (error) {
+				for (const entry of entries) messages.push(`GANGLION release failed for ${ganglionId}/${entry.allocationId}: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}
+	} catch (error) {
+		for (const [ganglionId, entries] of grouped) for (const entry of entries) messages.push(`GANGLION release failed for ${ganglionId}/${entry.allocationId}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 	return messages;
 }

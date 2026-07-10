@@ -3,11 +3,11 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import ts from "typescript";
-import { describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { GanglionStore } from "../../ganglion/extension/backend.ts";
 import { LionStore } from "../../lion/extension/backend.ts";
 import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun } from "../../lion/extension/active-runs.ts";
-import factory, { resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel } from "../extension/index.ts";
+import factory, { recordRunWaveGanglion, resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel } from "../extension/index.ts";
 import { CerebelLedger } from "../extension/store.ts";
 import { RunWaveBatchError } from "../extension/run-wave.ts";
 import { renderCerebelResult } from "../extension/render.ts";
@@ -65,6 +65,8 @@ async function extensionSources(): Promise<Array<{ path: string; source: string 
 		return { path: filePath, source: await fs.readFile(filePath, "utf8") };
 	}));
 }
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("cerebel extension factory", () => {
 	it("does not statically load LION runtime modules", async () => {
@@ -168,6 +170,28 @@ describe("cerebel extension factory", () => {
 			assert.match(result.details.error, /cerebel cancel failed \(invalid_transition\)/);
 		} finally {
 			if (previous === undefined) delete process.env.CEREBEL_PATH; else process.env.CEREBEL_PATH = previous;
+		}
+	});
+
+	it("batches run_wave GANGLION records into one mutation per group", async () => {
+		const previous = process.env.GANGLION_PATH;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-batch-ganglion-"));
+		process.env.GANGLION_PATH = path.join(dir, "ganglion.json");
+		try {
+			const store = GanglionStore.fromCwd(dir);
+			await store.mutate((ledger) => { const group = ledger.create({ members: [{ id: "lion-a" }, { id: "lion-b" }] }); ledger.allocate(group.id, { tasks: [{ id: "task-a", title: "A" }, { id: "task-b", title: "B" }] }); });
+			const original = GanglionStore.prototype.mutate;
+			let mutations = 0;
+			vi.spyOn(GanglionStore.prototype, "mutate").mockImplementation(function (this: GanglionStore, fn: any) { mutations++; return original.call(this, fn); });
+			const wave = new CerebelLedger().planWave({ assignments: [
+				{ task_id: "task-a", agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" },
+				{ task_id: "task-b", agent_id: "lion-b", objective: "B", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-002" },
+			] });
+			const messages = await recordRunWaveGanglion(dir, { wave, summary: "done", assignment_results: wave.assignments.map((assignment, index) => ({ assignment_id: assignment.id, lion_run_id: `run-${index}`, outcome: "completed", summary: "done", blockers: [] })) });
+			assert.equal(mutations, 1);
+			assert.equal(messages.length, 2);
+		} finally {
+			if (previous === undefined) delete process.env.GANGLION_PATH; else process.env.GANGLION_PATH = previous;
 		}
 	});
 
