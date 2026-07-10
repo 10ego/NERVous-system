@@ -11,6 +11,7 @@ import {
 	clearActiveRunsForTests,
 	finishActiveRun,
 	getActiveRunIds,
+	markActiveRunControlClosed,
 	replayPendingCancellation,
 } from "../extension/active-runs.ts";
 
@@ -76,6 +77,17 @@ describe("namespace-scoped active LION ownership", () => {
 		assert.deepEqual(stale, { delivered: false, reason: "owner_replaced", pid: 202, pgid: null });
 		assert.equal(replacementSignals, 0);
 		finishActiveRun(replacement);
+	});
+
+	it("retains cancellation authority after RPC control closes but before process exit", async () => {
+		const store = await makeStore("control-closed");
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: "run-001" }, "rpc");
+		let signals = 0;
+		attachActiveRunProcess(owner, { pid: 304, pgid: null, isAlive: () => true, cancel: () => { signals++; return true; } });
+		markActiveRunControlClosed(owner);
+		assert.equal((await cancelActiveRun(owner)).delivered, true);
+		assert.equal(signals, 1);
+		finishActiveRun(owner);
 	});
 
 	it("does not report delivery when the owned process handle sends no signal", async () => {

@@ -12,7 +12,7 @@ import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type 
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createLionRunner, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
-import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
+import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunControlClosed, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
 interface LionDetails {
 	action: string;
@@ -224,7 +224,7 @@ async function executeRun(args: {
 					console.warn(`[nervous-system/lion] pending cancellation replay failed for ${run.id}:`, err);
 				}));
 			},
-			onControlClosed: () => markActiveRunExited(activeOwner),
+			onControlClosed: () => markActiveRunControlClosed(activeOwner),
 			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
 		await drainProgress();

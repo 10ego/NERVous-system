@@ -33,7 +33,7 @@ export interface ActiveRunOwner extends ActiveRunScope {
 interface ActiveRunEntry extends ActiveRunOwner {
 	runnerMode?: LionRunnerMode | null;
 	registeredAt: string;
-	state: "starting" | "running" | "exited";
+	state: "starting" | "running" | "control_closed" | "exited";
 	pid?: number;
 	pgid?: number | null;
 	cancel?: (signal: ActiveCancelSignal) => Promise<boolean> | boolean;
@@ -76,6 +76,12 @@ export function attachActiveRunProcess(owner: ActiveRunOwner, info: ActiveRunPro
 	entry.pgid = info.pgid;
 	entry.cancel = info.cancel;
 	entry.isAlive = info.isAlive;
+}
+
+export function markActiveRunControlClosed(owner: ActiveRunOwner): void {
+	const entry = activeRuns.get(scopeKey(owner));
+	if (!entry || entry.ownerId !== owner.ownerId || entry.state === "exited") return;
+	entry.state = "control_closed";
 }
 
 export function markActiveRunExited(owner: ActiveRunOwner): void {

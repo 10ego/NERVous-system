@@ -191,7 +191,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 							? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })
 							: l.get(run.id)).catch(() => undefined).finally(() => activeRuns.replayPendingCancellation(activeOwner, lionStore).catch(() => undefined));
 					},
-					onControlClosed: () => activeRuns.markActiveRunExited(activeOwner),
+					onControlClosed: () => activeRuns.markActiveRunControlClosed(activeOwner),
 					onProcessExit: () => activeRuns.markActiveRunExited(activeOwner),
 					onProgress: (progress: LionProgressSnapshot) => {
 						try { onUpdate?.({ content: [{ type: "text", text: `${run.id}/${run.agent_id}: ${progress.activity}` }], details: { action: "run_wave", run } }); } catch { /* progress display is best-effort */ }
