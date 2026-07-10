@@ -44,7 +44,7 @@ NERVous runtime state is global but isolated by project and work context. By def
 - **Project namespace** prevents cross-repo contamination. It is derived from the git root path; set `NERVOUS_PROJECT=<name>` to override.
 - **Context namespace** prevents stale completed work from bleeding into a new effort. It defaults to the current git branch, or `default` outside git; set `NERVOUS_CONTEXT=<work-id>` to intentionally start/resume a workstream.
 - Set `NERVOUS_STATE_ROOT=/path/to/root` to move all NERVous state elsewhere.
-- Existing explicit component paths still win, e.g. `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, `MAGI_HISTORY_PATH`.
+- Existing explicit component paths still win, e.g. `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, `MAGI_HISTORY_PATH`. LION resolves a direct-file symlink override to one canonical operational target so atomic writes do not split its lock and active-owner namespace.
 
 Examples:
 

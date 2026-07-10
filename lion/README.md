@@ -37,7 +37,7 @@ Single tool, `action` discriminator:
 | `get` | Show one run |
 | `list` | List runs, optionally filtered by status/agent/task |
 | `summary` | Summary counts + recent/running runs |
-| `delete` | Delete a run record |
+| `delete` | Delete a terminal run record; queued/running records cannot be deleted while ownership or callbacks may still be active |
 
 Example:
 
@@ -71,7 +71,7 @@ LION stores best-effort process control metadata for running subprocesses (`pid`
 lion cancel id="run-001" reason="superseded by newer plan"
 ```
 
-Cancellation is honest but best-effort: it records the request durably, and only the current live LION owner in the matching canonical ledger namespace may deliver cancellation to its attached worker. Persisted PID/PGID values are observational metadata and are not used as authority to signal after restart or stale ledger recovery. If cancellation is recorded while an owner is starting but before its process handle attaches, attachment replays the durable request once per live owner and persists the delivery result. Queued runs are aborted without launching; stale/unattached running records store the cancellation request without signaling unrelated processes.
+Cancellation is honest but best-effort: it records the request durably, and only the current live LION owner capability in the matching canonical ledger namespace may deliver cancellation to its attached worker. Ownership admission happens before a running record is persisted, queued/running records cannot be deleted, and delayed SIGKILL escalation remains bound to the exact owner that received SIGTERM; a replacement owner with a reused id is never targeted. `delivered` is persisted only when the owned JSON signal or RPC control primitive confirms it acted. Persisted PID/PGID values are observational metadata and are not used as authority to signal after restart or stale ledger recovery. If cancellation is recorded while an owner is starting but before its process handle attaches, attachment replays the durable request once per live owner and persists the delivery result. Queued runs are aborted without launching and their queued steering is closed; stale/unattached running records store the cancellation request without signaling unrelated processes.
 
 Pre-start steering works for all runner modes:
 
@@ -93,7 +93,7 @@ lion run \
 lion steer id="run-001" message="Narrow the change to tests only."
 ```
 
-RPC live steering uses pi's official `RpcClient.steer()` control channel. Running steering is recorded as `pending_delivery`, the active RPC runner query-checks for pending messages with non-overlapping adaptive polling, reserves them durably, calls `RpcClient.steer()` exactly once per reserved message, then marks the message `delivered` or `delivery_failed`. The live-steering gate closes as soon as the worker becomes idle; messages not already in flight are failed rather than reported as delivered after the final response. Running steering on the default `json` runner is still rejected as `rejected_running` because `pi --mode json -p --no-session` has no live bidirectional control channel.
+RPC live steering uses pi's official `RpcClient.steer()` control channel. Running steering is recorded as `pending_delivery`, the active RPC runner query-checks for pending messages with non-overlapping adaptive polling, reserves them durably, rechecks the channel after every ledger await and immediately before `RpcClient.steer()`, then marks the message `delivered` or `delivery_failed`. The live-steering gate closes as soon as the worker becomes idle or the RPC child exits; messages not already in flight are failed rather than reported as delivered after the final response. A pre-aborted run is rejected before client creation/prompting, prompt failures cannot abandon an idle waiter, and cancellation attempts bounded graceful abort before always attempting child stop. Running steering on the default `json` runner is still rejected as `rejected_running` because `pi --mode json -p --no-session` has no live bidirectional control channel.
 
 Set `LION_RUNNER=rpc` to make RPC the default for local/manual testing, or pass `runner_mode="rpc"` per run. Do not rely on restart reattachment yet: if the parent LION process exits, a persisted running record may have process metadata but no attached RPC bridge, so new steering may be rejected or pending messages may fail during reconciliation.
 
@@ -144,7 +144,7 @@ Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed
 
 | Aspect | Behavior |
 |--------|----------|
-| Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`) |
+| Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`); direct file symlinks resolve once to one canonical operational target used for data, lock, temp, backup, and active-owner identity |
 | Progress | Optional bounded `progress` snapshot is persisted while running and shown in summaries when present; raw text is redacted unless `include_progress_text=true` |
 | Control | Optional process metadata/cancellation state, runner mode, pre-start steering, and RPC live steering delivery records are persisted with the run |
 | Atomicity | Write to `runs.json.tmp` then rename |
