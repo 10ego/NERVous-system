@@ -46,7 +46,7 @@ describe("createLionAdapter", () => {
 		};
 		let exited = false;
 		const runner = () => async (req: LionRunRequest) => {
-			req.onProcessStart?.({ pid: process.pid, pgid: null, isAlive: () => !exited, cancel: () => undefined });
+			req.onProcessStart?.({ pid: process.pid, pgid: null, isAlive: () => !exited, cancel: () => true });
 			exited = true;
 			req.onProcessExit?.();
 			return { text: "ok", report };

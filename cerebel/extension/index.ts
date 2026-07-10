@@ -105,22 +105,33 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 		const activeOwners = new Map<string, ReturnType<typeof activeRuns.beginActiveRun>>();
 		return {
 			async createRun(assignment) {
-				const { result } = await lionStore.mutate((l) => l.create({
-					agent_id: assignment.agent_id,
-					task_id: assignment.task_id,
-					objective: assignment.objective,
-					context: assignment.context,
-					model,
-					model_role: modelRole,
-					runner_mode: runnerMode,
-					tools: p.tools,
-					start: true,
-				}));
-				return result;
+				let activeOwner: ReturnType<typeof activeRuns.beginActiveRun> | undefined;
+				try {
+					const { result } = await lionStore.mutate((l) => {
+						const queued = l.create({
+							agent_id: assignment.agent_id,
+							task_id: assignment.task_id,
+							objective: assignment.objective,
+							context: assignment.context,
+							model,
+							model_role: modelRole,
+							runner_mode: runnerMode,
+							tools: p.tools,
+							start: false,
+						});
+						activeOwner = activeRuns.beginActiveRun({ namespaceId: lionStore.namespaceId, runId: queued.id }, runnerMode);
+						return l.start(queued.id);
+					});
+					activeOwners.set(result.id, activeOwner!);
+					return result;
+				} catch (err) {
+					if (activeOwner) activeRuns.finishActiveRun(activeOwner);
+					throw err;
+				}
 			},
 			async run(run: LionRun, _assignment, onProgress) {
-				const activeOwner = activeRuns.beginActiveRun({ namespaceId: lionStore.namespaceId, runId: run.id }, runnerMode);
-				activeOwners.set(run.id, activeOwner);
+				const activeOwner = activeOwners.get(run.id);
+				if (!activeOwner) throw new Error(`active LION ownership missing for ${run.id}`);
 				return runner({
 					run,
 					signal,

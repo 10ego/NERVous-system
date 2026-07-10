@@ -123,10 +123,11 @@ export class FileBackend {
 	private readonly bakPath: string;
 
 	constructor(location: LionLocation) {
-		this.location = location;
-		this.lockPath = `${location.runsPath}.lock`;
-		this.tmpPath = `${location.runsPath}.tmp`;
-		this.bakPath = `${location.runsPath}.bak`;
+		const runsPath = canonicalLionNamespace(location.runsPath);
+		this.location = { runsPath, dir: path.dirname(runsPath) };
+		this.lockPath = `${runsPath}.lock`;
+		this.tmpPath = `${runsPath}.tmp`;
+		this.bakPath = `${runsPath}.bak`;
 	}
 
 	async load(): Promise<LoadResult> {

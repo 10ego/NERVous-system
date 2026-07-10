@@ -20,7 +20,8 @@ export interface ActiveRunScope {
 }
 
 export interface ActiveRunProcessInfo extends Omit<LionProcessInfo, "cancel"> {
-	cancel?: (signal: ActiveCancelSignal) => Promise<void> | void;
+	/** Return true only when the owned cancellation primitive was actually issued. */
+	cancel?: (signal: ActiveCancelSignal) => Promise<boolean> | boolean;
 	isAlive?: () => boolean;
 }
 
@@ -34,15 +35,15 @@ interface ActiveRunEntry extends ActiveRunOwner {
 	state: "starting" | "running" | "exited";
 	pid?: number;
 	pgid?: number | null;
-	cancel?: (signal: ActiveCancelSignal) => Promise<void> | void;
+	cancel?: (signal: ActiveCancelSignal) => Promise<boolean> | boolean;
 	isAlive?: () => boolean;
 	cancelInFlight: Map<ActiveCancelSignal, Promise<ActiveCancelResult>>;
 	cancelDelivered: Map<ActiveCancelSignal, ActiveCancelResult & { delivered: true }>;
 }
 
 export type ActiveCancelResult =
-	| { delivered: true; pid?: number; pgid?: number | null }
-	| { delivered: false; reason: "not_attached" | "already_exited" | "not_alive" | "no_cancel_handle"; pid?: number; pgid?: number | null };
+	| { delivered: true; owner: ActiveRunOwner; pid?: number; pgid?: number | null }
+	| { delivered: false; reason: "not_attached" | "owner_replaced" | "already_exited" | "not_alive" | "no_cancel_handle" | "not_signaled"; pid?: number; pgid?: number | null };
 
 const activeRuns = new Map<string, ActiveRunEntry>();
 
@@ -99,9 +100,10 @@ export function isActiveRunAttached(scope: ActiveRunScope, runnerMode?: LionRunn
 	return entry.isAlive ? entry.isAlive() : true;
 }
 
-export async function cancelActiveRun(scope: ActiveRunScope, signal: ActiveCancelSignal = "SIGTERM"): Promise<ActiveCancelResult> {
+export async function cancelActiveRun(scope: ActiveRunScope | ActiveRunOwner, signal: ActiveCancelSignal = "SIGTERM"): Promise<ActiveCancelResult> {
 	const entry = activeRuns.get(scopeKey(scope));
 	if (!entry) return { delivered: false, reason: "not_attached" };
+	if ("ownerId" in scope && entry.ownerId !== scope.ownerId) return { delivered: false, reason: "owner_replaced", pid: entry.pid, pgid: entry.pgid };
 	const delivered = entry.cancelDelivered.get(signal);
 	if (delivered) return delivered;
 	const inFlight = entry.cancelInFlight.get(signal);
@@ -111,8 +113,9 @@ export async function cancelActiveRun(scope: ActiveRunScope, signal: ActiveCance
 		if (entry.state === "exited") return { delivered: false, reason: "already_exited", pid: entry.pid, pgid: entry.pgid };
 		if (entry.isAlive && !entry.isAlive()) return { delivered: false, reason: "not_alive", pid: entry.pid, pgid: entry.pgid };
 		if (!entry.cancel) return { delivered: false, reason: "no_cancel_handle", pid: entry.pid, pgid: entry.pgid };
-		await entry.cancel(signal);
-		const result = { delivered: true, pid: entry.pid, pgid: entry.pgid } as const;
+		const signaled = await entry.cancel(signal);
+		if (!signaled) return { delivered: false, reason: "not_signaled", pid: entry.pid, pgid: entry.pgid };
+		const result = { delivered: true, owner: { namespaceId: entry.namespaceId, runId: entry.runId, ownerId: entry.ownerId }, pid: entry.pid, pgid: entry.pgid } as const;
 		entry.cancelDelivered.set(signal, result);
 		return result;
 	})().finally(() => entry.cancelInFlight.delete(signal));

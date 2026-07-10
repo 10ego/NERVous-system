@@ -221,6 +221,7 @@ export class LionLedger {
 		r.control = { ...(r.control ?? {}), cancel_requested_at: r.control?.cancel_requested_at ?? ts, cancel_reason: reason ?? r.control?.cancel_reason ?? null, cancel_signal: "SIGTERM", cancel_delivery_status: deliveryStatus, last_seen_at: ts };
 		if (r.status === "queued") {
 			this.transition(r, "aborted");
+			this.failOpenSteeringForRun(r, "run cancelled before queued steering could be applied", ts);
 			r.error = reason ? `Cancelled before start: ${reason}` : "Cancelled before start";
 			r.finished_at = ts;
 			r.duration_ms = Math.max(0, Date.parse(ts) - Date.parse(r.started_at));
@@ -357,6 +358,9 @@ export class LionLedger {
 
 	delete(id: string): LionRun {
 		const r = this.require(id);
+		if (r.status === "queued" || r.status === "running") {
+			throw new LionError("invalid_transition", `cannot delete nonterminal run ${r.id} while ${r.status}`);
+		}
 		this.runsById.delete(id);
 		return clone(r);
 	}
@@ -426,7 +430,7 @@ export class LionLedger {
 	private failOpenSteeringForRun(run: LionRun, reason: string, ts: string): boolean {
 		let changed = false;
 		for (const msg of run.steering_messages ?? []) {
-			if (msg.status !== "pending_delivery" && msg.status !== "delivering") continue;
+			if (msg.status !== "queued" && msg.status !== "pending_delivery" && msg.status !== "delivering") continue;
 			msg.status = "delivery_failed";
 			msg.rejected_at = ts;
 			msg.reason = reason;

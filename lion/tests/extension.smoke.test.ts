@@ -2,7 +2,7 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import factory from "../extension/index.ts";
 import { LionStore } from "../extension/backend.ts";
 import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun } from "../extension/active-runs.ts";
@@ -19,6 +19,11 @@ function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 		},
 	};
 }
+
+afterEach(() => {
+	vi.useRealTimers();
+	clearActiveRunsForTests();
+});
 
 describe("lion extension factory", () => {
 	it("registers the lion tool and commands", () => {
@@ -56,6 +61,62 @@ describe("lion extension factory", () => {
 		}
 	});
 
+	it("does not persist a reused run before duplicate ownership admission", async () => {
+		const { pi, tools } = stubPi();
+		factory(pi);
+		const lion = tools.find((t) => t.name === "lion");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-owner-admission-test-"));
+		const oldRunsPath = process.env.LION_RUNS_PATH;
+		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
+		const store = LionStore.fromCwd(dir);
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: "run-001" }, "json");
+		try {
+			const result = await lion.execute("call-owner-conflict", { action: "run", objective: "replacement" }, undefined, undefined, { cwd: dir, isProjectTrusted: () => false });
+			assert.equal(result.isError, true);
+			assert.match(result.content[0].text, /owner already exists/);
+			assert.equal((await store.query((l) => l.get("run-001"))).result, undefined);
+		} finally {
+			finishActiveRun(owner);
+			clearActiveRunsForTests();
+			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH;
+			else process.env.LION_RUNS_PATH = oldRunsPath;
+		}
+	});
+
+	it("does not escalate cancellation to a replacement owner", async () => {
+		vi.useFakeTimers();
+		const { pi, tools } = stubPi();
+		factory(pi);
+		const lion = tools.find((t) => t.name === "lion");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-escalation-owner-test-"));
+		const oldRunsPath = process.env.LION_RUNS_PATH;
+		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
+		const store = LionStore.fromCwd(dir);
+		try {
+			const originalRun = (await store.mutate((l) => l.create({ objective: "original" }))).result;
+			const original = beginActiveRun({ namespaceId: store.namespaceId, runId: originalRun.id }, "json");
+			const originalSignals: string[] = [];
+			attachActiveRunProcess(original, { pid: 101, pgid: null, isAlive: () => true, cancel: (signal) => { originalSignals.push(signal); return true; } });
+			const cancelled = await lion.execute("call-cancel-original", { action: "cancel", id: originalRun.id }, undefined, undefined, { cwd: dir, isProjectTrusted: () => false });
+			assert.equal(cancelled.details.run.control.cancel_delivery_status, "delivered");
+			assert.deepEqual(originalSignals, ["SIGTERM"]);
+
+			finishActiveRun(original);
+			await store.mutate((l) => { l.finish(originalRun.id, { output: "stopped", report: null, status: "aborted" }); return l.delete(originalRun.id); });
+			const replacementRun = (await store.mutate((l) => l.create({ objective: "replacement" }))).result;
+			assert.equal(replacementRun.id, originalRun.id);
+			let replacementSignals = 0;
+			const replacement = beginActiveRun({ namespaceId: store.namespaceId, runId: replacementRun.id }, "json");
+			attachActiveRunProcess(replacement, { pid: 202, pgid: null, isAlive: () => true, cancel: () => { replacementSignals++; return true; } });
+			await vi.advanceTimersByTimeAsync(5_000);
+			assert.equal(replacementSignals, 0);
+			finishActiveRun(replacement);
+		} finally {
+			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH;
+			else process.env.LION_RUNS_PATH = oldRunsPath;
+		}
+	});
+
 	it("accepts running steering only for live rpc-backed runs", async () => {
 		const { pi, tools } = stubPi();
 		factory(pi);
@@ -77,7 +138,7 @@ describe("lion extension factory", () => {
 			assert.equal(staleRpcSteer.details.run.steering_messages[0].status, "rejected_running");
 
 			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: rpcRun.id }, "rpc");
-			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => undefined });
+			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => true });
 			try {
 				const liveRpcSteer = await lion.execute("call-rpc-live", { action: "steer", id: rpcRun.id, message: "adjust live" }, undefined, undefined, ctx);
 				assert.equal(liveRpcSteer.details.run.steering_messages[1].status, "pending_delivery");
@@ -115,7 +176,7 @@ describe("lion extension factory", () => {
 
 			let delivered = false;
 			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id }, "json");
-			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { delivered = true; } });
+			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { delivered = true; return true; } });
 			try {
 				const liveCancel = await lion.execute("call-cancel-live", { action: "cancel", id: run.id, reason: "stop" }, undefined, undefined, ctx);
 				assert.equal(delivered, true);

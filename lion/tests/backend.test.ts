@@ -88,6 +88,22 @@ describe("FileBackend", () => {
 		assert.deepEqual(new Set(result.map((r) => r.id)), new Set(["run-001", "run-002", "run-003"]));
 	});
 
+	it("keeps a direct-symlink ledger on one canonical data and ownership namespace", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-symlink-test-"));
+		const target = path.join(dir, "target-runs.json");
+		const alias = path.join(dir, "alias-runs.json");
+		await fs.writeFile(target, JSON.stringify({ version: 1, runs: {} }), "utf8");
+		await fs.symlink(target, alias, "file");
+		const first = new LionStore(new FileBackend({ runsPath: alias, dir }));
+		await first.mutate((l) => l.create({ objective: "through symlink" }));
+		const second = new LionStore(new FileBackend({ runsPath: alias, dir }));
+
+		assert.equal(first.backend.location.runsPath, await fs.realpath(target));
+		assert.equal(second.namespaceId, first.namespaceId);
+		assert.equal((await fs.lstat(alias)).isSymbolicLink(), true);
+		assert.equal((await second.query((l) => l.all())).result[0]?.objective, "through symlink");
+	});
+
 	it("recovers corrupt files", async () => {
 		const { backend, dir } = await tmpStore();
 		await fs.writeFile(backend.location.runsPath, "{ broken", "utf8");

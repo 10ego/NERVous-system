@@ -12,7 +12,7 @@ import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type 
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createLionRunner, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
-import { attachActiveRunProcess, beginActiveRun, cancelActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, markActiveRunExited, replayPendingCancellation, type ActiveRunScope } from "./active-runs.ts";
+import { attachActiveRunProcess, beginActiveRun, cancelActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, markActiveRunExited, replayPendingCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
 interface LionDetails {
 	action: string;
@@ -145,9 +145,10 @@ async function executeRun(args: {
 	onUpdate?: (partial: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void;
 	timeout_ms?: number;
 	include_progress_text?: boolean;
+	activeOwner: ActiveRunOwner;
 }): Promise<ToolResult> {
 	let run = args.run;
-	const activeOwner = beginActiveRun(activeRunScope(args.store, run.id), run.runner_mode);
+	const activeOwner = args.activeOwner;
 	let pendingProgress: LionProgressSnapshot | null = null;
 	let progressInFlight: Promise<void> | null = null;
 	let progressTimer: NodeJS.Timeout | null = null;
@@ -279,30 +280,39 @@ export default function (pi: ExtensionAPI) {
 					const modelRole = (p.model_role as LionModelRole | undefined) ?? "implementation";
 					const model = p.model?.trim() || resolveConfiguredLionModel(ctx, modelRole);
 					const runnerMode = resolveRunnerMode(p.runner_mode);
-					const created = await store.mutate((l) =>
-						l.create({
-							agent_id: p.agent_id,
-							task_id: p.task_id ?? null,
-							objective: p.objective ?? "",
-							context: p.context,
-							model,
-							model_role: modelRole,
-							runner_mode: runnerMode,
-							tools: p.tools,
-							start: !p.dry_run,
-						}),
-					);
-					const run = created.result;
-					if (p.dry_run) return ok(action, `Queued dry-run ${run.id}. Use lion start id=${run.id} to launch; queued steering may be added before start.`, { run });
-					return executeRun({ pi, ctx, store, action, run, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
+					if (p.dry_run) {
+						const { result: run } = await store.mutate((l) => l.create({ agent_id: p.agent_id, task_id: p.task_id ?? null, objective: p.objective ?? "", context: p.context, model, model_role: modelRole, runner_mode: runnerMode, tools: p.tools, start: false }));
+						return ok(action, `Queued dry-run ${run.id}. Use lion start id=${run.id} to launch; queued steering may be added before start.`, { run });
+					}
+					let activeOwner: ActiveRunOwner | undefined;
+					try {
+						const { result: run } = await store.mutate((l) => {
+							const queued = l.create({ agent_id: p.agent_id, task_id: p.task_id ?? null, objective: p.objective ?? "", context: p.context, model, model_role: modelRole, runner_mode: runnerMode, tools: p.tools, start: false });
+							activeOwner = beginActiveRun(activeRunScope(store, queued.id), runnerMode);
+							return l.start(queued.id);
+						});
+						return executeRun({ pi, ctx, store, action, run, activeOwner: activeOwner!, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
+					} catch (e) {
+						if (activeOwner) finishActiveRun(activeOwner);
+						return e instanceof LionError ? fail(action, `lion run failed (${e.code}): ${e.message}`) : fail(action, `lion run failed: ${e instanceof Error ? e.message : String(e)}`);
+					}
 				}
 
 				case "start": {
 					if (!p.id) return fail(action, "start requires `id`.");
-					let run: LionRun;
-					try { run = (await store.mutate((l) => l.start(p.id!))).result; }
-					catch (e) { return e instanceof LionError ? fail(action, `lion start failed (${e.code}): ${e.message}`) : fail(action, `lion start failed: ${e instanceof Error ? e.message : String(e)}`); }
-					return executeRun({ pi, ctx, store, action, run, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
+					let activeOwner: ActiveRunOwner | undefined;
+					try {
+						const { result: run } = await store.mutate((l) => {
+							const current = l.get(p.id!);
+							if (!current) throw new LionError("not_found", `run ${p.id} not found`);
+							activeOwner = beginActiveRun(activeRunScope(store, current.id), current.runner_mode);
+							return l.start(current.id);
+						});
+						return executeRun({ pi, ctx, store, action, run, activeOwner: activeOwner!, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
+					} catch (e) {
+						if (activeOwner) finishActiveRun(activeOwner);
+						return e instanceof LionError ? fail(action, `lion start failed (${e.code}): ${e.message}`) : fail(action, `lion start failed: ${e instanceof Error ? e.message : String(e)}`);
+					}
 				}
 
 				case "cancel": {
@@ -316,7 +326,8 @@ export default function (pi: ExtensionAPI) {
 						const delivered = await cancelActiveRun(scope, result.signal);
 						if (delivered.delivered) {
 							const updated = await store.mutate((l) => l.markCancelDelivery(p.id!, "delivered"));
-							setTimeout(() => { void cancelActiveRun(scope, "SIGKILL").catch(() => undefined); }, 5000).unref?.();
+							const originalOwner = delivered.owner;
+							setTimeout(() => { void cancelActiveRun(originalOwner, "SIGKILL").catch(() => undefined); }, 5000).unref?.();
 							return ok(action, `Cancellation delivered to active LION ${p.id}${delivered.pid ? ` (pid ${delivered.pid})` : ""}.`, { run: updated.result });
 						}
 

@@ -26,7 +26,8 @@ export interface LionRunnerOptions {
 export interface LionProcessInfo {
 	pid: number;
 	pgid: number | null;
-	cancel?: (signal?: NodeJS.Signals) => Promise<void> | void;
+	/** Return true only when a signal/control command was actually issued. */
+	cancel?: (signal?: NodeJS.Signals) => Promise<boolean> | boolean;
 	isAlive?: () => boolean;
 }
 
@@ -389,9 +390,10 @@ function collectMessages(
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		const processIsAlive = () => proc.exitCode === null && proc.signalCode === null && Boolean(proc.pid && isPidAlive(proc.pid));
-		const cancelOwnedProcess = (signal: NodeJS.Signals = "SIGTERM") => {
-			if (!proc.pid || !processIsAlive()) return;
+		const cancelOwnedProcess = (signal: NodeJS.Signals = "SIGTERM"): boolean => {
+			if (!proc.pid || !processIsAlive()) return false;
 			signalProcessTree(proc.pid, signal);
+			return true;
 		};
 		if (proc.pid) {
 			try { onProcessStart?.({ pid: proc.pid, pgid: detached ? proc.pid : null, cancel: cancelOwnedProcess, isAlive: processIsAlive }); } catch { /* control metadata is best-effort */ }
@@ -443,12 +445,18 @@ function collectMessages(
 			for (const line of lines) processLine(line);
 		});
 		proc.stderr.on("data", (data) => (stderr += data.toString()));
-		proc.on("error", (err) => {
+		let processExitNotified = false;
+		const notifyProcessExit = () => {
+			if (processExitNotified) return;
+			processExitNotified = true;
 			try { onProcessExit?.(); } catch { /* best effort */ }
+		};
+		proc.on("error", (err) => {
+			notifyProcessExit();
 			done(() => reject(err));
 		});
 		proc.on("close", (_code, closeSignal) => {
-			try { onProcessExit?.(); } catch { /* best effort */ }
+			notifyProcessExit();
 			if (buffer.trim()) processLine(buffer);
 			if (aborted) return done(() => reject(new Error("LION subprocess was aborted or timed out")));
 			if (closeSignal) return done(() => reject(new Error(`LION subprocess exited after signal ${closeSignal}`)));

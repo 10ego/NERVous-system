@@ -51,6 +51,8 @@ describe("LionLedger", () => {
 		assert.equal(l.list({ status: "completed" }).length, 1);
 		assert.equal(l.list({ agent_id: "lion-b" })[0]?.id, b.id);
 		assert.equal(l.summary().by_status.completed, 1);
+		assert.throws(() => l.delete(b.id), /cannot delete nonterminal/);
+		l.finish(b.id, { output: "ok", report: null });
 		assert.equal(l.delete(b.id).id, b.id);
 		assert.equal(l.all().length, 1);
 	});

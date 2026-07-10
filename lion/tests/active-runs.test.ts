@@ -37,8 +37,8 @@ describe("namespace-scoped active LION ownership", () => {
 		const scopeB = { namespaceId: storeB.namespaceId, runId: runB.id };
 		const ownerA = beginActiveRun(scopeA, "json");
 		const ownerB = beginActiveRun(scopeB, "json");
-		attachActiveRunProcess(ownerA, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { cancelledA++; } });
-		attachActiveRunProcess(ownerB, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { cancelledB++; } });
+		attachActiveRunProcess(ownerA, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { cancelledA++; return true; } });
+		attachActiveRunProcess(ownerB, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { cancelledB++; return true; } });
 
 		assert.deepEqual(getActiveRunIds(storeA.namespaceId), ["run-001"]);
 		assert.deepEqual(getActiveRunIds(storeB.namespaceId), ["run-001"]);
@@ -59,6 +59,30 @@ describe("namespace-scoped active LION ownership", () => {
 		finishActiveRun(replacement);
 	});
 
+	it("binds delayed cancellation to the original owner capability", async () => {
+		const store = await makeStore("replacement");
+		const scope = { namespaceId: store.namespaceId, runId: "run-001" };
+		const original = beginActiveRun(scope, "json");
+		attachActiveRunProcess(original, { pid: 101, pgid: null, isAlive: () => true, cancel: () => true });
+		finishActiveRun(original);
+		let replacementSignals = 0;
+		const replacement = beginActiveRun(scope, "json");
+		attachActiveRunProcess(replacement, { pid: 202, pgid: null, isAlive: () => true, cancel: () => { replacementSignals++; return true; } });
+
+		const stale = await cancelActiveRun(original, "SIGKILL");
+		assert.deepEqual(stale, { delivered: false, reason: "owner_replaced", pid: 202, pgid: null });
+		assert.equal(replacementSignals, 0);
+		finishActiveRun(replacement);
+	});
+
+	it("does not report delivery when the owned process handle sends no signal", async () => {
+		const store = await makeStore("not-signaled");
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: "run-001" }, "json");
+		attachActiveRunProcess(owner, { pid: 303, pgid: null, isAlive: () => true, cancel: () => false });
+		assert.deepEqual(await cancelActiveRun(owner), { delivered: false, reason: "not_signaled", pid: 303, pgid: null });
+		finishActiveRun(owner);
+	});
+
 	it("replays and coalesces cancellation recorded before process attachment", async () => {
 		const store = await makeStore("replay");
 		const run = (await store.mutate((l) => l.create({ objective: "cancel me" }))).result;
@@ -76,6 +100,7 @@ describe("namespace-scoped active LION ownership", () => {
 			cancel: async () => {
 				deliveries++;
 				await new Promise((resolve) => setTimeout(resolve, 5));
+				return true;
 			},
 		});
 		const [first, second] = await Promise.all([
