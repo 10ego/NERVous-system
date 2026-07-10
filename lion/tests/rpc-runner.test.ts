@@ -367,6 +367,22 @@ describe("createLionRpcRunner", () => {
 		assert.equal(fake.stopCalls, 1);
 	});
 
+	it("does not report process exit when interrupted start exposed no child and stop succeeds", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.startGate = new Promise<void>(() => undefined);
+		fake.getProcessInfo = () => null as never;
+		const run = (await store.mutate((l) => l.create({ objective: "no spawned child", runner_mode: "rpc" }))).result;
+		const controller = new AbortController();
+		let exits = 0;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, signal: controller.signal, timeout_ms: 1000, onProcessExit: () => { exits++; } });
+		await until(() => fake.started);
+		controller.abort();
+		await assert.rejects(() => promise, /aborted/);
+		assert.equal(exits, 0);
+	});
+
 	it("bounds interrupted start cleanup when no process handle is ever exposed", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();

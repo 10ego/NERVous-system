@@ -515,7 +515,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 			try { await attachedProcess?.cancel?.("SIGKILL"); } catch { /* retain ownership until actual exit */ }
 		}
 		if (childAttached && childIsAlive()) await waitForConfirmedChildExit();
-		if ((childAttached && !childIsAlive()) || (!childAttached && !stopError)) notifyProcessExit();
+		if (childAttached && !childIsAlive()) notifyProcessExit();
 		let cleanupError: unknown;
 		if (tmpDir) {
 			try { await removeTempDirectory(tmpDir); } catch (error) { cleanupError = error; }

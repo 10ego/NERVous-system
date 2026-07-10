@@ -167,6 +167,24 @@ describe("namespace-scoped active LION ownership", () => {
 		assert.equal(reads, 3);
 	});
 
+	it("never lets adaptive polling sleep past the settlement timeout", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+		const ledger = new LionLedger();
+		const run = ledger.create({ objective: "short timeout" });
+		const store = {
+			namespaceId: "short-timeout",
+			async query<T>(fn: (current: LionLedger) => T) { return { result: fn(ledger) }; },
+			async mutate<T>(fn: (current: LionLedger) => T) { return { result: fn(ledger) }; },
+			async mutateMaybe<T>(fn: (current: LionLedger) => { result: T; changed: boolean }) { return fn(ledger); },
+		};
+		const waiting = waitForRunSettlements(store, [run], 1);
+		await vi.advanceTimersByTimeAsync(1);
+		const result = await waiting;
+		assert.equal(result[0]?.settled, false);
+		assert.equal(Date.now(), Date.parse("2026-01-01T00:00:00.001Z"));
+	});
+
 	it("reconciles a stale ownerless run before cancellation refreshes its grace", async () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));

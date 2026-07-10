@@ -121,6 +121,10 @@ export interface LinkedLionSettlement {
 const DEFAULT_CANCEL_SETTLE_TIMEOUT_MS = 15_000;
 const MAX_CANCEL_SETTLE_TIMEOUT_MS = 120_000;
 
+function lionRunRefKey(runId: string, incarnationId: string | null | undefined): string {
+	return JSON.stringify([runId, incarnationId ?? null]);
+}
+
 export function resolveCancelSettlementTimeout(value = process.env.CEREBEL_CANCEL_SETTLE_TIMEOUT_MS): number {
 	if (value === undefined || value.trim() === "") return DEFAULT_CANCEL_SETTLE_TIMEOUT_MS;
 	const parsed = Number(value);
@@ -358,7 +362,7 @@ export default function (pi: ExtensionAPI) {
 							const latest = (await store.query((l) => l.get(initial.id))).result ?? initial;
 							const outstandingWave: Wave = {
 								...latest,
-								assignments: latest.assignments.filter((assignment) => assignment.lion_run_id && !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`)),
+								assignments: latest.assignments.filter((assignment) => assignment.lion_run_id && !settledRunRefs.has(lionRunRefKey(assignment.lion_run_id, assignment.lion_run_incarnation_id))),
 							};
 							const settlements = await settleLinkedLionsBeforeCancel(ctx.cwd, outstandingWave, p.reason ?? "CEREBEL wave cancelled");
 							const failures = settlements.filter((settlement) => !settlement.settled);
@@ -367,14 +371,14 @@ export default function (pi: ExtensionAPI) {
 								return fail(action, `cerebel cancel retained wave/capacity because linked LIONs did not settle: ${message}`, { wave: latest });
 							}
 							for (const settlement of settlements) if (settlement.assignment.lion_run_id) {
-								settledRunRefs.add(`${settlement.assignment.lion_run_id}\u0000${settlement.assignment.lion_run_incarnation_id ?? "legacy"}`);
+								settledRunRefs.add(lionRunRefKey(settlement.assignment.lion_run_id, settlement.assignment.lion_run_incarnation_id));
 							}
 							const attempt = await store.mutate((l) => {
 								const current = l.get(initial.id);
 								if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
 								const pending = current.assignments.some((assignment) => assignment.lion_run_id
 									&& !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status)
-									&& !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`));
+									&& !settledRunRefs.has(lionRunRefKey(assignment.lion_run_id, assignment.lion_run_incarnation_id)));
 								return pending ? undefined : l.cancel(initial.id);
 							});
 							cancelledWave = attempt.result;

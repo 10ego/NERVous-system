@@ -165,6 +165,7 @@ export class LionLedger {
 				msg.applied_at = ts;
 			}
 		}
+		this.compactSteeringHistory(r);
 		r.started_at = ts;
 		r.updated_at = ts;
 		return clone(r);

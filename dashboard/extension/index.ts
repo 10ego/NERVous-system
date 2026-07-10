@@ -301,11 +301,15 @@ export function describeLionProgress(run: LionRun, nowMs = Date.now()): string {
 	return bits.join(" · ");
 }
 
+function lionRunRefKey(runId: string, incarnationId: string | null | undefined): string {
+	return JSON.stringify([runId, incarnationId ?? null]);
+}
+
 export function summarizeWaveProgress(wave: Wave, runs: LionRun[], nowMs = Date.now()): string {
 	if (!wave.assignments.length) return "no assignments";
-	const runsByRef = new Map(runs.map((run) => [`${run.id}\u0000${run.incarnation_id ?? "legacy"}`, run]));
+	const runsByRef = new Map(runs.map((run) => [lionRunRefKey(run.id, run.incarnation_id), run]));
 	const linkedRuns = wave.assignments
-		.map((a) => a.lion_run_id ? runsByRef.get(`${a.lion_run_id}\u0000${a.lion_run_incarnation_id ?? "legacy"}`) : undefined)
+		.map((a) => a.lion_run_id ? runsByRef.get(lionRunRefKey(a.lion_run_id, a.lion_run_incarnation_id)) : undefined)
 		.filter((r): r is LionRun => Boolean(r));
 	const assignmentCounts = countByStatus(wave.assignments);
 	const assignmentSummary = Object.entries(assignmentCounts)
@@ -350,6 +354,7 @@ export class NervousDashboard implements Component {
 	private detailLineCount = 0;
 	private readonly detailViewportRows = 20;
 	private refreshing = false;
+	private reloadPending = false;
 	private showRefreshing = false;
 	private closed = false;
 	private error: string | null = null;
@@ -682,6 +687,7 @@ export class NervousDashboard implements Component {
 				let changed = true;
 				try { if (this.changeDetector) changed = await this.changeDetector(); }
 				catch { changed = true; }
+				if (this.closed) return;
 				if (changed) this.reload({ showIndicator: false });
 				this.nextAutoRefreshMs = changed ? this.autoRefreshMs : Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
 				this.startAutoRefresh(this.nextAutoRefreshMs);
@@ -691,12 +697,17 @@ export class NervousDashboard implements Component {
 		maybeUnref.unref?.();
 	}
 	dispose(): void {
+		this.closed = true;
 		if (!this.refreshTimer) return;
-		clearInterval(this.refreshTimer);
+		clearTimeout(this.refreshTimer);
 		this.refreshTimer = null;
 	}
 	private reload(options: { showIndicator?: boolean } = {}): void {
-		if (this.refreshing || this.closed) return;
+		if (this.closed) return;
+		if (this.refreshing) {
+			this.reloadPending = true;
+			return;
+		}
 		this.refreshing = true;
 		this.showRefreshing = options.showIndicator ?? true;
 		this.error = null;
@@ -723,6 +734,10 @@ export class NervousDashboard implements Component {
 				this.selected = Math.min(this.selected, Math.max(0, this.items().length - 1));
 				this.invalidate();
 				this.tui.requestRender();
+				if (this.reloadPending) {
+					this.reloadPending = false;
+					this.reload({ showIndicator: false });
+				}
 			});
 	}
 	private currentSelectedKey(): string | null {

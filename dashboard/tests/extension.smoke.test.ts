@@ -76,6 +76,37 @@ describe("dashboard extension factory", () => {
 		dashboard.dispose();
 	});
 
+	it("stops pending change-detection work when disposed", async () => {
+		vi.useFakeTimers();
+		let resolveDetection!: (changed: boolean) => void;
+		const changeDetector = vi.fn(() => new Promise<boolean>((resolve) => { resolveDetection = resolve; }));
+		const refresh = vi.fn().mockResolvedValue(emptyDashboardData());
+		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
+		await vi.advanceTimersByTimeAsync(100);
+		dashboard.dispose();
+		resolveDetection(true);
+		await vi.advanceTimersByTimeAsync(1000);
+		assert.equal(refresh.mock.calls.length, 0);
+		assert.equal(changeDetector.mock.calls.length, 1);
+	});
+
+	it("replays a change detected while the previous dashboard reload is in flight", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValue(true);
+		const refreshResolvers: Array<(data: any) => void> = [];
+		const refresh = vi.fn(() => new Promise<any>((resolve) => { refreshResolvers.push(resolve); }));
+		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
+		await vi.advanceTimersByTimeAsync(200);
+		assert.equal(refresh.mock.calls.length, 1, "second change should be latched while first reload runs");
+		refreshResolvers[0]!(emptyDashboardData({ runs: [{ id: "old" }] }));
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(refresh.mock.calls.length, 2);
+		refreshResolvers[1]!(emptyDashboardData({ runs: [{ id: "latest" }] }));
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal((dashboard as any).data.runs[0]?.id, "latest");
+		dashboard.dispose();
+	});
+
 	it("derives the auto-refresh footer label from the configured interval", () => {
 		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), vi.fn(), { autoRefreshMs: 2500 });
 		const text = dashboard.render(100).join("\n");
@@ -174,7 +205,7 @@ describe("dashboard extension factory", () => {
 
 	it("does not join a stale CEREBEL link to a reused LION id", () => {
 		const wave = { assignments: [{ status: "dispatched", lion_run_id: "run-001", lion_run_incarnation_id: "inc-old" }] } as any;
-		const runs = [{ id: "run-001", incarnation_id: "inc-new", status: "running", progress: { activity: "secret replacement progress" } }] as any;
+		const runs = [{ id: "run-001", incarnation_id: "legacy", status: "running", progress: { activity: "secret replacement progress" } }] as any;
 		const text = summarizeWaveProgress(wave, runs);
 		assert.match(text, /no linked LION runs/);
 		assert.doesNotMatch(text, /secret replacement/);

@@ -207,6 +207,17 @@ describe("LionLedger", () => {
 		assert.equal(current.steering_messages?.at(-1)?.id, "steer-125");
 	});
 
+	it("compacts queued steering when start makes entries terminal", () => {
+		const l = new LionLedger();
+		const run = l.create({ objective: "queued history", start: false });
+		for (let index = 0; index < 125; index++) l.steer(run.id, `queued-${index}`);
+		assert.equal(l.get(run.id)?.steering_messages?.length, 125, "open queued messages are retained");
+		const started = l.start(run.id);
+		assert.equal(started.steering_messages?.length, 100);
+		assert.equal(started.steering_messages?.every((message) => message.status === "applied"), true);
+		assert.equal(started.steering_messages?.at(-1)?.id, "steer-125");
+	});
+
 	it("tracks rpc live steering delivery states", () => {
 		const l = new LionLedger();
 		const run = l.create({ objective: "rpc", runner_mode: "rpc" });

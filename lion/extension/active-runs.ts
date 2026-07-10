@@ -252,8 +252,9 @@ export async function waitForRunSettlements(
 				superseded: false,
 			};
 		});
-		if (results.every((result) => result.settled) || Date.now() >= deadline) return results;
-		await new Promise((resolve) => setTimeout(resolve, nextPoll));
+		const remaining = deadline - Date.now();
+		if (results.every((result) => result.settled) || remaining <= 0) return results;
+		await new Promise((resolve) => setTimeout(resolve, Math.min(nextPoll, remaining)));
 		nextPoll = Math.min(boundedMaxPoll, nextPoll * 2);
 	}
 }
