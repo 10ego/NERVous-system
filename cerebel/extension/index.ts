@@ -235,7 +235,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					onProcessStart: (info) => {
 						activeRuns.attachActiveRunProcess(activeOwner, info);
 						void lionStore.mutate((l) => activeRuns.isActiveRunOwner(activeOwner)
-							? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })
+							? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, process_identity: info.process_identity ?? null, started_at: new Date().toISOString() })
 							: l.get(run.id)).catch(() => undefined).finally(() => activeRuns.replayPendingCancellation(activeOwner, lionStore).catch(() => undefined));
 					},
 					onControlClosed: () => activeRuns.markActiveRunControlClosed(activeOwner),

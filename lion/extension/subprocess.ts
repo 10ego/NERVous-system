@@ -6,7 +6,7 @@
  * plus any human-readable notes.
  */
 
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -26,6 +26,8 @@ export interface LionRunnerOptions {
 export interface LionProcessInfo {
 	pid: number;
 	pgid: number | null;
+	/** Observational process-birth identity; never grants signaling authority. */
+	process_identity?: string | null;
 	/** Return true only when a signal/control command was actually issued. */
 	cancel?: (signal?: NodeJS.Signals) => Promise<boolean> | boolean;
 	isAlive?: () => boolean;
@@ -64,6 +66,23 @@ export function getPiInvocation(args: string[], opts?: { forceBinary?: boolean }
 	const execName = path.basename(process.execPath).toLowerCase();
 	const isGenericRuntime = /^(node|bun)(\.exe)?$/.test(execName);
 	return isGenericRuntime ? { command: "pi", args } : { command: process.execPath, args };
+}
+
+export function getProcessIdentity(pid: number): string | null {
+	try {
+		if (process.platform === "linux") {
+			const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+			const close = stat.lastIndexOf(")");
+			const fields = stat.slice(close + 2).trim().split(/\s+/);
+			const startTicks = fields[19]; // field 22 after removing pid/comm
+			const bootId = fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+			return startTicks && bootId ? `linux:${bootId}:${startTicks}` : null;
+		}
+		const started = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+		return started ? `${process.platform}:${started}` : null;
+	} catch {
+		return null;
+	}
 }
 
 export function isPidAlive(pid: number): boolean {
@@ -398,7 +417,7 @@ function collectMessages(
 			return true;
 		};
 		if (proc.pid) {
-			try { onProcessStart?.({ pid: proc.pid, pgid: detached ? proc.pid : null, cancel: cancelOwnedProcess, isAlive: processIsAlive }); } catch { /* control metadata is best-effort */ }
+			try { onProcessStart?.({ pid: proc.pid, pgid: detached ? proc.pid : null, process_identity: getProcessIdentity(proc.pid), cancel: cancelOwnedProcess, isAlive: processIsAlive }); } catch { /* control metadata is best-effort */ }
 		}
 
 		const messages: Message[] = [];

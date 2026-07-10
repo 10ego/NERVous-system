@@ -22,6 +22,7 @@ class FakeRpcClient implements LionRpcClient {
 	throwOnAbort = false;
 	throwOnStop = false;
 	hangOnStop = false;
+	stopDelayMs = 0;
 	hangOnAbort = false;
 	killOnSignal = false;
 	finishDuringPrompt = false;
@@ -35,6 +36,7 @@ class FakeRpcClient implements LionRpcClient {
 		this.stopCalls++;
 		if (this.throwOnStop) throw new Error("stop boom");
 		if (this.hangOnStop) return new Promise<void>(() => undefined);
+		if (this.stopDelayMs > 0) await new Promise((resolve) => setTimeout(resolve, this.stopDelayMs));
 		this.stopped = true;
 		this.idleResolve?.();
 		this.exit();
@@ -349,6 +351,39 @@ describe("createLionRpcRunner", () => {
 		assert.equal(fake.waitForIdleCalls, 0);
 		assert.equal(fake.listenerCount(), 0);
 		assert.equal(fake.stopCalls, 1);
+	});
+
+	it("allows the default RpcClient stop grace to finish before the wrapper times out", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.stopDelayMs = 1100;
+		const run = (await store.mutate((l) => l.create({ objective: "graceful delayed stop", runner_mode: "rpc" }))).result;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, timeout_ms: 5000 });
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		const output = await promise;
+		assert.equal(output.report?.outcome, "completed");
+		assert.equal(fake.stopCalls, 1);
+	});
+
+	it("bounds interrupted start cleanup when no process handle is ever exposed", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.startGate = new Promise<void>(() => undefined);
+		fake.hangOnStop = true;
+		fake.getProcessInfo = () => null as never;
+		const run = (await store.mutate((l) => l.create({ objective: "unobservable interrupted start", runner_mode: "rpc" }))).result;
+		const controller = new AbortController();
+		let exits = 0;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, abortGraceMs: 5, stopGraceMs: 5, startObservationGraceMs: 20, clientFactory: () => fake });
+		const startedAt = Date.now();
+		const promise = runner({ run, signal: controller.signal, timeout_ms: 1000, onProcessExit: () => { exits++; } });
+		await until(() => fake.started);
+		controller.abort();
+		await assert.rejects(() => promise, /RPC stop timed out/);
+		assert.ok(Date.now() - startedAt < 500, "cleanup fallback should be bounded");
+		assert.equal(exits, 0, "an unobserved child must not be reported exited");
 	});
 
 	it("propagates normal stop failure without reporting a live child exited", async () => {

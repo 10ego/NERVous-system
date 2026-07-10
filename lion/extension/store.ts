@@ -89,6 +89,8 @@ export interface ReconcileControlsOptions {
 	active_run_ids?: Iterable<string>;
 	now_ms?: number;
 	stale_after_ms?: number;
+	/** Observational lookup only; never signaling authority. Null means unverifiable. */
+	get_process_identity?: (pid: number) => string | null;
 }
 
 export interface SteerRunResult {
@@ -379,7 +381,13 @@ export class LionLedger {
 			if (active.has(r.id)) continue;
 			if (!isReconcileStale(r, nowMs, staleAfterMs)) continue;
 			const pid = r.control?.pid;
-			if (typeof pid === "number" && isAlive(pid)) continue;
+			if (typeof pid === "number" && isAlive(pid)) {
+				const expectedIdentity = r.control?.process_identity;
+				const observedIdentity = expectedIdentity && options.get_process_identity ? options.get_process_identity(pid) : null;
+				if (!expectedIdentity || !observedIdentity || observedIdentity === expectedIdentity) continue;
+				// Same numeric PID now belongs to another process. This proves the
+				// original child is gone, but never grants authority over the replacement.
+			}
 			const ts = new Date(nowMs).toISOString();
 			const terminalStatus = r.control?.cancel_requested_at ? "aborted" : "failed";
 			this.transition(r, terminalStatus);
@@ -618,6 +626,7 @@ function coerceControl(value: unknown): LionControlState | null {
 	return {
 		pid: typeof value.pid === "number" ? Math.floor(value.pid) : null,
 		pgid: typeof value.pgid === "number" ? Math.floor(value.pgid) : null,
+		process_identity: typeof value.process_identity === "string" ? value.process_identity : null,
 		started_at: typeof value.started_at === "string" ? value.started_at : null,
 		last_seen_at: typeof value.last_seen_at === "string" ? value.last_seen_at : null,
 		cancel_requested_at: typeof value.cancel_requested_at === "string" ? value.cancel_requested_at : null,

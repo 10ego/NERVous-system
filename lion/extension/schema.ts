@@ -81,6 +81,8 @@ export interface LionProgressSnapshot {
 export interface LionControlState {
 	pid?: number | null;
 	pgid?: number | null;
+	/** Observational OS process-birth identity; never signaling authority. */
+	process_identity?: string | null;
 	started_at?: string | null;
 	last_seen_at?: string | null;
 	cancel_requested_at?: string | null;

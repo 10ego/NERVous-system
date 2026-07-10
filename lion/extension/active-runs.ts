@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import type { LionLedger } from "./store.ts";
 import type { LionRun, LionRunnerMode } from "./schema.ts";
-import { isPidAlive, type LionProcessInfo } from "./subprocess.ts";
+import { getProcessIdentity, isPidAlive, type LionProcessInfo } from "./subprocess.ts";
 
 export type ActiveCancelSignal = "SIGTERM" | "SIGKILL";
 
@@ -32,7 +32,6 @@ export interface ActiveRunOwner extends ActiveRunScope {
 
 interface ActiveRunEntry extends ActiveRunOwner {
 	runnerMode?: LionRunnerMode | null;
-	registeredAt: string;
 	state: "starting" | "running" | "control_closed" | "exited";
 	pid?: number;
 	pgid?: number | null;
@@ -60,7 +59,6 @@ export function beginActiveRun(scope: ActiveRunScope, runnerMode?: LionRunnerMod
 	activeRuns.set(key, {
 		...owner,
 		runnerMode,
-		registeredAt: new Date().toISOString(),
 		state: "starting",
 		cancelInFlight: new Map(),
 		cancelDelivered: new Map(),
@@ -202,7 +200,7 @@ export async function requestRunCancellation(
 ): Promise<RunCancellationResult> {
 	const expectedProvided = Object.prototype.hasOwnProperty.call(options, "expectedIncarnationId");
 	const admission = (await store.mutate((ledger) => {
-		ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId) });
+		ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId), get_process_identity: getProcessIdentity });
 		const current = ledger.get(runId);
 		if (!current) return { kind: "missing" as const };
 		if (expectedProvided && (current.incarnation_id ?? null) !== (options.expectedIncarnationId ?? null)) {
@@ -237,7 +235,7 @@ export async function waitForRunSettlements(
 	const deadline = Date.now() + boundedTimeout;
 	for (;;) {
 		const { result: currentRuns } = await store.mutateMaybe((ledger) => {
-			const changed = ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId) });
+			const changed = ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId), get_process_identity: getProcessIdentity });
 			return { result: runs.map((run) => ledger.get(run.id)), changed: changed.length > 0 };
 		});
 		const results = runs.map((run, index): RunCancellationResult => {

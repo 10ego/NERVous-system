@@ -100,6 +100,25 @@ describe("LionLedger", () => {
 		assert.equal(stale.some((r) => r.id === fresh.id && r.status === "failed"), true);
 	});
 
+	it("reconciles PID reuse only when process-birth identity proves replacement", () => {
+		const l = new LionLedger();
+		const replaced = l.create({ objective: "original process" });
+		l.updateControl(replaced.id, { pid: 4242, process_identity: "boot-a:start-1", last_seen_at: replaced.started_at });
+		const changed = l.reconcileControls(() => true, {
+			now_ms: Date.parse(replaced.started_at) + 60_000,
+			stale_after_ms: 1,
+			get_process_identity: () => "boot-a:start-2",
+		});
+		assert.equal(changed[0]?.status, "failed");
+
+		const same = l.create({ objective: "same process" });
+		l.updateControl(same.id, { pid: 4343, process_identity: "boot-a:start-3", last_seen_at: same.started_at });
+		assert.equal(l.reconcileControls(() => true, { now_ms: Date.parse(same.started_at) + 60_000, stale_after_ms: 1, get_process_identity: () => "boot-a:start-3" }).length, 0);
+		const legacy = l.create({ objective: "legacy unverifiable" });
+		l.updateControl(legacy.id, { pid: 4444, last_seen_at: legacy.started_at });
+		assert.equal(l.reconcileControls(() => true, { now_ms: Date.parse(legacy.started_at) + 60_000, stale_after_ms: 1, get_process_identity: (pid) => pid === 4343 ? "boot-a:start-3" : "boot-a:start-other" }).length, 0);
+	});
+
 	it("reconciles a stale ownerless running run without process metadata", () => {
 		const l = new LionLedger();
 		const run = l.create({ objective: "lost before attach" });

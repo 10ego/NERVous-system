@@ -12,7 +12,7 @@ import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { LionStore } from "./backend.ts";
 import type { LionProgressSnapshot, LionReport } from "./schema.ts";
-import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree, type LionProcessInfo, type LionRunOutput, type LionRunRequest } from "./subprocess.ts";
+import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, getProcessIdentity, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree, type LionProcessInfo, type LionRunOutput, type LionRunRequest } from "./subprocess.ts";
 
 export interface LionRpcClient {
 	start(): Promise<void>;
@@ -20,11 +20,10 @@ export interface LionRpcClient {
 	prompt(message: string): Promise<void>;
 	steer(message: string): Promise<void>;
 	abort(): Promise<void>;
-	waitForIdle(timeout?: number): Promise<void>;
 	getLastAssistantText(): Promise<string | null>;
 	onEvent(listener: (event: unknown) => void): () => void;
-	getStderr?(): string;
-	getProcessInfo?(): LionProcessInfo | null;
+	/** Must expose an owned handle as soon as start() spawns; null means no child has been spawned. */
+	getProcessInfo(): LionProcessInfo | null;
 	waitForExit?(): Promise<void>;
 }
 
@@ -49,6 +48,10 @@ export interface LionRpcRunnerOptions {
 	onSteeringClosed?: () => Promise<void> | void;
 	/** Maximum wait for graceful RPC abort before stop is attempted. */
 	abortGraceMs?: number;
+	/** Maximum wait for RpcClient.stop(); defaults above the client's own one-second stop grace. */
+	stopGraceMs?: number;
+	/** Maximum wait for an interrupted start to settle or expose its required process handle. */
+	startObservationGraceMs?: number;
 	/** Test/embedding hook for prompt-file persistence. */
 	writePromptFile?: (filePath: string, prompt: string) => Promise<void>;
 }
@@ -56,6 +59,8 @@ export interface LionRpcRunnerOptions {
 const DEFAULT_POLL_INTERVAL_MS = 100;
 const DEFAULT_MAX_POLL_INTERVAL_MS = 2000;
 const DEFAULT_ABORT_GRACE_MS = 1000;
+const DEFAULT_STOP_GRACE_MS = 1500;
+const DEFAULT_START_OBSERVATION_GRACE_MS = 1000;
 
 interface DisposableWaiter<T> {
 	promise: Promise<T>;
@@ -271,7 +276,8 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	};
 	const stopClientBounded = async () => {
 		if (stopFailure) throw stopFailure;
-		try { await withTimeout(stopClient(), opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS, "RPC stop timed out"); }
+		const stopGraceMs = opts.stopGraceMs ?? (opts.abortGraceMs !== undefined ? opts.abortGraceMs : DEFAULT_STOP_GRACE_MS);
+		try { await withTimeout(stopClient(), stopGraceMs, "RPC stop timed out"); }
 		catch (error) { stopFailure = error; throw error; }
 	};
 	const abortAndStop = async (activeClient: LionRpcClient) => {
@@ -288,7 +294,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	};
 	const attachProcessIfAvailable = (): boolean => {
 		if (childAttached || !client) return childAttached;
-		const attachedInfo = client.getProcessInfo?.() ?? null;
+		const attachedInfo = client.getProcessInfo();
 		if (!attachedInfo?.pid) return false;
 		processInfo = attachedInfo;
 		childAttached = true;
@@ -313,13 +319,14 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		return true;
 	};
 	const waitForInterruptedStartDisposition = async () => {
-		while (startInvoked && !startSettled && !attachProcessIfAvailable()) {
+		const observationDeadline = Date.now() + (opts.startObservationGraceMs ?? DEFAULT_START_OBSERVATION_GRACE_MS);
+		while (startInvoked && !startSettled && !attachProcessIfAvailable() && Date.now() < observationDeadline) {
 			await Promise.race([
 				startPromise?.catch(() => undefined) ?? Promise.resolve(),
 				new Promise<void>((resolve) => setTimeout(resolve, 25)),
 			]);
 		}
-		attachProcessIfAvailable();
+		return attachProcessIfAvailable();
 	};
 	const waitForConfirmedChildExit = async () => {
 		while (childIsAlive()) {
@@ -545,10 +552,8 @@ async function createDefaultRpcClient(config: LionRpcClientConfig): Promise<Lion
 		prompt: (message) => client.prompt(message),
 		steer: (message) => client.steer(message),
 		abort: () => client.abort(),
-		waitForIdle: (timeout) => client.waitForIdle(timeout),
 		getLastAssistantText: () => client.getLastAssistantText(),
 		onEvent: (listener) => client.onEvent(listener as never),
-		getStderr: () => client.getStderr(),
 		getProcessInfo: () => {
 			const proc = (client as unknown as { process?: { pid?: number; exitCode?: number | null; signalCode?: string | null } | null }).process;
 			if (typeof proc?.pid !== "number") return null;
@@ -557,6 +562,7 @@ async function createDefaultRpcClient(config: LionRpcClientConfig): Promise<Lion
 			return {
 				pid,
 				pgid: null,
+				process_identity: getProcessIdentity(pid),
 				isAlive,
 				cancel: (signal = "SIGTERM") => {
 					if (!isAlive()) return false;

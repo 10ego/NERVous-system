@@ -11,7 +11,7 @@ import { LionStore } from "./backend.ts";
 import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunnerMode, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { emitLionEvent, startedProgress, terminalEventKind } from "./lifecycle.ts";
-import { createLionRunner, isPidAlive } from "./subprocess.ts";
+import { createLionRunner, getProcessIdentity, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
 import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunControlClosed, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
@@ -89,7 +89,7 @@ function activeRunScope(store: LionStore, run: Pick<LionRun, "id" | "incarnation
 async function reconcileStore(store: LionStore): Promise<void> {
 	try {
 		await store.mutateMaybe((l) => {
-			const changed = l.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId) });
+			const changed = l.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId), get_process_identity: getProcessIdentity });
 			return { result: changed, changed: changed.length > 0 };
 		});
 	} catch { /* best-effort read reconciliation */ }
@@ -177,7 +177,7 @@ async function executeRun(args: {
 			onProcessStart: (info) => {
 				attachActiveRunProcess(activeOwner, info);
 				void args.store.mutate((l) => isActiveRunOwner(activeOwner)
-					? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, started_at: new Date().toISOString() })
+					? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, process_identity: info.process_identity ?? null, started_at: new Date().toISOString() })
 					: l.get(run.id)).then((updated) => { if (updated.result) run = updated.result; }).catch((err) => {
 					console.warn(`[nervous-system/lion] process metadata update failed for ${run.id}:`, err);
 				}).finally(() => replayPendingCancellation(activeOwner, args.store).catch((err) => {
