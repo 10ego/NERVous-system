@@ -375,7 +375,7 @@ describe("runWave", () => {
 		assert.equal(result.wave.assignments[0]?.status, "failed");
 	});
 
-	it("does not overwrite a concurrent foreign LION link during setup recovery", async () => {
+	it("does not overwrite a concurrent same-id foreign incarnation during setup recovery", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 1, assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
 		const adapter = fakeAdapter({ "assign-001": completedReport("should not run") });
@@ -386,7 +386,7 @@ describe("runWave", () => {
 		adapter.createRun = async (assignment) => {
 			trace.push("create-local");
 			const run = await baseCreateRun(assignment);
-			await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: assignment.id, lion_run_id: "run-foreign", lion_run_incarnation_id: "inc-foreign" }] }));
+			await store.mutate((l) => l.dispatch(wave.id, { links: [{ assignment_id: assignment.id, lion_run_id: run.id, lion_run_incarnation_id: "inc-foreign" }] }));
 			trace.push("link-foreign");
 			return run;
 		};
@@ -405,7 +405,9 @@ describe("runWave", () => {
 		assert.equal(finishStatus, "failed");
 		assert.equal(result.assignment_results[0]?.outcome, "skipped");
 		assert.equal(result.wave.assignments[0]?.status, "dispatched");
-		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-foreign");
+		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
+		assert.equal(result.wave.assignments[0]?.lion_run_incarnation_id, "inc-foreign");
+		assert.equal(result.assignment_results[0]?.lion_run_incarnation_id, "inc-run-001");
 	});
 
 	it("does not overwrite a foreign terminal result recorded after local linking", async () => {

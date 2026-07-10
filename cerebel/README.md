@@ -53,8 +53,8 @@ lion run task_id="task-001" agent_id="lion-001-001" objective="Implement todo AP
 lion run task_id="task-002" agent_id="lion-001-002" objective="Add API tests" context="Goal: todo API with tests"
 
 cerebel dispatch links=[
-  {assignment_id:"assign-001",lion_run_id:"run-001"},
-  {assignment_id:"assign-002",lion_run_id:"run-002"}
+  {assignment_id:"assign-001",lion_run_id:"run-001",lion_run_incarnation_id:"<incarnation returned by lion run>"},
+  {assignment_id:"assign-002",lion_run_id:"run-002",lion_run_incarnation_id:"<incarnation returned by lion run>"}
 ]
 
 cerebel record assignment_id="assign-001" lion_run_id="run-001" outcome="completed" summary="API implemented"

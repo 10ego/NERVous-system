@@ -116,6 +116,7 @@ describe("LionLedger", () => {
 		const run = l.create({ objective: "lost owner" });
 		const started = Date.parse(run.started_at);
 		l.requestCancel(run.id, "first request");
+		l.markCancelDelivery(run.id, "not_attached");
 		l.requestCancel(run.id, "repeated request");
 		const changed = l.reconcileControls(() => false, { now_ms: started + 30_001, stale_after_ms: 30_000, active_run_ids: [] });
 		assert.equal(changed[0]?.status, "aborted");

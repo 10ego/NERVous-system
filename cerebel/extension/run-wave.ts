@@ -160,7 +160,7 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 			}
 		}
 		const recovery = await recoverSetupFailure(store, waveId, assignment, run, summary, message);
-		if (recovery.superseded) return supersededResult(assignment, run?.id, recovery.assignment, summary);
+		if (recovery.superseded) return supersededResult(assignment, run, recovery.assignment, summary);
 		return { assignment_id: assignment.id, lion_run_id: run?.id, lion_run_incarnation_id: run?.incarnation_id, outcome: "failed", summary, blockers: [message] };
 	}
 	if (!run || !linkedAssignment) throw new Error(`LION run setup did not produce a linked run for ${assignment.id}`);
@@ -171,7 +171,8 @@ async function recoverSetupFailure(store: CerebelStore, waveId: string, assignme
 	const { result } = await store.mutate((ledger) => {
 		const current = ledger.get(waveId)?.assignments.find((a) => a.id === assignment.id);
 		if (!current) throw new Error(`assignment ${assignment.id} not found in wave ${waveId} during LION setup recovery`);
-		const ownedByOtherRun = Boolean(current.lion_run_id && current.lion_run_id !== run?.id);
+		const ownedByOtherRun = Boolean(current.lion_run_id && (current.lion_run_id !== run?.id
+			|| (current.lion_run_incarnation_id ?? null) !== (run?.incarnation_id ?? null)));
 		const terminal = ["completed", "partial", "blocked", "failed", "cancelled"].includes(current.status);
 		if (ownedByOtherRun || terminal) return { superseded: true, assignment: current };
 		const wave = ledger.record(waveId, {
@@ -260,7 +261,7 @@ async function recordWorkerError(store: CerebelStore, adapter: RunWaveLionAdapte
 async function recordOwnedResult(store: CerebelStore, waveId: string, assignment: Assignment, run: LionRun, input: RecordInput & { assignment_id: string }): Promise<RunWaveAssignmentResult> {
 	const incarnationId = run.incarnation_id ?? null;
 	const { result } = await store.mutate((ledger) => ledger.recordIfOwned(waveId, run.id, incarnationId, input));
-	if (!result.committed) return supersededResult(assignment, run.id, result.assignment, input.summary ?? "LION run result not recorded");
+	if (!result.committed) return supersededResult(assignment, run, result.assignment, input.summary ?? "LION run result not recorded");
 	return {
 		assignment_id: assignment.id,
 		lion_run_id: run.id,
@@ -271,11 +272,20 @@ async function recordOwnedResult(store: CerebelStore, waveId: string, assignment
 	};
 }
 
-function supersededResult(assignment: Assignment, runId: string | undefined, current: Assignment, localSummary: string): RunWaveAssignmentResult {
-	const reason = current.lion_run_id && current.lion_run_id !== runId
-		? `assignment is owned by ${current.lion_run_id}`
+function supersededResult(assignment: Assignment, run: Pick<LionRun, "id" | "incarnation_id"> | undefined, current: Assignment, localSummary: string): RunWaveAssignmentResult {
+	const differentOwner = current.lion_run_id && (current.lion_run_id !== run?.id
+		|| (current.lion_run_incarnation_id ?? null) !== (run?.incarnation_id ?? null));
+	const reason = differentOwner
+		? `assignment is owned by ${current.lion_run_id}/${current.lion_run_incarnation_id ?? "legacy"}`
 		: `assignment is already ${current.status}`;
-	return { assignment_id: assignment.id, lion_run_id: runId, outcome: "skipped", summary: `${localSummary}; local attempt superseded because ${reason}`, blockers: [] };
+	return {
+		assignment_id: assignment.id,
+		lion_run_id: run?.id,
+		lion_run_incarnation_id: run?.incarnation_id,
+		outcome: "skipped",
+		summary: `${localSummary}; local attempt superseded because ${reason}`,
+		blockers: [],
+	};
 }
 
 function createProgressUpdater(update: (progress: LionProgressSnapshot) => Promise<void>) {

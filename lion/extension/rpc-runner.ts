@@ -257,7 +257,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let steeringClosedHook: Promise<void> = Promise.resolve();
 	let processExitNotified = false;
 	let promptSetupAbandoned = false;
-	let clientSetupAbandoned = false;
+	let stopFailure: unknown;
 	const notifyProcessExit = () => {
 		if (processExitNotified) return;
 		processExitNotified = true;
@@ -269,6 +269,11 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		stopPromise ??= Promise.resolve().then(() => activeClient.stop());
 		return stopPromise;
 	};
+	const stopClientBounded = async () => {
+		if (stopFailure) throw stopFailure;
+		try { await withTimeout(stopClient(), opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS, "RPC stop timed out"); }
+		catch (error) { stopFailure = error; throw error; }
+	};
 	const abortAndStop = async (activeClient: LionRpcClient) => {
 		let abortError: unknown;
 		try {
@@ -277,7 +282,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 			abortError = err;
 		}
 		let stopError: unknown;
-		try { await stopClient(); } catch (err) { stopError = err; }
+		try { await stopClientBounded(); } catch (err) { stopError = err; }
 		if (abortError) throw abortError;
 		if (stopError) throw stopError;
 	};
@@ -401,10 +406,17 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		tmpPath = tmp.filePath;
 
 		const factory = opts.clientFactory ?? createDefaultRpcClient;
-		const clientSetup = Promise.resolve(factory({ cwd: opts.cwd, model: req.run.model, tools: req.run.tools, systemPromptPath: tmpPath, extraArgs: opts.extraArgs }));
-		void clientSetup.then((lateClient) => clientSetupAbandoned ? Promise.resolve(lateClient.stop()).catch(() => undefined) : undefined, () => undefined);
-		try { client = await raceSession(() => clientSetup, req.signal, deadline, cancelSession); }
-		catch (error) { clientSetupAbandoned = true; throw error; }
+		let clientSetup: Promise<LionRpcClient> | null = null;
+		try {
+			client = await raceSession(() => {
+				clientSetup = Promise.resolve(factory({ cwd: opts.cwd, model: req.run.model, tools: req.run.tools, systemPromptPath: tmpPath!, extraArgs: opts.extraArgs }));
+				return clientSetup;
+			}, req.signal, deadline, cancelSession);
+		} catch (error) {
+			const abandonedSetup = clientSetup as Promise<LionRpcClient> | null;
+			if (abandonedSetup) void abandonedSetup.then((lateClient) => Promise.resolve(lateClient.stop()).catch(() => undefined), () => undefined);
+			throw error;
+		}
 		const activeClient = client;
 
 		unsubscribeEvents = activeClient.onEvent((event) => {
@@ -486,7 +498,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		try { unsubscribeEvents?.(); } catch { /* ignore */ }
 		attachProcessIfAvailable();
 		let stopError: unknown;
-		try { await stopClient(); } catch (err) { stopError = err; }
+		try { await stopClientBounded(); } catch (err) { stopError = err; }
 		attachProcessIfAvailable();
 		if (stopError && startInvoked && !startSettled && !childAttached) await waitForInterruptedStartDisposition();
 		if (adoptionTimer) clearInterval(adoptionTimer);

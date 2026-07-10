@@ -283,7 +283,7 @@ async function runSimulatedLionAssignment(args: {
 		}),
 	);
 	if (args.dispatch !== false) {
-		await args.cerebel.mutate((c) => c.dispatch(args.waveId, { links: [{ assignment_id: args.assignmentId, lion_run_id: run.result.id }] }));
+		await args.cerebel.mutate((c) => c.dispatch(args.waveId, { links: [{ assignment_id: args.assignmentId, lion_run_id: run.result.id, lion_run_incarnation_id: run.result.incarnation_id }] }));
 	}
 
 	await args.lion.mutate((l) =>
@@ -306,6 +306,6 @@ async function runSimulatedLionAssignment(args: {
 		return l.setStatus(args.taskId, "completed", `${args.agentId} completed`);
 	});
 	await args.synapse.mutate((s) => s.post({ task_id: args.taskId, agent_id: args.agentId, type: "completed", message: args.summary }));
-	await args.cerebel.mutate((c) => c.record(args.waveId, { assignment_id: args.assignmentId, lion_run_id: run.result.id, outcome: "completed", summary: args.summary, changed_files: args.changedFiles, tests_run: args.agentId.includes("tests") ? ["npm test"] : [] }));
+	await args.cerebel.mutate((c) => c.record(args.waveId, { assignment_id: args.assignmentId, lion_run_id: run.result.id, lion_run_incarnation_id: run.result.incarnation_id, outcome: "completed", summary: args.summary, changed_files: args.changedFiles, tests_run: args.agentId.includes("tests") ? ["npm test"] : [] }));
 	await args.ganglion.mutate((g) => g.record(args.ganglionId, { task_id: args.taskId, lion_run_id: run.result.id, status: "completed", summary: args.summary }));
 }

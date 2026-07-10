@@ -241,7 +241,7 @@ export class LionLedger {
 			cancel_delivery_status: status,
 			cancel_delivered_at: status === "delivered" ? ts : r.control?.cancel_delivered_at ?? null,
 			cancel_delivery_error: status === "delivered" ? null : error ?? status,
-			last_seen_at: ts,
+			last_seen_at: r.control?.last_seen_at ?? null,
 		};
 		r.updated_at = ts;
 		return clone(r);

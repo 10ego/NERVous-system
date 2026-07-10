@@ -90,6 +90,18 @@ describe("GanglionLedger", () => {
 		assert.equal(stale.ganglion.members[0]?.current_allocation_id, "alloc-002");
 	});
 
+	it("distinguishes an unavailable unowned member from a newer lease", () => {
+		const l = new GanglionLedger();
+		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+		l.allocate(g.id, { tasks: [{ id: "task-old", title: "Old" }] });
+		l.record(g.id, { allocation_id: "alloc-001", status: "completed" });
+		l.updateMember(g.id, "lion-api", { status: "offline" });
+		const replay = l.recordWithResult(g.id, { allocation_id: "alloc-001", status: "cancelled" });
+		assert.equal(replay.release_disposition, "member_unavailable");
+		assert.equal(replay.ganglion.members[0]?.current_allocation_id, null);
+		assert.equal(replay.ganglion.members[0]?.status, "offline");
+	});
+
 	it("reconciles busy members from terminal LION runs", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });

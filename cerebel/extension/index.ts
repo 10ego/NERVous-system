@@ -88,6 +88,7 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 		const { result } = await GanglionStore.fromCwd(cwd).mutate((l) => l.recordWithResult(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
 		if (result.release_disposition === "released") return `GANGLION ${ganglionId}/${allocationId} recorded and capacity released.`;
 		if (result.release_disposition === "already_free") return `GANGLION ${ganglionId}/${allocationId} recorded; capacity was already free.`;
+		if (result.release_disposition === "member_unavailable") return `GANGLION ${ganglionId}/${allocationId} recorded; member has no active lease but remains unavailable.`;
 		if (result.release_disposition === "retained_by_newer_allocation") return `GANGLION ${ganglionId}/${allocationId} recorded; capacity retained by a newer allocation.`;
 		return `GANGLION ${ganglionId}/${allocationId} recorded without a terminal capacity release.`;
 	} catch (e) {
@@ -273,7 +274,7 @@ export default function (pi: ExtensionAPI) {
 			"Opt-in: use/mention this component only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests.",
 			"Use cerebel after CORTEX has planned work into AXON and ready AXON tasks exist.",
 			"First read axon list/summary, then pass ready task briefs into cerebel plan_wave.",
-			"For manual control, call lion run with task_id/objective/context/agent_id, then cerebel dispatch/record the LION run id and outcome. For bounded active execution, use cerebel run_wave on an already planned wave.",
+			"For manual control, call lion run with task_id/objective/context/agent_id, then cerebel dispatch the returned LION run id and incarnation id before recording its outcome. For bounded active execution, use cerebel run_wave on an already planned wave.",
 			"When assignments come from GANGLION, include ganglion_id and ganglion_allocation_id on the CEREBEL assignment/dispatch/record so CEREBEL releases member capacity on terminal outcomes.",
 			"After blocked/failed results: cerebel record/decide, update AXON, post a SYNAPSE risk/blocker note, then use AMYGDALA or replan; never silently continue.",
 		],

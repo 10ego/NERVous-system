@@ -23,7 +23,7 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
    - use this when CEREBEL should create/run LION workers and record grouped outcomes directly
 4. Or dispatch manually:
    - for each ready assignment, call `lion run task_id=... agent_id=... objective=... context=...`
-   - call `cerebel dispatch links=[{assignment_id,lion_run_id}]`
+   - call `cerebel dispatch links=[{assignment_id,lion_run_id,lion_run_incarnation_id}]`, using both values returned by `lion run`
    - if the assignment came from GANGLION, include `ganglion_id` and `ganglion_allocation_id` in the assignment or dispatch link so CEREBEL can release capacity later
 5. Record worker results:
    - read each LION report

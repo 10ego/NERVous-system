@@ -67,6 +67,7 @@ export default function (pi: ExtensionAPI) {
 					const record = l.recordWithResult(id, { allocation_id: p.allocation_id, task_id: p.task_id, lion_run_id: p.lion_run_id, status: status as AllocationStatus, summary: p.summary });
 					const disposition = record.release_disposition === "released" ? "capacity released"
 						: record.release_disposition === "already_free" ? "capacity already free"
+						: record.release_disposition === "member_unavailable" ? "member has no active lease but remains unavailable"
 						: record.release_disposition === "retained_by_newer_allocation" ? "capacity retained by newer allocation"
 						: "no terminal capacity release";
 					return ok(action, `Recorded allocation result in ${record.ganglion.id}; ${disposition}.`, { ganglion: record.ganglion, record });

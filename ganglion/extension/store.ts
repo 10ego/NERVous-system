@@ -49,7 +49,7 @@ export interface CreateGanglionInput {
 }
 export interface AllocateInput { tasks: WorkItemBrief[]; context?: string }
 export interface RecordInput { allocation_id?: string; task_id?: string; lion_run_id?: string; status: AllocationStatus; summary?: string }
-export type AllocationReleaseDisposition = "released" | "already_free" | "retained_by_newer_allocation" | "not_terminal";
+export type AllocationReleaseDisposition = "released" | "already_free" | "member_unavailable" | "retained_by_newer_allocation" | "not_terminal";
 export interface GanglionRecordResult { ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
 export interface LionRunBrief { id: string; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
 
@@ -171,8 +171,8 @@ export class GanglionLedger {
 			if (m.current_allocation_id === a.id) {
 				releaseMember(m, input.lion_run_id);
 				releaseDisposition = "released";
-			} else if (!m.current_allocation_id && m.status === "available") {
-				releaseDisposition = "already_free";
+			} else if (!m.current_allocation_id) {
+				releaseDisposition = m.status === "available" ? "already_free" : "member_unavailable";
 			} else {
 				releaseDisposition = "retained_by_newer_allocation";
 			}

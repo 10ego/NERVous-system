@@ -109,6 +109,27 @@ describe("namespace-scoped active LION ownership", () => {
 		assert.equal(mismatched.run?.control?.cancel_requested_at, undefined);
 	});
 
+	it("treats replacement during cancellation delivery persistence as settled supersession", async () => {
+		const store = await makeStore("replacement-during-delivery");
+		const original = (await store.mutate((l) => l.create({ objective: "original" }))).result;
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: original.id, incarnationId: original.incarnation_id }, "json");
+		attachActiveRunProcess(owner, {
+			pid: 306,
+			pgid: null,
+			isAlive: () => true,
+			cancel: async () => {
+				await store.mutate((l) => { l.finish(original.id, { output: "", report: null, status: "aborted" }); l.delete(original.id); l.create({ objective: "replacement" }); });
+				return true;
+			},
+		});
+		const result = await requestRunCancellation(store, original.id, "cancel", { expectedIncarnationId: original.incarnation_id });
+		assert.equal(result.superseded, true);
+		assert.equal(result.settled, true);
+		assert.notEqual(result.run?.incarnation_id, original.incarnation_id);
+		assert.equal(result.run?.control?.cancel_requested_at, undefined);
+		finishActiveRun(owner);
+	});
+
 	it("batches settlement checks for multiple runs into one ledger read per tick", async () => {
 		vi.useFakeTimers();
 		const ledger = new LionLedger();

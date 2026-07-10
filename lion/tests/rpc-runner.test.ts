@@ -21,7 +21,9 @@ class FakeRpcClient implements LionRpcClient {
 	startGate: Promise<void> | null = null;
 	throwOnAbort = false;
 	throwOnStop = false;
+	hangOnStop = false;
 	hangOnAbort = false;
+	killOnSignal = false;
 	finishDuringPrompt = false;
 	lastTextGate: Promise<void> | null = null;
 	private idleResolve: (() => void) | null = null;
@@ -32,6 +34,7 @@ class FakeRpcClient implements LionRpcClient {
 	async stop() {
 		this.stopCalls++;
 		if (this.throwOnStop) throw new Error("stop boom");
+		if (this.hangOnStop) return new Promise<void>(() => undefined);
 		this.stopped = true;
 		this.idleResolve?.();
 		this.exit();
@@ -67,7 +70,18 @@ class FakeRpcClient implements LionRpcClient {
 		this.listeners.push(listener);
 		return () => { this.listeners = this.listeners.filter((l) => l !== listener); };
 	}
-	getProcessInfo() { return { pid: process.pid, pgid: null, isAlive: () => this.alive }; }
+	getProcessInfo() {
+		return {
+			pid: process.pid,
+			pgid: null,
+			isAlive: () => this.alive,
+			cancel: (signal = "SIGTERM") => {
+				if (!this.killOnSignal || signal !== "SIGKILL") return false;
+				this.exit();
+				return true;
+			},
+		};
+	}
 	waitForExit() { return new Promise<void>((resolve) => { this.exitResolve = resolve; }); }
 	emit(event: unknown) { for (const listener of this.listeners) listener(event); }
 	finish() { this.idleResolve?.(); this.emit({ type: "agent_end", messages: [], willRetry: false }); }
@@ -226,6 +240,21 @@ describe("createLionRpcRunner", () => {
 		assert.equal(fake.started, false);
 	});
 
+	it("stops a synchronously returned client when its factory aborts setup", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const run = (await store.mutate((l) => l.create({ objective: "factory abort", runner_mode: "rpc" }))).result;
+		const controller = new AbortController();
+		const runner = createLionRpcRunner({
+			cwd: process.cwd(),
+			store,
+			clientFactory: () => { controller.abort(); return fake; },
+		});
+		await assert.rejects(() => runner({ run, signal: controller.signal, timeout_ms: 1000 }), /aborted/);
+		await until(() => fake.stopCalls === 1);
+		assert.equal(fake.started, false);
+	});
+
 	it("applies abort supervision while prompt persistence is pending and cleans its directory", async () => {
 		const store = await makeStore();
 		const run = (await store.mutate((l) => l.create({ objective: "hung prompt persistence", runner_mode: "rpc" }))).result;
@@ -291,6 +320,21 @@ describe("createLionRpcRunner", () => {
 		await until(() => fake.prompted !== null);
 		fake.finish();
 		await assert.rejects(() => promise, /timed out after 30ms/);
+	});
+
+	it("bounds a pending stop during final-I/O cancellation and hard-stops the owned child", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.lastTextGate = new Promise<void>(() => undefined);
+		fake.hangOnStop = true;
+		fake.killOnSignal = true;
+		const run = (await store.mutate((l) => l.create({ objective: "hung final stop", runner_mode: "rpc" }))).result;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, abortGraceMs: 5, clientFactory: () => fake });
+		const promise = runner({ run, timeout_ms: 30 });
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await assert.rejects(() => promise, /RPC stop timed out/);
+		assert.equal(fake.alive, false);
 	});
 
 	it("calls process-exit callbacks only once on RPC errors", async () => {

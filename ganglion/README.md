@@ -36,7 +36,7 @@ Package surfaces:
 | `remove_member` | Remove an idle member |
 | `set_status` | forming/active/paused/draining/completed/cancelled |
 | `allocate` | Allocate ready task briefs to available members by capability/capacity |
-| `record` | Record an allocation result and return `released`, `already_free`, `retained_by_newer_allocation`, or `not_terminal`; stale historical records cannot clear or claim release of a newer lease |
+| `record` | Record an allocation result and return `released`, `already_free`, `member_unavailable`, `retained_by_newer_allocation`, or `not_terminal`; stale historical records cannot clear or claim release of a newer lease |
 | `release` | Release a member/allocation manually |
 | `get` | Show one/current group |
 | `list` | List groups |
