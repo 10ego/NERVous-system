@@ -218,7 +218,7 @@ describe("createLionRpcRunner", () => {
 		fake.hangOnPrompt = true;
 		const run = (await store.mutate((l) => l.create({ objective: "hung prompt", runner_mode: "rpc" }))).result;
 		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
-		await assert.rejects(() => runner({ run, timeout_ms: 20 }), /timed out after 20ms/);
+		await assert.rejects(() => runner({ run, timeout_ms: 1000 }), /timed out after 1000ms/);
 		assert.equal(fake.stopCalls, 1);
 		assert.equal(fake.listenerCount(), 0);
 	});
