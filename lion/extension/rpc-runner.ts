@@ -288,6 +288,7 @@ class RpcProcessLifecycle {
 		let started: Promise<void>;
 		try { started = operation(); }
 		catch (error) { this.startSettled = true; throw error; }
+		this.attachIfAvailable();
 		this.startPromise = started.finally(() => { this.startSettled = true; this.attachIfAvailable(); });
 		this.adoptionTimer = setInterval(() => { this.attachIfAvailable(); }, 10);
 		this.adoptionTimer.unref?.();

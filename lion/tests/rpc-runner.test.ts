@@ -209,6 +209,27 @@ describe("createLionRpcRunner", () => {
 		assert.ok(fake.stopCalls >= 1);
 	});
 
+	it("adopts a synchronously exposed child before the first post-start microtask", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const pendingStart = new Promise<void>(() => undefined);
+		let starts = 0;
+		let observedInMicrotask = -1;
+		fake.start = async () => {
+			fake.started = true;
+			queueMicrotask(() => { observedInMicrotask = starts; });
+			await pendingStart;
+		};
+		const run = (await store.mutate((ledger) => ledger.create({ objective: "immediate adoption", runner_mode: "rpc" }))).result;
+		const controller = new AbortController();
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, signal: controller.signal, timeout_ms: 1000, onProcessStart: () => { starts++; } });
+		await until(() => observedInMicrotask >= 0);
+		assert.equal(observedInMicrotask, 1);
+		controller.abort();
+		await assert.rejects(() => promise, /aborted/);
+	});
+
 	it("adopts a child spawned by an interrupted start and retains ownership until exit", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();

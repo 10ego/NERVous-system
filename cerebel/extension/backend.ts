@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { resolveNervousStateFile } from "@nervous-system/state";
 import { CerebelLedger } from "./store.ts";
-import type { CerebelFile } from "./schema.ts";
+import { CerebelError, type CerebelFile } from "./schema.ts";
 
 const LOCK_STALE_TTL_MS = 30_000;
 const LOCK_MAX_ATTEMPTS = 200;
@@ -96,6 +96,9 @@ export class FileBackend {
 		}
 		try { return { ledger: CerebelLedger.fromJSON(JSON.parse(raw) as CerebelFile), warnings: [], fresh: false }; }
 		catch (err) {
+			if (err instanceof CerebelError) {
+				throw new CerebelError(err.code, `cerebel state at ${this.location.cerebelPath} was rejected: ${err.message}; no migration or automatic reset was performed`);
+			}
 			const stamp = Date.now();
 			try { await fs.copyFile(this.location.cerebelPath, `${this.location.cerebelPath}.corrupt-${stamp}`); } catch { /* best effort */ }
 			return { ledger: new CerebelLedger(), warnings: [`cerebel state at ${this.location.cerebelPath} was corrupt (${err instanceof Error ? err.message : String(err)}); backed up to .corrupt-${stamp} and started fresh.`], fresh: false };
