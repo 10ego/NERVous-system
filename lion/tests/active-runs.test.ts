@@ -2,7 +2,7 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
 import {
 	attachActiveRunProcess,
@@ -19,7 +19,10 @@ async function makeStore(label: string): Promise<LionStore> {
 	return new LionStore(new FileBackend({ runsPath: path.join(dir, "runs.json"), dir }));
 }
 
-afterEach(() => clearActiveRunsForTests());
+afterEach(() => {
+	vi.useRealTimers();
+	clearActiveRunsForTests();
+});
 
 describe("namespace-scoped active LION ownership", () => {
 	it("isolates identical run ids across durable namespaces", async () => {
@@ -33,8 +36,8 @@ describe("namespace-scoped active LION ownership", () => {
 
 		let cancelledA = 0;
 		let cancelledB = 0;
-		const scopeA = { namespaceId: storeA.namespaceId, runId: runA.id };
-		const scopeB = { namespaceId: storeB.namespaceId, runId: runB.id };
+		const scopeA = { namespaceId: storeA.namespaceId, runId: runA.id, incarnationId: runA.incarnation_id };
+		const scopeB = { namespaceId: storeB.namespaceId, runId: runB.id, incarnationId: runB.incarnation_id };
 		const ownerA = beginActiveRun(scopeA, "json");
 		const ownerB = beginActiveRun(scopeB, "json");
 		attachActiveRunProcess(ownerA, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { cancelledA++; return true; } });
@@ -79,37 +82,44 @@ describe("namespace-scoped active LION ownership", () => {
 		const store = await makeStore("not-signaled");
 		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: "run-001" }, "json");
 		attachActiveRunProcess(owner, { pid: 303, pgid: null, isAlive: () => true, cancel: () => false });
-		assert.deepEqual(await cancelActiveRun(owner), { delivered: false, reason: "not_signaled", pid: 303, pgid: null });
+		const result = await cancelActiveRun(owner);
+		assert.equal(result.delivered, false);
+		if (!result.delivered) {
+			assert.equal(result.reason, "not_signaled");
+			assert.equal(result.pid, 303);
+			assert.equal(result.owner?.ownerId, owner.ownerId);
+		}
 		finishActiveRun(owner);
 	});
 
-	it("replays and coalesces cancellation recorded before process attachment", async () => {
+	it("replays, coalesces, and escalates cancellation recorded before process attachment", async () => {
 		const store = await makeStore("replay");
 		const run = (await store.mutate((l) => l.create({ objective: "cancel me" }))).result;
-		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id }, "json");
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id }, "json");
 		await store.mutate((l) => l.requestCancel(run.id, "stop before attach"));
 		const beforeAttach = await cancelActiveRun(owner);
 		assert.equal(beforeAttach.delivered, false);
 		if (!beforeAttach.delivered) await store.mutate((l) => l.markCancelDelivery(run.id, beforeAttach.reason));
 
-		let deliveries = 0;
+		const signals: string[] = [];
 		attachActiveRunProcess(owner, {
 			pid: process.pid,
 			pgid: null,
 			isAlive: () => true,
-			cancel: async () => {
-				deliveries++;
-				await new Promise((resolve) => setTimeout(resolve, 5));
+			cancel: async (signal) => {
+				signals.push(signal);
 				return true;
 			},
 		});
 		const [first, second] = await Promise.all([
-			replayPendingCancellation(owner, store),
-			replayPendingCancellation(owner, store),
+			replayPendingCancellation(owner, store, 1),
+			replayPendingCancellation(owner, store, 1),
 		]);
 		assert.equal(first?.delivered, true);
 		assert.equal(second?.delivered, true);
-		assert.equal(deliveries, 1);
+		assert.equal(signals.filter((signal) => signal === "SIGTERM").length, 1);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+		assert.deepEqual(signals, ["SIGTERM", "SIGKILL"]);
 		const current = (await store.query((l) => l.get(run.id))).result!;
 		assert.equal(current.control?.cancel_delivery_status, "delivered");
 		finishActiveRun(owner);

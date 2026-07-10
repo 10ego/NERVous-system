@@ -17,6 +17,7 @@ export type ActiveCancelSignal = "SIGTERM" | "SIGKILL";
 export interface ActiveRunScope {
 	namespaceId: string;
 	runId: string;
+	incarnationId?: string | null;
 }
 
 export interface ActiveRunProcessInfo extends Omit<LionProcessInfo, "cancel"> {
@@ -39,11 +40,12 @@ interface ActiveRunEntry extends ActiveRunOwner {
 	isAlive?: () => boolean;
 	cancelInFlight: Map<ActiveCancelSignal, Promise<ActiveCancelResult>>;
 	cancelDelivered: Map<ActiveCancelSignal, ActiveCancelResult & { delivered: true }>;
+	escalationTimer?: ReturnType<typeof setTimeout> | null;
 }
 
 export type ActiveCancelResult =
 	| { delivered: true; owner: ActiveRunOwner; pid?: number; pgid?: number | null }
-	| { delivered: false; reason: "not_attached" | "owner_replaced" | "already_exited" | "not_alive" | "no_cancel_handle" | "not_signaled"; pid?: number; pgid?: number | null };
+	| { delivered: false; owner?: ActiveRunOwner; reason: "not_attached" | "owner_replaced" | "already_exited" | "not_alive" | "no_cancel_handle" | "not_signaled"; pid?: number; pgid?: number | null };
 
 const activeRuns = new Map<string, ActiveRunEntry>();
 
@@ -85,7 +87,10 @@ export function markActiveRunExited(owner: ActiveRunOwner): void {
 export function finishActiveRun(owner: ActiveRunOwner): void {
 	const key = scopeKey(owner);
 	const entry = activeRuns.get(key);
-	if (entry?.ownerId === owner.ownerId) activeRuns.delete(key);
+	if (entry?.ownerId === owner.ownerId) {
+		if (entry.escalationTimer) clearTimeout(entry.escalationTimer);
+		activeRuns.delete(key);
+	}
 }
 
 export function getActiveRunIds(namespaceId: string): string[] {
@@ -107,6 +112,7 @@ export function isActiveRunAttached(scope: ActiveRunScope, runnerMode?: LionRunn
 export async function cancelActiveRun(scope: ActiveRunScope | ActiveRunOwner, signal: ActiveCancelSignal = "SIGTERM"): Promise<ActiveCancelResult> {
 	const entry = activeRuns.get(scopeKey(scope));
 	if (!entry) return { delivered: false, reason: "not_attached" };
+	if ((scope.incarnationId ?? null) !== null && (entry.incarnationId ?? null) !== (scope.incarnationId ?? null)) return { delivered: false, reason: "owner_replaced", pid: entry.pid, pgid: entry.pgid };
 	if ("ownerId" in scope && entry.ownerId !== scope.ownerId) return { delivered: false, reason: "owner_replaced", pid: entry.pid, pgid: entry.pgid };
 	const delivered = entry.cancelDelivered.get(signal);
 	if (delivered) return delivered;
@@ -114,12 +120,13 @@ export async function cancelActiveRun(scope: ActiveRunScope | ActiveRunOwner, si
 	if (inFlight) return inFlight;
 
 	const attempt = (async (): Promise<ActiveCancelResult> => {
-		if (entry.state === "exited") return { delivered: false, reason: "already_exited", pid: entry.pid, pgid: entry.pgid };
-		if (entry.isAlive && !entry.isAlive()) return { delivered: false, reason: "not_alive", pid: entry.pid, pgid: entry.pgid };
-		if (!entry.cancel) return { delivered: false, reason: "no_cancel_handle", pid: entry.pid, pgid: entry.pgid };
+		const owner = { namespaceId: entry.namespaceId, runId: entry.runId, incarnationId: entry.incarnationId, ownerId: entry.ownerId };
+		if (entry.state === "exited") return { delivered: false, owner, reason: "already_exited", pid: entry.pid, pgid: entry.pgid };
+		if (entry.isAlive && !entry.isAlive()) return { delivered: false, owner, reason: "not_alive", pid: entry.pid, pgid: entry.pgid };
+		if (!entry.cancel) return { delivered: false, owner, reason: "no_cancel_handle", pid: entry.pid, pgid: entry.pgid };
 		const signaled = await entry.cancel(signal);
-		if (!signaled) return { delivered: false, reason: "not_signaled", pid: entry.pid, pgid: entry.pgid };
-		const result = { delivered: true, owner: { namespaceId: entry.namespaceId, runId: entry.runId, ownerId: entry.ownerId }, pid: entry.pid, pgid: entry.pgid } as const;
+		if (!signaled) return { delivered: false, owner, reason: "not_signaled", pid: entry.pid, pgid: entry.pgid };
+		const result = { delivered: true, owner: { namespaceId: entry.namespaceId, runId: entry.runId, incarnationId: entry.incarnationId, ownerId: entry.ownerId }, pid: entry.pid, pgid: entry.pgid } as const;
 		entry.cancelDelivered.set(signal, result);
 		return result;
 	})().finally(() => entry.cancelInFlight.delete(signal));
@@ -127,18 +134,35 @@ export async function cancelActiveRun(scope: ActiveRunScope | ActiveRunOwner, si
 	return attempt;
 }
 
+export function scheduleActiveRunEscalation(owner: ActiveRunOwner, delayMs = 5000): boolean {
+	const entry = activeRuns.get(scopeKey(owner));
+	if (!entry || entry.ownerId !== owner.ownerId || entry.state === "exited" || entry.escalationTimer) return false;
+	entry.escalationTimer = setTimeout(() => {
+		entry.escalationTimer = null;
+		void cancelActiveRun(owner, "SIGKILL").catch(() => undefined);
+	}, Math.max(0, delayMs));
+	entry.escalationTimer.unref?.();
+	return true;
+}
+
+export async function cancelActiveRunWithEscalation(scope: ActiveRunScope | ActiveRunOwner, signal: ActiveCancelSignal = "SIGTERM", escalationDelayMs = 5000): Promise<ActiveCancelResult> {
+	const result = await cancelActiveRun(scope, signal);
+	if (signal === "SIGTERM" && result.delivered) scheduleActiveRunEscalation(result.owner, escalationDelayMs);
+	return result;
+}
+
 /** Replay a durable cancellation that arrived before the live process handle attached. */
 export async function replayPendingCancellation(owner: ActiveRunOwner, store: {
 	query<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
 	mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
-}): Promise<ActiveCancelResult | null> {
+}, escalationDelayMs = 5000): Promise<ActiveCancelResult | null> {
 	if (!isActiveRunOwner(owner)) return null;
 	const current = (await store.query((ledger) => ledger.get(owner.runId))).result;
 	if (!current?.control?.cancel_requested_at) return null;
 	if (current.control.cancel_delivery_status === "delivered" || current.control.cancel_delivery_status === "not_needed") return null;
-	const result = await cancelActiveRun(owner, "SIGTERM");
+	const result = await cancelActiveRunWithEscalation(owner, "SIGTERM", escalationDelayMs);
 	await store.mutate((ledger) => isActiveRunOwner(owner)
-		? ledger.markCancelDelivery(owner.runId, result.delivered ? "delivered" : result.reason)
+		? ledger.markCancelDeliveryIfCurrent(owner.runId, owner.incarnationId, result.delivered ? "delivered" : result.reason).run
 		: ledger.get(owner.runId));
 	return result;
 }

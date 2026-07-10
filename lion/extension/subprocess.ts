@@ -389,9 +389,11 @@ function collectMessages(
 			detached,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
+		let aborted = false;
 		const processIsAlive = () => proc.exitCode === null && proc.signalCode === null && Boolean(proc.pid && isPidAlive(proc.pid));
 		const cancelOwnedProcess = (signal: NodeJS.Signals = "SIGTERM"): boolean => {
 			if (!proc.pid || !processIsAlive()) return false;
+			aborted = true;
 			signalProcessTree(proc.pid, signal);
 			return true;
 		};
@@ -402,7 +404,6 @@ function collectMessages(
 		const messages: Message[] = [];
 		let buffer = "";
 		let stderr = "";
-		let aborted = false;
 		let settled = false;
 		const progressState = createLionProgressState({ includeText: includeProgressText });
 

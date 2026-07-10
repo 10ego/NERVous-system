@@ -99,6 +99,17 @@ describe("LionLedger", () => {
 		assert.equal(stale.some((r) => r.id === fresh.id && r.status === "failed"), true);
 	});
 
+	it("reconciles a stale ownerless running run without process metadata", () => {
+		const l = new LionLedger();
+		const run = l.create({ objective: "lost before attach" });
+		const changed = l.reconcileControls(() => true, { now_ms: Date.now() + 60_000, stale_after_ms: 1, active_run_ids: [] });
+		assert.equal(changed[0]?.id, run.id);
+		assert.equal(changed[0]?.status, "failed");
+		assert.match(changed[0]?.error ?? "", /owner was lost/i);
+		assert.equal(changed[0]?.control?.pid, undefined);
+		assert.equal(l.delete(run.id).id, run.id);
+	});
+
 	it("fails open steering when control reconciliation terminalizes a run", () => {
 		const l = new LionLedger();
 		const run = l.create({ objective: "rpc stale", runner_mode: "rpc" });
@@ -108,6 +119,20 @@ describe("LionLedger", () => {
 		assert.equal(changed[0]?.status, "failed");
 		assert.equal(changed[0]?.steering_messages?.[0]?.status, "delivery_failed");
 		assert.match(changed[0]?.steering_messages?.[0]?.reason ?? "", /reconciled/);
+	});
+
+	it("does not write a delayed cancellation result into a reused run id", () => {
+		const l = new LionLedger();
+		const original = l.create({ objective: "original" });
+		l.requestCancel(original.id, "stop");
+		l.finish(original.id, { output: "", report: null, status: "aborted" });
+		l.delete(original.id);
+		const replacement = l.create({ objective: "replacement" });
+		assert.equal(replacement.id, original.id);
+		assert.notEqual(replacement.incarnation_id, original.incarnation_id);
+		const stale = l.markCancelDeliveryIfCurrent(original.id, original.incarnation_id, "delivered");
+		assert.equal(stale.committed, false);
+		assert.equal(stale.run.control, null);
 	});
 
 	it("supports queued pre-start steering and rejects json running steering", () => {

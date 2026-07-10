@@ -131,7 +131,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 							tools: p.tools,
 							start: false,
 						});
-						activeOwner = activeRuns.beginActiveRun({ namespaceId: lionStore.namespaceId, runId: queued.id }, runnerMode);
+						activeOwner = activeRuns.beginActiveRun({ namespaceId: lionStore.namespaceId, runId: queued.id, incarnationId: queued.incarnation_id ?? null }, runnerMode);
 						return l.start(queued.id);
 					});
 					activeOwners.set(result.id, activeOwner!);

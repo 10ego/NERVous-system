@@ -1,5 +1,8 @@
 import * as assert from "node:assert";
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { describe, it } from "vitest";
 import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree } from "../extension/subprocess.ts";
 import type { Message } from "@earendil-works/pi-ai";
@@ -104,6 +107,26 @@ describe("LION subprocess helpers", () => {
 		signalProcessTree(proc.pid!, "SIGTERM");
 		await new Promise<void>((resolve) => proc.on("close", () => resolve()));
 		assert.equal(isPidAlive(proc.pid!), false);
+	});
+
+	it("rejects after owner-issued cancellation even when the child exits numerically", async () => {
+		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lion-json-cancel-test-"));
+		const bin = path.join(dir, "pi");
+		await fs.promises.writeFile(bin, `#!/usr/bin/env node\nprocess.on("SIGTERM", () => process.exit(143));\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+		const previousPath = process.env.PATH;
+		process.env.PATH = `${dir}${path.delimiter}${previousPath ?? ""}`;
+		try {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			let resolveProcess!: (info: import("../extension/subprocess.ts").LionProcessInfo) => void;
+			const processStarted = new Promise<import("../extension/subprocess.ts").LionProcessInfo>((resolve) => { resolveProcess = resolve; });
+			const running = runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5000, onProcessStart: resolveProcess });
+			const processInfo = await processStarted;
+			assert.equal(await processInfo.cancel?.("SIGTERM"), true);
+			await assert.rejects(() => running, /aborted or timed out/);
+		} finally {
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+		}
 	});
 
 	it("notifies process exit once when spawn error is followed by close", async () => {

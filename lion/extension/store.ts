@@ -6,6 +6,7 @@
  * CEREBEL later.
  */
 
+import { randomUUID } from "node:crypto";
 import {
 	LION_PROGRESS_EVENTS,
 	LION_RUN_STATUSES,
@@ -124,6 +125,7 @@ export class LionLedger {
 		const ts = now();
 		const run: LionRun = {
 			id,
+			incarnation_id: randomUUID(),
 			agent_id: (input.agent_id?.trim() || `lion-${id.replace(/^run-/, "")}`).toLowerCase(),
 			status: input.start === false ? "queued" : "running",
 			task_id: input.task_id ?? null,
@@ -245,6 +247,12 @@ export class LionLedger {
 		return clone(r);
 	}
 
+	markCancelDeliveryIfCurrent(id: string, incarnationId: string | null | undefined, status: string, error?: string | null): { run: LionRun; committed: boolean } {
+		const r = this.require(id);
+		if ((r.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: clone(r), committed: false };
+		return { run: this.markCancelDelivery(id, status, error), committed: true };
+	}
+
 	steer(id: string, message: string, options: SteerRunOptions = {}): SteerRunResult {
 		const r = this.require(id);
 		const text = message.trim();
@@ -338,19 +346,22 @@ export class LionLedger {
 		const nowMs = options.now_ms ?? Date.now();
 		const staleAfterMs = options.stale_after_ms ?? DEFAULT_RECONCILE_GRACE_MS;
 		for (const r of this.runsById.values()) {
-			if (r.status !== "running" || typeof r.control?.pid !== "number") continue;
+			if (r.status !== "running") continue;
 			if (active.has(r.id)) continue;
 			if (!isReconcileStale(r, nowMs, staleAfterMs)) continue;
-			if (isAlive(r.control.pid)) continue;
+			const pid = r.control?.pid;
+			if (typeof pid === "number" && isAlive(pid)) continue;
 			const ts = new Date(nowMs).toISOString();
-			const terminalStatus = r.control.cancel_requested_at ? "aborted" : "failed";
+			const terminalStatus = r.control?.cancel_requested_at ? "aborted" : "failed";
 			this.transition(r, terminalStatus);
 			this.failOpenSteeringForRun(r, `run reconciled as ${terminalStatus}`, ts);
-			r.error = r.control.cancel_requested_at ? (r.control.cancel_reason ? `Cancelled: ${r.control.cancel_reason}` : "Cancelled") : "Subprocess is no longer running";
+			r.error = r.control?.cancel_requested_at
+				? (r.control.cancel_reason ? `Cancelled: ${r.control.cancel_reason}` : "Cancelled")
+				: typeof pid === "number" ? "Subprocess is no longer running" : "Active owner was lost before process metadata attached";
 			r.finished_at = ts;
 			r.updated_at = ts;
 			r.duration_ms = Math.max(0, Date.parse(ts) - Date.parse(r.started_at));
-			r.control = { ...r.control, reconciled_at: ts, last_seen_at: ts };
+			r.control = { ...(r.control ?? {}), reconciled_at: ts, last_seen_at: ts };
 			changed.push(clone(r));
 		}
 		return changed;
@@ -518,6 +529,7 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 	const updated = typeof value.updated_at === "string" ? value.updated_at : started;
 	return {
 		id: typeof value.id === "string" ? value.id : id,
+		incarnation_id: typeof value.incarnation_id === "string" ? value.incarnation_id : null,
 		agent_id: typeof value.agent_id === "string" ? value.agent_id : "lion-unknown",
 		status,
 		task_id: typeof value.task_id === "string" ? value.task_id : null,

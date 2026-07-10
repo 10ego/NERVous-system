@@ -12,7 +12,7 @@ import { LION_RUNNER_MODES, LionError, LionToolParams, type LionModelRole, type 
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createLionRunner, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
-import { attachActiveRunProcess, beginActiveRun, cancelActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunExited, replayPendingCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
+import { attachActiveRunProcess, beginActiveRun, cancelActiveRunWithEscalation, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunExited, replayPendingCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
 interface LionDetails {
 	action: string;
@@ -122,8 +122,8 @@ async function runOp(store: LionStore, action: string, op: (l: import("./store.t
 	}
 }
 
-function activeRunScope(store: LionStore, runId: string): ActiveRunScope {
-	return { namespaceId: store.namespaceId, runId };
+function activeRunScope(store: LionStore, run: Pick<LionRun, "id" | "incarnation_id">): ActiveRunScope {
+	return { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null };
 }
 
 async function reconcileStore(store: LionStore): Promise<void> {
@@ -290,7 +290,7 @@ export default function (pi: ExtensionAPI) {
 					try {
 						const { result: run } = await store.mutate((l) => {
 							const queued = l.create({ agent_id: p.agent_id, task_id: p.task_id ?? null, objective: p.objective ?? "", context: p.context, model, model_role: modelRole, runner_mode: runnerMode, tools: p.tools, start: false });
-							activeOwner = beginActiveRun(activeRunScope(store, queued.id), runnerMode);
+							activeOwner = beginActiveRun(activeRunScope(store, queued), runnerMode);
 							return l.start(queued.id);
 						});
 						return executeRun({ pi, ctx, store, action, run, activeOwner: activeOwner!, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
@@ -307,7 +307,7 @@ export default function (pi: ExtensionAPI) {
 						const { result: run } = await store.mutate((l) => {
 							const current = l.get(p.id!);
 							if (!current) throw new LionError("not_found", `run ${p.id} not found`);
-							activeOwner = beginActiveRun(activeRunScope(store, current.id), current.runner_mode);
+							activeOwner = beginActiveRun(activeRunScope(store, current), current.runner_mode);
 							return l.start(current.id);
 						});
 						return executeRun({ pi, ctx, store, action, run, activeOwner: activeOwner!, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
@@ -324,17 +324,17 @@ export default function (pi: ExtensionAPI) {
 						if (result.already_terminal) return ok(action, `LION ${p.id} is already terminal (${result.run.status}).`, { run: result.run });
 						if (!result.signal) return ok(action, `Cancelled queued LION ${p.id}.`, { run: result.run });
 
-						const scope = activeRunScope(store, p.id!);
-						const delivered = await cancelActiveRun(scope, result.signal);
-						if (delivered.delivered) {
-							const updated = await store.mutate((l) => l.markCancelDelivery(p.id!, "delivered"));
-							const originalOwner = delivered.owner;
-							setTimeout(() => { void cancelActiveRun(originalOwner, "SIGKILL").catch(() => undefined); }, 5000).unref?.();
-							return ok(action, `Cancellation delivered to active LION ${p.id}${delivered.pid ? ` (pid ${delivered.pid})` : ""}.`, { run: updated.result });
+						const scope = activeRunScope(store, result.run);
+						const delivered = await cancelActiveRunWithEscalation(scope, result.signal);
+						const deliveryStatus = delivered.delivered ? "delivered" : delivered.reason;
+						const updated = await store.mutate((l) => l.markCancelDeliveryIfCurrent(p.id!, result.run.incarnation_id, deliveryStatus));
+						if (!updated.result.committed) {
+							return ok(action, `Cancellation result for ${p.id} was superseded by a replacement run.`, { run: updated.result.run });
 						}
-
-						const updated = await store.mutate((l) => l.markCancelDelivery(p.id!, delivered.reason));
-						return ok(action, `Cancel recorded for ${p.id}, but no owned active worker was signaled (${delivered.reason}).`, { run: updated.result });
+						if (delivered.delivered) {
+							return ok(action, `Cancellation delivered to active LION ${p.id}${delivered.pid ? ` (pid ${delivered.pid})` : ""}.`, { run: updated.result.run });
+						}
+						return ok(action, `Cancel recorded for ${p.id}, but no owned active worker was signaled (${delivered.reason}).`, { run: updated.result.run });
 					} catch (e) {
 						return e instanceof LionError ? fail(action, `lion cancel failed (${e.code}): ${e.message}`) : fail(action, `lion cancel failed: ${e instanceof Error ? e.message : String(e)}`);
 					}
@@ -346,7 +346,7 @@ export default function (pi: ExtensionAPI) {
 					try {
 						await reconcileStore(store);
 						const current = (await store.query((l) => l.get(p.id!))).result;
-						const liveRpc = current?.status === "running" && current.runner_mode === "rpc" && isActiveRunAttached(activeRunScope(store, p.id!), "rpc");
+						const liveRpc = current?.status === "running" && current.runner_mode === "rpc" && isActiveRunAttached(activeRunScope(store, current), "rpc");
 						const reason = current?.status === "running"
 							? (liveRpc ? "queued for live RPC delivery" : (current?.runner_mode === "rpc" ? "rpc worker is not attached to a live process" : "running json subprocess backend does not support live steering"))
 							: undefined;

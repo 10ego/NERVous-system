@@ -119,6 +119,8 @@ export interface LionSteeringMessage {
 
 export interface LionRun {
 	id: string;
+	/** Immutable fencing token for asynchronous lifecycle writes. */
+	incarnation_id?: string | null;
 	agent_id: string;
 	status: LionRunStatus;
 	/** Optional AXON task id this worker was assigned to. */

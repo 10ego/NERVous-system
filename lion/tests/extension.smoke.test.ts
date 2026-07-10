@@ -94,7 +94,7 @@ describe("lion extension factory", () => {
 		const store = LionStore.fromCwd(dir);
 		try {
 			const originalRun = (await store.mutate((l) => l.create({ objective: "original" }))).result;
-			const original = beginActiveRun({ namespaceId: store.namespaceId, runId: originalRun.id }, "json");
+			const original = beginActiveRun({ namespaceId: store.namespaceId, runId: originalRun.id, incarnationId: originalRun.incarnation_id }, "json");
 			const originalSignals: string[] = [];
 			attachActiveRunProcess(original, { pid: 101, pgid: null, isAlive: () => true, cancel: (signal) => { originalSignals.push(signal); return true; } });
 			const cancelled = await lion.execute("call-cancel-original", { action: "cancel", id: originalRun.id }, undefined, undefined, { cwd: dir, isProjectTrusted: () => false });
@@ -106,7 +106,7 @@ describe("lion extension factory", () => {
 			const replacementRun = (await store.mutate((l) => l.create({ objective: "replacement" }))).result;
 			assert.equal(replacementRun.id, originalRun.id);
 			let replacementSignals = 0;
-			const replacement = beginActiveRun({ namespaceId: store.namespaceId, runId: replacementRun.id }, "json");
+			const replacement = beginActiveRun({ namespaceId: store.namespaceId, runId: replacementRun.id, incarnationId: replacementRun.incarnation_id }, "json");
 			attachActiveRunProcess(replacement, { pid: 202, pgid: null, isAlive: () => true, cancel: () => { replacementSignals++; return true; } });
 			await vi.advanceTimersByTimeAsync(5_000);
 			assert.equal(replacementSignals, 0);
@@ -137,7 +137,7 @@ describe("lion extension factory", () => {
 			const staleRpcSteer = await lion.execute("call-rpc-stale", { action: "steer", id: rpcRun.id, message: "adjust" }, undefined, undefined, ctx);
 			assert.equal(staleRpcSteer.details.run.steering_messages[0].status, "rejected_running");
 
-			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: rpcRun.id }, "rpc");
+			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: rpcRun.id, incarnationId: rpcRun.incarnation_id }, "rpc");
 			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => true });
 			try {
 				const liveRpcSteer = await lion.execute("call-rpc-live", { action: "steer", id: rpcRun.id, message: "adjust live" }, undefined, undefined, ctx);
@@ -175,7 +175,7 @@ describe("lion extension factory", () => {
 			assert.equal(cancel.details.run.control.cancel_delivery_status, "not_attached");
 
 			let delivered = false;
-			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id }, "json");
+			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id }, "json");
 			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { delivered = true; return true; } });
 			try {
 				const liveCancel = await lion.execute("call-cancel-live", { action: "cancel", id: run.id, reason: "stop" }, undefined, undefined, ctx);
