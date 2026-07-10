@@ -57,8 +57,8 @@ cerebel dispatch links=[
   {assignment_id:"assign-002",lion_run_id:"run-002",lion_run_incarnation_id:"<incarnation returned by lion run>"}
 ]
 
-cerebel record assignment_id="assign-001" lion_run_id="run-001" outcome="completed" summary="API implemented"
-cerebel record assignment_id="assign-002" lion_run_id="run-002" outcome="blocked" blockers=["test framework missing"]
+cerebel record assignment_id="assign-001" lion_run_id="run-001" lion_run_incarnation_id="<exact-incarnation>" outcome="completed" summary="API implemented"
+cerebel record assignment_id="assign-002" lion_run_id="run-002" lion_run_incarnation_id="<exact-incarnation>" outcome="blocked" blockers=["test framework missing"]
 cerebel decide
 ```
 

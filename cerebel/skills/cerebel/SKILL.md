@@ -27,7 +27,7 @@ Durable state: active global NERVous namespace (`~/.pi/nervous/<project>/<contex
    - if the assignment came from GANGLION, include `ganglion_id` and `ganglion_allocation_id` in the assignment or dispatch link so CEREBEL can release capacity later
 5. Record worker results:
    - read each LION report
-   - `cerebel record assignment_id=... lion_run_id=... outcome=... summary=... blockers=[...]`
+   - `cerebel record assignment_id=... lion_run_id=... lion_run_incarnation_id=... outcome=... summary=... blockers=[...]`
    - for linked GANGLION allocations, terminal outcomes automatically record/release the GANGLION allocation
 6. Decide:
    - `cerebel decide`
