@@ -20,10 +20,11 @@ class FakeRpcClient implements LionRpcClient {
 	throwOnAbort = false;
 	hangOnAbort = false;
 	private idleResolve: (() => void) | null = null;
+	private exitResolve: (() => void) | null = null;
 	private listeners: Array<(event: unknown) => void> = [];
 
 	async start() { this.started = true; }
-	async stop() { this.stopCalls++; this.stopped = true; this.alive = false; this.idleResolve?.(); }
+	async stop() { this.stopCalls++; this.stopped = true; this.idleResolve?.(); this.exit(); }
 	async prompt(message: string) {
 		if (this.throwOnPrompt) throw new Error("prompt boom");
 		this.prompted = message;
@@ -53,9 +54,10 @@ class FakeRpcClient implements LionRpcClient {
 		return () => { this.listeners = this.listeners.filter((l) => l !== listener); };
 	}
 	getProcessInfo() { return { pid: process.pid, pgid: null, isAlive: () => this.alive }; }
+	waitForExit() { return new Promise<void>((resolve) => { this.exitResolve = resolve; }); }
 	emit(event: unknown) { for (const listener of this.listeners) listener(event); }
 	finish() { this.idleResolve?.(); this.emit({ type: "agent_end", messages: [], willRetry: false }); }
-	exit() { this.alive = false; }
+	exit() { if (!this.alive) return; this.alive = false; this.exitResolve?.(); }
 	listenerCount() { return this.listeners.length; }
 }
 
@@ -214,8 +216,7 @@ describe("createLionRpcRunner", () => {
 		assert.equal(processInfo?.isAlive?.(), true);
 		fake.exit();
 		assert.equal(processInfo?.isAlive?.(), false);
-		fake.finish();
-		await promise;
+		await assert.rejects(() => promise, /child exited before becoming idle/);
 	});
 
 	it("attempts stop and preserves the graceful abort error", async () => {

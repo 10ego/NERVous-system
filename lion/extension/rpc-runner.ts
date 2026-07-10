@@ -25,6 +25,7 @@ export interface LionRpcClient {
 	onEvent(listener: (event: unknown) => void): () => void;
 	getStderr?(): string;
 	getProcessInfo?(): LionProcessInfo | null;
+	waitForExit?(): Promise<void>;
 }
 
 export interface LionRpcClientConfig {
@@ -250,8 +251,18 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		poller.start();
 		const idle = activeClient.waitForIdle(req.timeout_ms).finally(closeSteeringChannel);
 		void idle.catch(() => undefined);
+		const childExit = activeClient.waitForExit?.().then(async () => {
+			childExited = true;
+			closeSteeringChannel();
+			if (ownedCancellationRequested) {
+				await ownedCancellationPromise;
+				throw new Error("LION RPC runner was cancelled");
+			}
+			throw new Error("LION RPC child exited before becoming idle");
+		});
+		if (childExit) void childExit.catch(() => undefined);
 		if (await deliverPending()) poller.wake();
-		await raceAbort(idle, req.signal, () => abortAndStop(activeClient));
+		await raceAbort(childExit ? Promise.race([idle, childExit]) : idle, req.signal, () => abortAndStop(activeClient));
 		if (ownedCancellationRequested) {
 			await ownedCancellationPromise;
 			throw new Error("LION RPC runner was cancelled");
@@ -343,6 +354,16 @@ async function createDefaultRpcClient(config: LionRpcClientConfig): Promise<Lion
 			if (typeof proc?.pid !== "number") return null;
 			const pid = proc.pid;
 			return { pid, pgid: null, isAlive: () => proc.exitCode == null && proc.signalCode == null && isPidAlive(pid) };
+		},
+		waitForExit: async () => {
+			const proc = (client as unknown as { process?: { exitCode?: number | null; signalCode?: string | null; once?: (event: string, listener: () => void) => void } | null }).process;
+			if (!proc || proc.exitCode != null || proc.signalCode != null || !proc.once) return;
+			await new Promise<void>((resolve) => {
+				let settled = false;
+				const done = () => { if (!settled) { settled = true; resolve(); } };
+				proc.once!("exit", done);
+				proc.once!("error", done);
+			});
 		},
 	};
 }
