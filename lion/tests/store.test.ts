@@ -197,6 +197,16 @@ describe("LionLedger", () => {
 		assert.equal(l.get(replacement.id)?.steering_messages?.[0]?.status, "pending_delivery");
 	});
 
+	it("bounds durable steering messages and terminal history", () => {
+		const l = new LionLedger();
+		const run = l.create({ objective: "bounded steering", runner_mode: "json" });
+		for (let index = 0; index < 125; index++) l.steer(run.id, `${index}:${"x".repeat(5_000)}`);
+		const current = l.get(run.id)!;
+		assert.equal(current.steering_messages?.length, 100);
+		assert.equal(current.steering_messages?.every((message) => message.message.length <= 4_000), true);
+		assert.equal(current.steering_messages?.at(-1)?.id, "steer-125");
+	});
+
 	it("tracks rpc live steering delivery states", () => {
 		const l = new LionLedger();
 		const run = l.create({ objective: "rpc", runner_mode: "rpc" });

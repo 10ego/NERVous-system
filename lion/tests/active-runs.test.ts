@@ -164,7 +164,7 @@ describe("namespace-scoped active LION ownership", () => {
 		const results = await waiting;
 		assert.equal(results.length, 2);
 		assert.equal(results.every((result) => !result.settled), true);
-		assert.equal(reads, 4);
+		assert.equal(reads, 3);
 	});
 
 	it("reconciles a stale ownerless run before cancellation refreshes its grace", async () => {

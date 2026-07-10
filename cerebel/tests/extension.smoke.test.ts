@@ -106,6 +106,26 @@ describe("cerebel extension factory", () => {
 		assert.equal(runtimeLoads, 0);
 	});
 
+	it("serializes linked cancellation admissions against the shared LION ledger", async () => {
+		const ledger = new CerebelLedger();
+		const planned = ledger.planWave({ assignments: Array.from({ length: 4 }, (_, index) => ({ agent_id: `lion-${index}`, objective: `work ${index}` })) });
+		const wave = ledger.dispatch(planned.id, { links: planned.assignments.map((assignment, index) => ({ assignment_id: assignment.id, lion_run_id: `run-${index}`, lion_run_incarnation_id: `inc-${index}` })) });
+		let active = 0;
+		let maxActive = 0;
+		const controls = {
+			async requestRunCancellation(_store: unknown, runId: string) {
+				active++;
+				maxActive = Math.max(maxActive, active);
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				active--;
+				return { run: { id: runId, status: "aborted" }, settled: true, superseded: false };
+			},
+		};
+		const settlements = await settleLinkedLionsBeforeCancel(process.cwd(), wave, "stop", 100, async () => [{ LionStore: { fromCwd: () => ({}) } }, controls] as never);
+		assert.equal(settlements.every((settlement) => settlement.settled), true);
+		assert.equal(maxActive, 1);
+	});
+
 	it("registers the cerebel tool and commands", () => {
 		const { pi, tools, commands } = stubPi();
 		assert.doesNotThrow(() => factory(pi));

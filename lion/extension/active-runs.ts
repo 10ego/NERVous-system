@@ -227,11 +227,14 @@ export async function waitForRunSettlements(
 	store: LionControlStore,
 	runs: Array<Pick<LionRun, "id" | "incarnation_id">>,
 	timeoutMs = 15_000,
-	pollMs = 25,
+	pollMs = 100,
+	maxPollMs = 1_000,
 ): Promise<RunCancellationResult[]> {
 	if (!runs.length) return [];
 	const boundedTimeout = Number.isFinite(timeoutMs) ? Math.max(0, timeoutMs) : 15_000;
-	const boundedPoll = Number.isFinite(pollMs) ? Math.max(1, pollMs) : 25;
+	const boundedPoll = Number.isFinite(pollMs) ? Math.max(1, pollMs) : 100;
+	const boundedMaxPoll = Number.isFinite(maxPollMs) ? Math.max(boundedPoll, maxPollMs) : 1_000;
+	let nextPoll = boundedPoll;
 	const deadline = Date.now() + boundedTimeout;
 	for (;;) {
 		const { result: currentRuns } = await store.mutateMaybe((ledger) => {
@@ -250,12 +253,13 @@ export async function waitForRunSettlements(
 			};
 		});
 		if (results.every((result) => result.settled) || Date.now() >= deadline) return results;
-		await new Promise((resolve) => setTimeout(resolve, boundedPoll));
+		await new Promise((resolve) => setTimeout(resolve, nextPoll));
+		nextPoll = Math.min(boundedMaxPoll, nextPoll * 2);
 	}
 }
 
-export async function waitForRunSettlement(store: LionControlStore, run: Pick<LionRun, "id" | "incarnation_id">, timeoutMs = 15_000, pollMs = 25): Promise<RunCancellationResult> {
-	return (await waitForRunSettlements(store, [run], timeoutMs, pollMs))[0]!;
+export async function waitForRunSettlement(store: LionControlStore, run: Pick<LionRun, "id" | "incarnation_id">, timeoutMs = 15_000, pollMs = 100, maxPollMs = 1_000): Promise<RunCancellationResult> {
+	return (await waitForRunSettlements(store, [run], timeoutMs, pollMs, maxPollMs))[0]!;
 }
 
 export function clearActiveRunsForTests(): void {

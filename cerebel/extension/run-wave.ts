@@ -288,24 +288,38 @@ function supersededResult(assignment: Assignment, run: Pick<LionRun, "id" | "inc
 	};
 }
 
-function createProgressUpdater(update: (progress: LionProgressSnapshot) => Promise<void>) {
+export function createProgressUpdater(update: (progress: LionProgressSnapshot) => Promise<void>, intervalMs = 500) {
 	let inFlight: Promise<void> | null = null;
 	let pending: LionProgressSnapshot | null = null;
+	let timer: ReturnType<typeof setTimeout> | null = null;
+	let lastPersistAt = 0;
 	const flush = () => {
 		if (inFlight || !pending) return;
+		if (timer) { clearTimeout(timer); timer = null; }
 		const next = pending;
 		pending = null;
+		lastPersistAt = Date.now();
 		inFlight = update(next).catch(() => undefined).finally(() => {
 			inFlight = null;
-			flush();
+			if (pending) schedule();
 		});
+	};
+	const schedule = () => {
+		if (!pending || inFlight || timer) return;
+		const delay = Math.max(0, intervalMs - (Date.now() - lastPersistAt));
+		if (delay === 0) flush();
+		else {
+			timer = setTimeout(() => { timer = null; flush(); }, delay);
+			timer.unref?.();
+		}
 	};
 	return {
 		enqueue(progress: LionProgressSnapshot) {
 			pending = progress;
-			flush();
+			schedule();
 		},
 		async drain() {
+			if (timer) { clearTimeout(timer); timer = null; }
 			for (;;) {
 				flush();
 				if (!inFlight && !pending) return;

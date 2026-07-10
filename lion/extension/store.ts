@@ -32,6 +32,8 @@ const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
 const STEERING_STATUS_SET = new Set<string>(LION_STEERING_STATUSES);
 const MAX_PROGRESS_TEXT = 1000;
 const DEFAULT_RECONCILE_GRACE_MS = 30_000;
+const MAX_STEERING_MESSAGE_CHARS = 4_000;
+const MAX_TERMINAL_STEERING_HISTORY = 100;
 
 function now(): string {
 	return new Date().toISOString();
@@ -257,7 +259,7 @@ export class LionLedger {
 
 	steer(id: string, message: string, options: SteerRunOptions = {}): SteerRunResult {
 		const r = this.require(id);
-		const text = message.trim();
+		const text = message.trim().slice(0, MAX_STEERING_MESSAGE_CHARS);
 		if (!text) throw new LionError("invalid_arg", "steer requires non-empty message");
 		const ts = now();
 		const msg: LionSteeringMessage = {
@@ -287,6 +289,7 @@ export class LionLedger {
 		}
 		r.steering_messages ??= [];
 		r.steering_messages.push(msg);
+		this.compactSteeringHistory(r);
 		r.updated_at = ts;
 		return { run: clone(r), message: clone(msg), accepted: msg.status === "queued" || msg.status === "pending_delivery" };
 	}
@@ -331,6 +334,7 @@ export class LionLedger {
 		msg.status = "delivered";
 		msg.delivered_at = ts;
 		msg.reason = "delivered via RPC steer";
+		this.compactSteeringHistory(r);
 		r.updated_at = ts;
 		return clone(r);
 	}
@@ -348,6 +352,7 @@ export class LionLedger {
 		msg.status = "delivery_failed";
 		msg.rejected_at = ts;
 		msg.reason = reason;
+		this.compactSteeringHistory(r);
 		r.updated_at = ts;
 		return clone(r);
 	}
@@ -469,6 +474,13 @@ export class LionLedger {
 		return r;
 	}
 
+	private compactSteeringHistory(run: LionRun): void {
+		const messages = run.steering_messages ?? [];
+		const open = messages.filter((message) => ["queued", "pending_delivery", "delivering"].includes(message.status));
+		const terminal = messages.filter((message) => !["queued", "pending_delivery", "delivering"].includes(message.status));
+		run.steering_messages = [...terminal.slice(-MAX_TERMINAL_STEERING_HISTORY), ...open];
+	}
+
 	private requireSteering(run: LionRun, steeringId: string): LionSteeringMessage {
 		const msg = (run.steering_messages ?? []).find((m) => m.id === steeringId);
 		if (!msg) throw new LionError("not_found", `steering message ${steeringId} not found on ${run.id}`);
@@ -484,6 +496,7 @@ export class LionLedger {
 			msg.reason = reason;
 			changed = true;
 		}
+		if (changed) this.compactSteeringHistory(run);
 		return changed;
 	}
 

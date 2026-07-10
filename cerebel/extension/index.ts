@@ -147,7 +147,9 @@ export async function settleLinkedLionsBeforeCancel(
 	const [{ LionStore }, controls] = await loadRuntime();
 	const lionStore = LionStore.fromCwd(cwd);
 	const pending: Array<{ assignment: Assignment; run: NonNullable<Awaited<ReturnType<typeof controls.requestRunCancellation>>["run"]> }> = [];
-	await Promise.all(verifiable.map(async (assignment) => {
+	// One LION ledger owns every linked run, so serialize the short admission
+	// mutations instead of racing many advisory-lock acquisitions.
+	for (const assignment of verifiable) {
 		try {
 			const cancellation = await controls.requestRunCancellation(lionStore, assignment.lion_run_id!, reason, { expectedIncarnationId: assignment.lion_run_incarnation_id });
 			if (cancellation.settled) {
@@ -160,7 +162,7 @@ export async function settleLinkedLionsBeforeCancel(
 		} catch (error) {
 			results.set(assignment.id, { assignment, settled: false, error: error instanceof Error ? error.message : String(error) });
 		}
-	}));
+	}
 	if (pending.length) {
 		const settlements = await controls.waitForRunSettlements(lionStore, pending.map((entry) => entry.run), timeoutMs);
 		settlements.forEach((settlement, index) => {

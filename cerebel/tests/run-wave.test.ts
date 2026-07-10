@@ -2,9 +2,9 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { CerebelStore, FileBackend } from "../extension/backend.ts";
-import { runWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
+import { createProgressUpdater, runWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
 import type { LionReport, LionRun } from "../../lion/extension/schema.ts";
 import type { Assignment, Wave } from "../extension/schema.ts";
 import { summarizeAssignmentGroup, summarizeRunWaveResult } from "../extension/render.ts";
@@ -49,7 +49,25 @@ function fakeAdapter(reports: Record<string, LionReport | Error>): RunWaveLionAd
 
 const completedReport = (summary: string): LionReport => ({ outcome: "completed", summary, changed_files: [], tests_run: ["npm test"], blockers: [], next_steps: [] });
 
+afterEach(() => vi.useRealTimers());
+
 describe("runWave", () => {
+	it("time-throttles progress persistence while preserving the final snapshot", async () => {
+		vi.useFakeTimers();
+		const persisted: string[] = [];
+		const updater = createProgressUpdater(async (progress) => { persisted.push(progress.activity); }, 100);
+		const progress = (activity: string) => ({ event: "message" as const, activity, active_tools: [], tool_uses: 0, turn_count: 0, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
+		updater.enqueue(progress("first"));
+		await vi.advanceTimersByTimeAsync(0);
+		updater.enqueue(progress("second"));
+		await vi.advanceTimersByTimeAsync(20);
+		updater.enqueue(progress("third"));
+		await vi.advanceTimersByTimeAsync(80);
+		assert.deepEqual(persisted, ["first", "third"]);
+		updater.enqueue(progress("final"));
+		await updater.drain();
+		assert.deepEqual(persisted, ["first", "third", "final"]);
+	});
 	it("runs planned assignments in bounded batches and records results", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 1, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;
