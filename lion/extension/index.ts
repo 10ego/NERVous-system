@@ -9,7 +9,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { LionStore } from "./backend.ts";
 import { LionError, LionToolParams, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
-import { emitLionEvent, startedProgress, terminalEventKind } from "./lifecycle.ts";
+import { createProgressUpdater, emitLionEvent, startedProgress, terminalEventKind } from "./lifecycle.ts";
 import { resolveConfiguredLionModel, resolveLionRunnerMode } from "./options.ts";
 import { createLionRunner, getProcessIdentity, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
@@ -27,7 +27,6 @@ interface LionDetails {
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: LionDetails; isError?: boolean };
 
 const DEFAULT_TIMEOUT_MS = 10 * 60_000;
-const PROGRESS_PERSIST_INTERVAL_MS = 500;
 
 export { lionEventPayload } from "./lifecycle.ts";
 export type { LionEventKind } from "./lifecycle.ts";
@@ -84,46 +83,11 @@ async function executeRun(args: {
 }): Promise<ToolResult> {
 	let run = args.run;
 	const activeOwner = args.activeOwner;
-	let pendingProgress: LionProgressSnapshot | null = null;
-	let progressInFlight: Promise<void> | null = null;
-	let progressTimer: NodeJS.Timeout | null = null;
-	let lastProgressPersistAt = 0;
-	const flushProgress = () => {
-		if (progressInFlight || !pendingProgress) return;
-		if (progressTimer) {
-			clearTimeout(progressTimer);
-			progressTimer = null;
-		}
-		const progress = pendingProgress;
-		pendingProgress = null;
-		lastProgressPersistAt = Date.now();
-		progressInFlight = args.store.mutate((l) => l.updateProgress(run.id, progress)).then((updated) => {
-			run = updated.result;
-			emitLionEvent(args.pi, "progress", run, progress);
-		}).catch((err) => {
-			console.warn(`[nervous-system/lion] progress update failed for ${run.id}:`, err);
-		}).finally(() => {
-			progressInFlight = null;
-			if (pendingProgress) scheduleProgress();
-		});
-	};
-	const scheduleProgress = (immediate = false) => {
-		if (!pendingProgress) return;
-		const delay = immediate ? 0 : Math.max(0, PROGRESS_PERSIST_INTERVAL_MS - (Date.now() - lastProgressPersistAt));
-		if (delay === 0) flushProgress();
-		else if (!progressTimer) progressTimer = setTimeout(() => { progressTimer = null; flushProgress(); }, delay);
-	};
-	const drainProgress = async () => {
-		if (progressTimer) {
-			clearTimeout(progressTimer);
-			progressTimer = null;
-		}
-		for (;;) {
-			flushProgress();
-			if (!progressInFlight && !pendingProgress) return;
-			await (progressInFlight ?? Promise.resolve());
-		}
-	};
+	const progressUpdater = createProgressUpdater(async (progress) => {
+		const updated = await args.store.mutate((l) => l.updateProgress(run.id, progress));
+		run = updated.result;
+		emitLionEvent(args.pi, "progress", run, progress);
+	}, { onError: (error) => console.warn(`[nervous-system/lion] progress update failed for ${run.id}:`, error) });
 	const enqueueProgress = (progress: LionProgressSnapshot) => {
 		const preview = { ...run, progress, updated_at: progress.last_event_at } satisfies LionRun;
 		try {
@@ -131,8 +95,7 @@ async function executeRun(args: {
 		} catch (err) {
 			console.warn(`[nervous-system/lion] progress update callback failed for ${run.id}:`, err);
 		}
-		pendingProgress = progress;
-		scheduleProgress(progress.event !== "message");
+		progressUpdater.enqueue(progress);
 	};
 
 	const initialProgress = startedProgress();
@@ -162,14 +125,14 @@ async function executeRun(args: {
 			onControlClosed: () => markActiveRunControlClosed(activeOwner),
 			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
-		await drainProgress();
+		await progressUpdater.drain();
 		const finished = await args.store.mutate((l) => l.finish(run.id, { output: out.text, report: out.report }));
 		run = finished.result;
 		emitLionEvent(args.pi, terminalEventKind(run.status), run);
 		const reportHint = run.report ? `${run.report.outcome}: ${run.report.summary}` : "completed with unparsed report";
 		return ok(args.action, `LION ${run.id} ${run.status}: ${reportHint}`, { run });
 	} catch (err) {
-		await drainProgress();
+		await progressUpdater.drain();
 		const msg = err instanceof Error ? err.message : String(err);
 		const current = (await args.store.query((l) => l.get(run.id))).result;
 		const wasCancelled = Boolean(current?.control?.cancel_requested_at || args.signal?.aborted);

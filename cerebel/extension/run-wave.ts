@@ -19,6 +19,7 @@ export interface RunWaveLionAdapter {
 	finishRun(runId: string, result: { output: string; report: LionReport | null; status?: "completed" | "blocked" | "failed" | "aborted"; error?: string | null }): Promise<LionRun>;
 	getRun?(runId: string): Promise<LionRun | undefined>;
 	updateProgress?(runId: string, progress: LionProgressSnapshot): Promise<void>;
+	createProgressUpdater(update: (progress: LionProgressSnapshot) => Promise<void>): { enqueue(progress: LionProgressSnapshot): void; drain(): Promise<void> };
 }
 
 export interface RunWaveOptions {
@@ -201,7 +202,7 @@ async function recoverSetupFailure(store: CerebelStore, waveId: string, assignme
 
 async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: ExactLionRun, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
 	if (signal?.aborted) return recordWorkerError(store, adapter, waveId, assignment, run, new Error("Host aborted before LION launch"), signal);
-	const progress = createProgressUpdater((snapshot) => adapter.updateProgress?.(run.id, snapshot) ?? Promise.resolve());
+	const progress = adapter.createProgressUpdater((snapshot) => adapter.updateProgress?.(run.id, snapshot) ?? Promise.resolve());
 	let out: { text: string; report: LionReport | null };
 	try {
 		out = await adapter.run(run, assignment, progress.enqueue, signal);
@@ -293,47 +294,6 @@ function supersededResult(assignment: Assignment, run: Pick<ExactLionRun, "id" |
 		outcome: "skipped",
 		summary: `${localSummary}; local attempt superseded because ${reason}`,
 		blockers: [],
-	};
-}
-
-export function createProgressUpdater(update: (progress: LionProgressSnapshot) => Promise<void>, intervalMs = 500) {
-	let inFlight: Promise<void> | null = null;
-	let pending: LionProgressSnapshot | null = null;
-	let timer: ReturnType<typeof setTimeout> | null = null;
-	let lastPersistAt = 0;
-	const flush = () => {
-		if (inFlight || !pending) return;
-		if (timer) { clearTimeout(timer); timer = null; }
-		const next = pending;
-		pending = null;
-		lastPersistAt = Date.now();
-		inFlight = update(next).catch(() => undefined).finally(() => {
-			inFlight = null;
-			if (pending) schedule();
-		});
-	};
-	const schedule = () => {
-		if (!pending || inFlight || timer) return;
-		const delay = Math.max(0, intervalMs - (Date.now() - lastPersistAt));
-		if (delay === 0) flush();
-		else {
-			timer = setTimeout(() => { timer = null; flush(); }, delay);
-			timer.unref?.();
-		}
-	};
-	return {
-		enqueue(progress: LionProgressSnapshot) {
-			pending = progress;
-			schedule();
-		},
-		async drain() {
-			if (timer) { clearTimeout(timer); timer = null; }
-			for (;;) {
-				flush();
-				if (!inFlight && !pending) return;
-				await (inFlight ?? Promise.resolve());
-			}
-		},
 	};
 }
 

@@ -13,8 +13,8 @@ import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
 import type { LionProgressSnapshot, LionReport, LionRun } from "./schema.ts";
+import { MAX_PROGRESS_TEXT } from "./lifecycle.ts";
 
-const MAX_PROGRESS_TEXT = 1000;
 const TEXT_PROGRESS_THROTTLE_MS = 1000;
 
 export interface LionRunnerOptions {

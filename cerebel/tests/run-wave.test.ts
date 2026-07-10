@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import { CerebelStore, FileBackend } from "../extension/backend.ts";
-import { createProgressUpdater, runWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
+import { runWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
+import { createProgressUpdater } from "../../lion/extension/lifecycle.ts";
 import type { LionReport, LionRun } from "../../lion/extension/schema.ts";
 import type { Assignment, Wave } from "../extension/schema.ts";
 import { summarizeAssignmentGroup, summarizeRunWaveResult } from "../extension/render.ts";
@@ -19,6 +20,7 @@ function fakeAdapter(reports: Record<string, LionReport | Error>): RunWaveLionAd
 	const created: string[] = [];
 	return {
 		created,
+		createProgressUpdater,
 		async createRun(assignment) {
 			const id = `run-${String(next++).padStart(3, "0")}`;
 			created.push(`${assignment.id}:${id}`);
@@ -55,7 +57,7 @@ describe("runWave", () => {
 	it("time-throttles progress persistence while preserving the final snapshot", async () => {
 		vi.useFakeTimers();
 		const persisted: string[] = [];
-		const updater = createProgressUpdater(async (progress) => { persisted.push(progress.activity); }, 100);
+		const updater = createProgressUpdater(async (progress) => { persisted.push(progress.activity); }, { intervalMs: 100 });
 		const progress = (activity: string) => ({ event: "message" as const, activity, active_tools: [], tool_uses: 0, turn_count: 0, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
 		updater.enqueue(progress("first"));
 		await vi.advanceTimersByTimeAsync(0);

@@ -234,6 +234,102 @@ async function raceSession<T>(
 	});
 }
 
+class RpcProcessLifecycle {
+	private rawExit: Promise<void> | null = null;
+	private info: LionProcessInfo | null = null;
+	private attached = false;
+	private startInvoked = false;
+	private startSettled = false;
+	private startPromise: Promise<void> | null = null;
+	private adoptionTimer: ReturnType<typeof setInterval> | null = null;
+	private exited = false;
+	private isAliveFn = () => false;
+	private cancellationRequested = false;
+	private cancellationPromise: Promise<void> | null = null;
+	private exitNotified = false;
+
+	constructor(
+		private readonly req: LionRunRequest,
+		private readonly getClient: () => LionRpcClient | null,
+		private readonly abortAndStop: (client: LionRpcClient) => Promise<void>,
+		private readonly observationGraceMs: number,
+	) {}
+
+	attachIfAvailable(): boolean {
+		const client = this.getClient();
+		if (this.attached || !client) return this.attached;
+		const attachedInfo = client.getProcessInfo();
+		if (!attachedInfo?.pid) return false;
+		this.info = attachedInfo;
+		this.attached = true;
+		const processIsAlive = attachedInfo.isAlive ?? (() => !this.exited);
+		this.isAliveFn = () => !this.exited && processIsAlive();
+		this.rawExit = client.waitForExit?.().then(() => { this.exited = true; }) ?? null;
+		if (this.rawExit) void this.rawExit.catch(() => undefined);
+		try {
+			this.req.onProcessStart?.({
+				...attachedInfo,
+				cancel: async (signal = "SIGTERM") => {
+					if (!processIsAlive()) return false;
+					this.cancellationRequested = true;
+					if (signal === "SIGKILL") return Boolean(await attachedInfo.cancel?.("SIGKILL"));
+					this.cancellationPromise ??= this.abortAndStop(client);
+					await this.cancellationPromise;
+					return true;
+				},
+				isAlive: this.isAliveFn,
+			});
+		} catch { /* process metadata is best-effort */ }
+		return true;
+	}
+
+	start(operation: () => Promise<void>): Promise<void> {
+		this.startInvoked = true;
+		let started: Promise<void>;
+		try { started = operation(); }
+		catch (error) { this.startSettled = true; throw error; }
+		this.startPromise = started.finally(() => { this.startSettled = true; this.attachIfAvailable(); });
+		this.adoptionTimer = setInterval(() => { this.attachIfAvailable(); }, 10);
+		this.adoptionTimer.unref?.();
+		return this.startPromise;
+	}
+
+	stopAdoption(): void {
+		if (this.adoptionTimer) clearInterval(this.adoptionTimer);
+		this.adoptionTimer = null;
+	}
+
+	async waitForInterruptedStartDisposition(): Promise<boolean> {
+		const deadline = Date.now() + this.observationGraceMs;
+		while (this.startInvoked && !this.startSettled && !this.attachIfAvailable() && Date.now() < deadline) {
+			await Promise.race([this.startPromise?.catch(() => undefined) ?? Promise.resolve(), new Promise<void>((resolve) => setTimeout(resolve, 25))]);
+		}
+		return this.attachIfAvailable();
+	}
+
+	async waitForConfirmedExit(): Promise<void> {
+		while (this.isAlive()) {
+			if (this.rawExit) { await this.rawExit; break; }
+			await new Promise((resolve) => setTimeout(resolve, 25));
+		}
+		this.exited = true;
+	}
+
+	notifyExit(): void {
+		if (this.exitNotified) return;
+		this.exitNotified = true;
+		try { this.req.onProcessExit?.(); } catch { /* best effort */ }
+	}
+
+	get observedExit(): Promise<void> | null { return this.rawExit; }
+	get ownedCancellationRequested(): boolean { return this.cancellationRequested; }
+	get ownedCancellationPromise(): Promise<void> | null { return this.cancellationPromise; }
+	get childAttached(): boolean { return this.attached; }
+	get childInfo(): LionProcessInfo | null { return this.info; }
+	get interruptedStartPending(): boolean { return this.startInvoked && !this.startSettled; }
+	isAlive(): boolean { return this.isAliveFn(); }
+}
+
 async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Promise<LionRunOutput> {
 	if (req.signal?.aborted) throw new Error("LION RPC runner was aborted before prompt");
 	const deadline = createDeadline(req.timeout_ms ?? 10 * 60_000);
@@ -245,29 +341,12 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let stopPromise: Promise<void> | null = null;
 	let unsubscribeEvents: (() => void) | null = null;
 	let idleWaiter: DisposableWaiter<void> | null = null;
-	let rawChildExit: Promise<void> | null = null;
-	let processInfo: LionProcessInfo | null = null;
-	let childAttached = false;
-	let startInvoked = false;
-	let startSettled = false;
-	let startPromise: Promise<void> | null = null;
-	let adoptionTimer: ReturnType<typeof setInterval> | null = null;
 	let channelOpen = true;
-	let childExited = false;
-	let childIsAlive = () => false;
 	let primaryError: unknown;
-	let ownedCancellationRequested = false;
-	let ownedCancellationPromise: Promise<void> | null = null;
 	let sessionCancellationPromise: Promise<void> | null = null;
 	let steeringClosedHook: Promise<void> = Promise.resolve();
-	let processExitNotified = false;
 	let promptSetupAbandoned = false;
 	let stopFailure: unknown;
-	const notifyProcessExit = () => {
-		if (processExitNotified) return;
-		processExitNotified = true;
-		try { req.onProcessExit?.(); } catch { /* best effort */ }
-	};
 	const stopClient = async () => {
 		const activeClient = client;
 		if (!activeClient) return;
@@ -292,52 +371,12 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		if (abortError) throw abortError;
 		if (stopError) throw stopError;
 	};
-	const attachProcessIfAvailable = (): boolean => {
-		if (childAttached || !client) return childAttached;
-		const attachedInfo = client.getProcessInfo();
-		if (!attachedInfo?.pid) return false;
-		processInfo = attachedInfo;
-		childAttached = true;
-		const processIsAlive = attachedInfo.isAlive ?? (() => !childExited);
-		childIsAlive = () => !childExited && processIsAlive();
-		rawChildExit = client.waitForExit?.().then(() => { childExited = true; }) ?? null;
-		if (rawChildExit) void rawChildExit.catch(() => undefined);
-		try {
-			req.onProcessStart?.({
-				...attachedInfo,
-				cancel: async (signal = "SIGTERM") => {
-					if (!processIsAlive()) return false;
-					ownedCancellationRequested = true;
-					if (signal === "SIGKILL") return Boolean(await attachedInfo.cancel?.("SIGKILL"));
-					ownedCancellationPromise ??= abortAndStop(client!);
-					await ownedCancellationPromise;
-					return true;
-				},
-				isAlive: childIsAlive,
-			});
-		} catch { /* process metadata is best-effort */ }
-		return true;
-	};
-	const waitForInterruptedStartDisposition = async () => {
-		const observationDeadline = Date.now() + (opts.startObservationGraceMs ?? DEFAULT_START_OBSERVATION_GRACE_MS);
-		while (startInvoked && !startSettled && !attachProcessIfAvailable() && Date.now() < observationDeadline) {
-			await Promise.race([
-				startPromise?.catch(() => undefined) ?? Promise.resolve(),
-				new Promise<void>((resolve) => setTimeout(resolve, 25)),
-			]);
-		}
-		return attachProcessIfAvailable();
-	};
-	const waitForConfirmedChildExit = async () => {
-		while (childIsAlive()) {
-			if (rawChildExit) {
-				await rawChildExit;
-				break;
-			}
-			await new Promise((resolve) => setTimeout(resolve, 25));
-		}
-		childExited = true;
-	};
+	const processLifecycle = new RpcProcessLifecycle(
+		req,
+		() => client,
+		abortAndStop,
+		opts.startObservationGraceMs ?? DEFAULT_START_OBSERVATION_GRACE_MS,
+	);
 	const runIncarnation = req.run.incarnation_id ?? null;
 	const progressState = createLionProgressState({ includeText: req.include_progress_text ?? false });
 	const closeSteeringChannel = () => {
@@ -349,7 +388,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	};
 	const cancelSession = () => {
 		closeSteeringChannel();
-		attachProcessIfAvailable();
+		processLifecycle.attachIfAvailable();
 		const activeClient = client;
 		if (!activeClient) return Promise.resolve();
 		sessionCancellationPromise ??= abortAndStop(activeClient);
@@ -434,30 +473,18 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 				try { req.onProgress?.(progress); } catch { /* progress callbacks must not break runner */ }
 			}
 		});
-		const beginStart = () => {
-			startInvoked = true;
-			let started: Promise<void>;
-			try { started = Promise.resolve(activeClient.start()); }
-			catch (error) { startSettled = true; throw error; }
-			startPromise = started.finally(() => { startSettled = true; attachProcessIfAvailable(); });
-			attachProcessIfAvailable();
-			adoptionTimer = setInterval(() => { attachProcessIfAvailable(); }, 10);
-			adoptionTimer.unref?.();
-			return startPromise;
-		};
-		await raceSession(beginStart, req.signal, deadline, cancelSession);
-		if (adoptionTimer) clearInterval(adoptionTimer);
-		adoptionTimer = null;
-		attachProcessIfAvailable();
+		await raceSession(() => processLifecycle.start(() => Promise.resolve(activeClient.start())), req.signal, deadline, cancelSession);
+		processLifecycle.stopAdoption();
+		processLifecycle.attachIfAvailable();
 
 		idleWaiter = createIdleWaiter(activeClient);
 		const idle = idleWaiter.promise.then(() => { closeSteeringChannel(); });
 		void idle.catch(() => undefined);
-		const observedChildExit = rawChildExit as Promise<void> | null;
+		const observedChildExit = processLifecycle.observedExit;
 		const childExit = observedChildExit?.then(async () => {
 			closeSteeringChannel();
-			if (ownedCancellationRequested) {
-				await ownedCancellationPromise;
+			if (processLifecycle.ownedCancellationRequested) {
+				await processLifecycle.ownedCancellationPromise;
 				throw new Error("LION RPC runner was cancelled");
 			}
 			throw new Error("LION RPC child exited before becoming idle");
@@ -473,8 +500,8 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		if (channelOpen) poller.start();
 		if (channelOpen && await raceSession(() => deliverPending(), req.signal, deadline, cancelSession)) poller.wake();
 		await raceSession(() => childExit ? Promise.race([idle, childExit]) : idle, req.signal, deadline, cancelSession);
-		if (ownedCancellationRequested) {
-			await ownedCancellationPromise;
+		if (processLifecycle.ownedCancellationRequested) {
+			await processLifecycle.ownedCancellationPromise;
 			throw new Error("LION RPC runner was cancelled");
 		}
 		closeSteeringChannel();
@@ -505,19 +532,17 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		idleWaiter?.dispose();
 		poller?.stop();
 		try { unsubscribeEvents?.(); } catch { /* ignore */ }
-		attachProcessIfAvailable();
+		processLifecycle.attachIfAvailable();
 		let stopError: unknown;
 		try { await stopClientBounded(); } catch (err) { stopError = err; }
-		attachProcessIfAvailable();
-		if (stopError && startInvoked && !startSettled && !childAttached) await waitForInterruptedStartDisposition();
-		if (adoptionTimer) clearInterval(adoptionTimer);
-		adoptionTimer = null;
-		if (childAttached && childIsAlive() && stopError) {
-			const attachedProcess = processInfo as LionProcessInfo | null;
-			try { await attachedProcess?.cancel?.("SIGKILL"); } catch { /* retain ownership until actual exit */ }
+		processLifecycle.attachIfAvailable();
+		if (stopError && processLifecycle.interruptedStartPending && !processLifecycle.childAttached) await processLifecycle.waitForInterruptedStartDisposition();
+		processLifecycle.stopAdoption();
+		if (processLifecycle.childAttached && processLifecycle.isAlive() && stopError) {
+			try { await processLifecycle.childInfo?.cancel?.("SIGKILL"); } catch { /* retain ownership until actual exit */ }
 		}
-		if (childAttached && childIsAlive()) await waitForConfirmedChildExit();
-		if (childAttached && !childIsAlive()) notifyProcessExit();
+		if (processLifecycle.childAttached && processLifecycle.isAlive()) await processLifecycle.waitForConfirmedExit();
+		if (processLifecycle.childAttached && !processLifecycle.isAlive()) processLifecycle.notifyExit();
 		let cleanupError: unknown;
 		if (tmpDir) {
 			try { await removeTempDirectory(tmpDir); } catch (error) { cleanupError = error; }

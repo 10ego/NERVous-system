@@ -204,6 +204,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 		const runner = runnerMode === "rpc" ? createLionRpcRunner({ cwd: ctx.cwd, store: lionStore }) : createLionRunner({ cwd: ctx.cwd });
 		const activeOwners = new Map<string, ReturnType<typeof activeRuns.beginActiveRun>>();
 		return {
+			createProgressUpdater: lifecycle.createProgressUpdater,
 			async createRun(assignment) {
 				let activeOwner: ReturnType<typeof activeRuns.beginActiveRun> | undefined;
 				try {

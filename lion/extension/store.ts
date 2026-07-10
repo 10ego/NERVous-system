@@ -24,13 +24,13 @@ import {
 	type LionRunStatus,
 	type LionSummary,
 } from "./schema.ts";
+import { MAX_PROGRESS_TEXT } from "./lifecycle.ts";
 
 const VERSION = 1;
 
 const STATUS_SET = new Set<string>(LION_RUN_STATUSES);
 const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
 const STEERING_STATUS_SET = new Set<string>(LION_STEERING_STATUSES);
-const MAX_PROGRESS_TEXT = 1000;
 const DEFAULT_RECONCILE_GRACE_MS = 30_000;
 const MAX_STEERING_MESSAGE_CHARS = 4_000;
 const MAX_OPEN_STEERING_MESSAGES = 100;
