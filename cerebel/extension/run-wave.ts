@@ -7,7 +7,7 @@ import type { RecordInput } from "./store.ts";
 
 export interface RunWaveLionAdapter {
 	createRun(assignment: Assignment): Promise<LionRun>;
-	run(run: LionRun, assignment: Assignment, onProgress: (progress: LionProgressSnapshot) => void): Promise<{ text: string; report: LionReport | null }>;
+	run(run: LionRun, assignment: Assignment, onProgress: (progress: LionProgressSnapshot) => void, signal?: AbortSignal): Promise<{ text: string; report: LionReport | null }>;
 	finishRun(runId: string, result: { output: string; report: LionReport | null; status?: "completed" | "blocked" | "failed" | "aborted"; error?: string | null }): Promise<LionRun>;
 	getRun?(runId: string): Promise<LionRun | undefined>;
 	updateProgress?(runId: string, progress: LionProgressSnapshot): Promise<void>;
@@ -34,6 +34,13 @@ export interface RunWaveResult {
 	summary: string;
 }
 
+export class RunWaveBatchError extends Error {
+	constructor(message: string, readonly result: RunWaveResult, readonly causes: unknown[]) {
+		super(message);
+		this.name = "RunWaveBatchError";
+	}
+}
+
 interface ReservationResult {
 	wave: Wave;
 	assignments: Assignment[];
@@ -45,27 +52,58 @@ export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, 
 	const maxParallel = clampParallel(options.max_parallel ?? wave.max_parallel);
 
 	for (;;) {
-		const reservation = await reservePlannedAssignments(store, wave.id, maxParallel, options.reservation_stale_ms);
+		if (options.signal?.aborted) break;
+		const reservation = await reservePlannedAssignments(store, wave.id, maxParallel, options.reservation_stale_ms, options.signal);
 		wave = reservation.wave;
+		if (options.signal?.aborted && reservation.assignments.length) {
+			await releaseReservations(store, wave.id, reservation.assignments, "host aborted before LION creation");
+			break;
+		}
 		if (wave.assignments.some((a) => a.status === "blocked" || a.status === "failed")) break;
 		if (!reservation.assignments.length) break;
 
-		const batch = await Promise.all(reservation.assignments.map((assignment) => createAndRunOne(store, adapter, wave.id, assignment, options.signal)));
-		results.push(...batch);
+		const settled = await Promise.allSettled(reservation.assignments.map((assignment) => createAndRunOne(store, adapter, wave.id, assignment, options.signal)));
+		const failures: unknown[] = [];
+		for (const outcome of settled) {
+			if (outcome.status === "fulfilled") results.push(outcome.value);
+			else failures.push(outcome.reason);
+		}
 		wave = await loadWave(store, wave.id);
+		if (failures.length) {
+			const partial = finalizeRunWave(wave, results);
+			throw new RunWaveBatchError(`run_wave batch failed after all launched workers settled: ${failures.map(errorMessage).join("; ")}`, partial, failures);
+		}
 	}
 
 	wave = await loadWave(store, wave.id);
+	return finalizeRunWave(wave, results);
+}
+
+function finalizeRunWave(wave: Wave, completedResults: RunWaveAssignmentResult[]): RunWaveResult {
+	const results = [...completedResults];
+	const seen = new Set(results.map((result) => result.assignment_id));
 	for (const assignment of wave.assignments) {
-		if (assignment.status === "planned") {
+		if (assignment.status === "planned" && !seen.has(assignment.id)) {
 			results.push({ assignment_id: assignment.id, outcome: "skipped", summary: "not dispatched in this run_wave invocation", blockers: [] });
 		}
 	}
 	return { wave, assignment_results: results, summary: summarizeRunWave(wave, results) };
 }
 
-async function reservePlannedAssignments(store: CerebelStore, waveId: string, maxParallel: number, reservationStaleMs = 30_000): Promise<ReservationResult> {
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+async function releaseReservations(store: CerebelStore, waveId: string, assignments: Assignment[], reason: string): Promise<void> {
+	await store.mutate((ledger) => ledger.releaseReservations(waveId, assignments.map((assignment) => assignment.id), reason));
+}
+
+async function reservePlannedAssignments(store: CerebelStore, waveId: string, maxParallel: number, reservationStaleMs = 30_000, signal?: AbortSignal): Promise<ReservationResult> {
+	if (signal?.aborted) return { wave: await loadWave(store, waveId), assignments: [] };
 	const { result } = await store.mutate((ledger) => {
+		const currentBeforeRecovery = ledger.get(waveId);
+		if (!currentBeforeRecovery) throw new Error(`wave ${waveId} not found`);
+		if (signal?.aborted) return { wave: currentBeforeRecovery, assignments: [] };
 		ledger.recoverOrphanedReservations(waveId, { stale_after_ms: reservationStaleMs });
 		const current = ledger.get(waveId);
 		if (!current) throw new Error(`wave ${waveId} not found`);
@@ -83,11 +121,20 @@ async function reservePlannedAssignments(store: CerebelStore, waveId: string, ma
 }
 
 async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
+	if (signal?.aborted) {
+		await releaseReservations(store, waveId, [assignment], "host aborted before LION creation");
+		return { assignment_id: assignment.id, outcome: "skipped", summary: "host aborted before LION creation", blockers: [] };
+	}
 	let run: LionRun | undefined;
 	let linkedAssignment: Assignment | undefined;
 	try {
 		const createdRun = await adapter.createRun(assignment);
 		run = createdRun;
+		if (signal?.aborted) {
+			await adapter.finishRun(run.id, { output: "", report: null, status: "aborted", error: "Host aborted before LION launch" });
+			await releaseReservations(store, waveId, [assignment], "host aborted before LION launch");
+			return { assignment_id: assignment.id, lion_run_id: run.id, outcome: "skipped", summary: "host aborted before LION launch", blockers: [] };
+		}
 		const { result: linkedWave } = await store.mutate((ledger) => ledger.dispatch(waveId, {
 			links: [{
 				assignment_id: assignment.id,
@@ -137,10 +184,12 @@ async function recoverSetupFailure(store: CerebelStore, waveId: string, assignme
 }
 
 async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
+	if (signal?.aborted) return recordWorkerError(store, adapter, waveId, assignment, run, new Error("Host aborted before LION launch"), signal);
 	const progress = createProgressUpdater((snapshot) => adapter.updateProgress?.(run.id, snapshot) ?? Promise.resolve());
 	let out: { text: string; report: LionReport | null };
 	try {
-		out = await adapter.run(run, assignment, progress.enqueue);
+		out = await adapter.run(run, assignment, progress.enqueue, signal);
+		if (signal?.aborted) throw new Error("Host aborted run_wave");
 		await progress.drain();
 	} catch (err) {
 		await progress.drain().catch(() => undefined);

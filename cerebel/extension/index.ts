@@ -5,7 +5,7 @@ import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@n
 import { CerebelStore } from "./backend.ts";
 import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
 import { renderCerebelCall, renderCerebelResult, RUN_WAVE_DASHBOARD_HINT, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
-import { runWave, type RunWaveLionAdapter } from "./run-wave.ts";
+import { RunWaveBatchError, runWave, type RunWaveLionAdapter, type RunWaveResult } from "./run-wave.ts";
 import type { LionModelRole, LionProgressSnapshot, LionRun, LionRunnerMode } from "../../lion/extension/schema.ts";
 
 interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; run_wave?: import("./run-wave.ts").RunWaveResult; error?: string }
@@ -86,6 +86,18 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 	}
 }
 
+async function recordRunWaveGanglion(cwd: string, result: RunWaveResult): Promise<string[]> {
+	const messages: string[] = [];
+	for (const assignmentResult of result.assignment_results) {
+		if (assignmentResult.outcome === "skipped") continue;
+		const assignment = result.wave.assignments.find((candidate) => candidate.id === assignmentResult.assignment_id);
+		if (!assignment) continue;
+		const message = await recordLinkedGanglion(cwd, assignment, { action: "record", lion_run_id: assignmentResult.lion_run_id, summary: assignmentResult.summary } as CerebelToolInput, assignmentResult.outcome as AssignmentStatus);
+		if (message) messages.push(message);
+	}
+	return messages;
+}
+
 export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}): Promise<RunWaveLionAdapter> {
 	try {
 		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod] = await Promise.all([
@@ -129,12 +141,12 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					throw err;
 				}
 			},
-			async run(run: LionRun, _assignment, onProgress) {
+			async run(run: LionRun, _assignment, onProgress, runSignal) {
 				const activeOwner = activeOwners.get(run.id);
 				if (!activeOwner) throw new Error(`active LION ownership missing for ${run.id}`);
 				return runner({
 					run,
-					signal,
+					signal: runSignal ?? signal,
 					timeout_ms: p.timeout_ms ?? DEFAULT_RUN_WAVE_TIMEOUT_MS,
 					onProcessStart: (info) => {
 						activeRuns.attachActiveRunProcess(activeOwner, info);
@@ -252,17 +264,15 @@ export default function (pi: ExtensionAPI) {
 						const adapter = await createLionAdapter(ctx, p, signal, onUpdate);
 						try { onUpdate?.({ content: [{ type: "text", text: RUN_WAVE_DASHBOARD_HINT.replace(/`/g, "") }], details: { action: "run_wave", hint: "dashboard" } }); } catch { /* dashboard hint is best-effort */ }
 						const result = await runWave(store, adapter, { wave_id: p.wave_id, max_parallel: p.max_parallel, signal });
-						const ganglionMessages: string[] = [];
-						for (const r of result.assignment_results) {
-							if (r.outcome === "skipped") continue;
-							const assignment = result.wave.assignments.find((a) => a.id === r.assignment_id);
-							if (!assignment) continue;
-							const msg = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: r.lion_run_id, summary: r.summary } as CerebelToolInput, r.outcome as AssignmentStatus);
-							if (msg) ganglionMessages.push(msg);
-						}
+						const ganglionMessages = await recordRunWaveGanglion(ctx.cwd, result);
 						const suffix = ganglionMessages.length ? ` ${ganglionMessages.join(" ")}` : "";
 						return ok(action, `Ran ${result.summary}.${suffix}`, { wave: result.wave, run_wave: result });
 					} catch (e) {
+						if (e instanceof RunWaveBatchError) {
+							const ganglionMessages = await recordRunWaveGanglion(ctx.cwd, e.result);
+							const suffix = ganglionMessages.length ? ` ${ganglionMessages.join(" ")}` : "";
+							return fail(action, `cerebel run_wave failed after all launched workers settled: ${e.message}.${suffix}`);
+						}
 						return fail(action, `cerebel run_wave failed: ${e instanceof Error ? e.message : String(e)}`);
 					}
 				}

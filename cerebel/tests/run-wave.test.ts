@@ -6,6 +6,7 @@ import { describe, it } from "vitest";
 import { CerebelStore, FileBackend } from "../extension/backend.ts";
 import { runWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
 import type { LionReport, LionRun } from "../../lion/extension/schema.ts";
+import type { Assignment, Wave } from "../extension/schema.ts";
 import { summarizeAssignmentGroup, summarizeRunWaveResult } from "../extension/render.ts";
 
 async function tmpStore(): Promise<CerebelStore> {
@@ -147,15 +148,131 @@ describe("runWave", () => {
 		assert.equal(current.assignments[0]?.lion_run_id, "run-001");
 	});
 
+	it("joins sibling workers before propagating a batch failure", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 2, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("A done"), "assign-002": completedReport("B done") });
+		const baseRun = adapter.run.bind(adapter);
+		const baseFinish = adapter.finishRun.bind(adapter);
+		let releaseSecond!: () => void;
+		let secondStartedResolve!: () => void;
+		const secondStarted = new Promise<void>((resolve) => { secondStartedResolve = resolve; });
+		const secondGate = new Promise<void>((resolve) => { releaseSecond = resolve; });
+		adapter.run = async (run, assignment, onProgress, signal) => {
+			if (assignment.id === "assign-002") { secondStartedResolve(); await secondGate; }
+			return baseRun(run, assignment, onProgress, signal);
+		};
+		adapter.finishRun = async (runId, result) => {
+			if (runId === "run-001") throw new Error("first finalization failed");
+			return baseFinish(runId, result);
+		};
+		let settled = false;
+		const running = runWave(store, adapter, { wave_id: wave.id });
+		void running.then(() => { settled = true; }, () => { settled = true; });
+		await secondStarted;
+		await Promise.resolve();
+		assert.equal(settled, false);
+		releaseSecond();
+		await assert.rejects(() => running, /first finalization failed/);
+		assert.equal(settled, true);
+		const current = (await store.query((l) => l.get(wave.id))).result!;
+		assert.equal(current.assignments[0]?.status, "dispatched");
+		assert.equal(current.assignments[1]?.status, "completed");
+	});
+
+	it("does not reserve or create work for a pre-aborted wave", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("A done") });
+		const controller = new AbortController();
+		controller.abort();
+		const result = await runWave(store, adapter, { wave_id: wave.id, signal: controller.signal });
+		assert.deepEqual(adapter.created, []);
+		assert.equal(result.wave.assignments[0]?.status, "planned");
+		assert.equal(result.assignment_results[0]?.outcome, "skipped");
+	});
+
+	it("releases a reservation when cancellation lands before LION creation", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("A done") });
+		const controller = new AbortController();
+		const originalMutate = store.mutate.bind(store);
+		let interceptReservation = true;
+		(store as unknown as { mutate: typeof store.mutate }).mutate = async (fn) => {
+			const output = await originalMutate(fn);
+			const candidate = output.result as { wave?: Wave; assignments?: Assignment[] };
+			if (interceptReservation && candidate.wave?.id === wave.id && candidate.assignments?.length) {
+				interceptReservation = false;
+				controller.abort();
+			}
+			return output;
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id, signal: controller.signal });
+		assert.deepEqual(adapter.created, []);
+		assert.equal(result.wave.assignments[0]?.status, "planned");
+		assert.match(result.wave.assignments[0]?.outcome_summary ?? "", /host aborted/);
+	});
+
+	it("does not launch a linked worker when cancellation lands after linking", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("must not run") });
+		const controller = new AbortController();
+		const originalMutate = store.mutate.bind(store);
+		let interceptLink = true;
+		(store as unknown as { mutate: typeof store.mutate }).mutate = async (fn) => {
+			const output = await originalMutate(fn);
+			const candidate = output.result as Wave;
+			if (interceptLink && candidate.id === wave.id && candidate.assignments?.some((assignment) => assignment.lion_run_id)) {
+				interceptLink = false;
+				controller.abort();
+			}
+			return output;
+		};
+		let ran = false;
+		adapter.run = async () => { ran = true; return { text: "unexpected", report: completedReport("unexpected") }; };
+		let finishStatus: string | undefined;
+		const baseFinish = adapter.finishRun.bind(adapter);
+		adapter.finishRun = async (runId, result) => { finishStatus = result.status; return baseFinish(runId, result); };
+		const result = await runWave(store, adapter, { wave_id: wave.id, signal: controller.signal });
+		assert.equal(ran, false);
+		assert.equal(finishStatus, "aborted");
+		assert.equal(result.wave.assignments[0]?.status, "cancelled");
+	});
+
+	it("stops before the next reservation after a successful batch aborts the host", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 1, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;
+		const controller = new AbortController();
+		const adapter = fakeAdapter({ "assign-001": completedReport("A done"), "assign-002": completedReport("B should not run") });
+		const baseRun = adapter.run.bind(adapter);
+		const baseFinish = adapter.finishRun.bind(adapter);
+		adapter.run = async (run, assignment, onProgress, signal) => {
+			assert.equal(signal, controller.signal);
+			return baseRun(run, assignment, onProgress, signal);
+		};
+		adapter.finishRun = async (runId, result) => {
+			const finished = await baseFinish(runId, result);
+			controller.abort();
+			return finished;
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id, signal: controller.signal });
+		assert.deepEqual(adapter.created, ["assign-001:run-001"]);
+		assert.equal(result.wave.assignments[0]?.status, "completed");
+		assert.equal(result.wave.assignments[1]?.status, "planned");
+	});
+
 	it("records a host-aborted worker as aborted and cancelled", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
 		const controller = new AbortController();
 		const adapter = fakeAdapter({});
 		let finishStatus: string | undefined;
-		adapter.run = async () => {
+		adapter.run = async (_run, _assignment, _onProgress, signal) => {
+			assert.equal(signal, controller.signal);
 			controller.abort();
-			throw new Error("LION subprocess was aborted or timed out");
+			return { text: "late success", report: completedReport("must not record completed") };
 		};
 		adapter.getRun = async (runId) => ({ id: runId, agent_id: "lion-a", status: "running", task_id: null, objective: "A", context: "", started_at: new Date().toISOString(), updated_at: new Date().toISOString(), control: null } as LionRun);
 		adapter.finishRun = async (runId, result) => {

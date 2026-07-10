@@ -202,6 +202,26 @@ export class CerebelLedger {
 		return clone(w);
 	}
 
+	releaseReservations(waveId: string, assignmentIds: string[], reason = "released unlinked run_wave reservation"): Assignment[] {
+		const w = this.require(waveId);
+		const ids = new Set(assignmentIds);
+		const released: Assignment[] = [];
+		const ts = now();
+		for (const a of w.assignments) {
+			if (!ids.has(a.id) || a.status !== "dispatched" || a.lion_run_id) continue;
+			a.status = "planned";
+			a.outcome_summary = reason;
+			a.updated_at = ts;
+			released.push(clone(a));
+		}
+		if (released.length) {
+			w.decision = this.computeDecision(w);
+			w.updated_at = ts;
+			if (w.status === "dispatched" || w.status === "collecting") this.transitionLenient(w, statusFromAssignments(w));
+		}
+		return released;
+	}
+
 	recoverOrphanedReservations(waveId: string, options: { stale_after_ms?: number; now_ms?: number } = {}): Assignment[] {
 		const w = this.require(waveId);
 		const nowMs = options.now_ms ?? Date.now();
