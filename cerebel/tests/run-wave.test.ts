@@ -428,18 +428,18 @@ describe("runWave", () => {
 		assert.equal(result.assignment_results[0]?.lion_run_incarnation_id, "inc-run-001");
 	});
 
-	it("does not overwrite a foreign terminal result recorded after local linking", async () => {
+	it("does not overwrite an exact-provenance terminal result recorded after local linking", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
 		const adapter = fakeAdapter({ "assign-001": completedReport("local done") });
 		let localFinishStatus: string | undefined;
-		adapter.run = async (_run, assignment) => {
+		adapter.run = async (run, assignment) => {
 			await store.mutate((l) => l.record(wave.id, {
 				assignment_id: assignment.id,
-				lion_run_id: "run-foreign",
-				lion_run_incarnation_id: "inc-foreign",
+				lion_run_id: run.id,
+				lion_run_incarnation_id: run.incarnation_id!,
 				outcome: "completed",
-				summary: "foreign done",
+				summary: "independent exact result",
 			}));
 			return { text: "local", report: completedReport("local done") };
 		};
@@ -450,31 +450,31 @@ describe("runWave", () => {
 		const result = await runWave(store, adapter, { wave_id: wave.id });
 		assert.equal(localFinishStatus, "completed");
 		assert.equal(result.assignment_results[0]?.outcome, "skipped");
-		assert.match(result.assignment_results[0]?.summary ?? "", /owned by run-foreign/);
-		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-foreign");
+		assert.match(result.assignment_results[0]?.summary ?? "", /already completed/);
+		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
 		assert.equal(result.wave.assignments[0]?.status, "completed");
-		assert.equal(result.wave.assignments[0]?.outcome_summary, "foreign done");
+		assert.equal(result.wave.assignments[0]?.outcome_summary, "independent exact result");
 	});
 
-	it("does not overwrite a foreign result when the local worker errors", async () => {
+	it("does not overwrite an exact-provenance terminal result when the local worker errors", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
 		const adapter = fakeAdapter({});
-		adapter.run = async (_run, assignment) => {
+		adapter.run = async (run, assignment) => {
 			await store.mutate((l) => l.record(wave.id, {
 				assignment_id: assignment.id,
-				lion_run_id: "run-foreign",
-				lion_run_incarnation_id: "inc-foreign",
+				lion_run_id: run.id,
+				lion_run_incarnation_id: run.incarnation_id!,
 				outcome: "failed",
-				summary: "foreign failed",
+				summary: "independent exact failure",
 			}));
 			throw new Error("local runner failed");
 		};
 		const result = await runWave(store, adapter, { wave_id: wave.id });
 		assert.equal(result.assignment_results[0]?.outcome, "skipped");
-		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-foreign");
+		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
 		assert.equal(result.wave.assignments[0]?.status, "failed");
-		assert.equal(result.wave.assignments[0]?.outcome_summary, "foreign failed");
+		assert.equal(result.wave.assignments[0]?.outcome_summary, "independent exact failure");
 	});
 
 	it("treats wave cancellation during local execution as a superseded result", async () => {
@@ -543,7 +543,7 @@ describe("runWave", () => {
 	it("does not rerun already terminal assignments", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] }))).result;
-		await store.mutate((l) => { l.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-existing", lion_run_incarnation_id: "inc-existing" }] }); return l.record(wave.id, { assignment_id: "assign-001", lion_run_id: "run-existing", outcome: "completed", summary: "done" }); });
+		await store.mutate((l) => { l.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-existing", lion_run_incarnation_id: "inc-existing" }] }); return l.record(wave.id, { assignment_id: "assign-001", lion_run_id: "run-existing", lion_run_incarnation_id: "inc-existing", outcome: "completed", summary: "done" }); });
 		const adapter = fakeAdapter({});
 		const result = await runWave(store, adapter, { wave_id: wave.id });
 		assert.equal(adapter.created.length, 0);

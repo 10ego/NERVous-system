@@ -3,6 +3,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CerebelStore } from "./backend.ts";
 import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
+import { isTerminalAssignmentStatus } from "./store.ts";
 import { renderCerebelCall, renderCerebelResult, RUN_WAVE_DASHBOARD_HINT, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
 import { RunWaveBatchError, runWave, type RunWaveLionAdapter, type RunWaveResult } from "./run-wave.ts";
 import type { LionModelRole, LionProgressSnapshot, LionRun } from "../../lion/extension/schema.ts";
@@ -45,7 +46,6 @@ function waveId(l: import("./store.ts").CerebelLedger, id?: string): string | un
 
 const DEFAULT_RUN_WAVE_TIMEOUT_MS = 10 * 60_000;
 
-function isTerminalAssignment(status: AssignmentStatus): boolean { return ["completed", "partial", "blocked", "failed", "cancelled"].includes(status); }
 function ganglionStatusFromAssignment(status: AssignmentStatus): "completed" | "blocked" | "failed" | "cancelled" { return status === "blocked" ? "blocked" : status === "failed" ? "failed" : status === "cancelled" ? "cancelled" : "completed"; }
 function findRecordedAssignment(wave: Wave, p: CerebelToolInput): Assignment | undefined {
 	return wave.assignments.find((a) => (p.assignment_id && a.id === p.assignment_id)
@@ -61,7 +61,7 @@ function formatGanglionRecordMessage(ganglionId: string, allocationId: string, d
 }
 
 async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefined, p: CerebelToolInput, outcome: AssignmentStatus): Promise<string | null> {
-	if (!assignment || !isTerminalAssignment(outcome)) return null;
+	if (!assignment || !isTerminalAssignmentStatus(outcome)) return null;
 	const ganglionId = p.ganglion_id ?? assignment.ganglion_id;
 	const allocationId = p.ganglion_allocation_id ?? assignment.ganglion_allocation_id;
 	if (!allocationId) return null;
@@ -140,7 +140,7 @@ export async function settleLinkedLionsBeforeCancel(
 	timeoutMs = resolveCancelSettlementTimeout(),
 	loadRuntime = () => Promise.all([import("../../lion/extension/backend.ts"), import("../../lion/extension/active-runs.ts")]),
 ): Promise<LinkedLionSettlement[]> {
-	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id && !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status));
+	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id && !isTerminalAssignmentStatus(assignment.status));
 	if (!assignments.length) return [];
 	const results = new Map<string, LinkedLionSettlement>();
 	const verifiable = assignments.filter((assignment) => {
@@ -377,7 +377,7 @@ export default function (pi: ExtensionAPI) {
 								const current = l.get(initial.id);
 								if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
 								const pending = current.assignments.some((assignment) => assignment.lion_run_id
-									&& !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status)
+									&& !isTerminalAssignmentStatus(assignment.status)
 									&& !settledRunRefs.has(lionRunRefKey(assignment.lion_run_id, assignment.lion_run_incarnation_id)));
 								return pending ? undefined : l.cancel(initial.id);
 							});

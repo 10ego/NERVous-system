@@ -59,18 +59,18 @@ describe("CerebelLedger", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
 		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] });
-		assert.doesNotThrow(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] }));
-		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-002" }] }), /cannot replace LION link/);
+		assert.doesNotThrow(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] }));
+		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-002", lion_run_incarnation_id: "inc-002" }] }), /cannot replace LION provenance/);
 		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
 	});
 
 	it("persists immutable LION incarnations and rejects same-id replacement links", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
-		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] }), /requires lion_run_incarnation_id/);
+		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] }), /requires both lion_run_id and lion_run_incarnation_id/);
 		const linked = l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-original" }] });
 		assert.equal(linked.assignments[0]?.lion_run_incarnation_id, "inc-original");
-		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-replacement" }] }), /cannot replace LION incarnation/);
+		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-replacement" }] }), /cannot replace LION provenance/);
 		const stale = l.recordIfOwned(w.id, "run-001", "inc-replacement", {
 			assignment_id: "assign-001",
 			lion_run_id: "run-001",
@@ -79,6 +79,31 @@ describe("CerebelLedger", () => {
 		});
 		assert.equal(stale.committed, false);
 		assert.equal(stale.assignment.status, "dispatched");
+	});
+
+	it("never backfills or replaces existing LION provenance when recording", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-original", lion_run_incarnation_id: "inc-original" }] });
+		assert.throws(() => l.record(w.id, {
+			assignment_id: "assign-001",
+			lion_run_id: "run-replacement",
+			lion_run_incarnation_id: "inc-replacement",
+			outcome: "completed",
+		}), /cannot replace LION provenance/);
+		const current = l.get(w.id)?.assignments[0];
+		assert.equal(current?.lion_run_id, "run-original");
+		assert.equal(current?.lion_run_incarnation_id, "inc-original");
+		assert.equal(current?.status, "dispatched");
+	});
+
+	it("rejects persisted linked assignments without an exact incarnation instead of backfilling", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		const raw = l.toJSON() as any;
+		raw.waves[w.id].assignments[0].lion_run_id = "run-legacy";
+		raw.waves[w.id].assignments[0].lion_run_incarnation_id = null;
+		assert.throws(() => CerebelLedger.fromJSON(raw), /delete\/reset this clean-slate record/);
 	});
 
 	it("requires an exact assignment id for guarded records", () => {
@@ -130,7 +155,7 @@ describe("CerebelLedger", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
 		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] });
-		l.record(w.id, { assignment_id: "assign-001", lion_run_id: "run-001", outcome: "completed", summary: "done" });
+		l.record(w.id, { assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001", outcome: "completed", summary: "done" });
 		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-002" }] }), CerebelError);
 		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
 	});
@@ -149,7 +174,7 @@ describe("CerebelLedger", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
 		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] });
-		const r = l.record(w.id, { assignment_id: "assign-001", lion_run_id: "run-001", outcome: "completed", summary: "done", changed_files: ["a.ts"], tests_run: ["npm test"] });
+		const r = l.record(w.id, { assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001", outcome: "completed", summary: "done", changed_files: ["a.ts"], tests_run: ["npm test"] });
 		assert.equal(r.status, "completed");
 		assert.equal(r.decision?.decision, "complete");
 		assert.deepEqual(r.assignments[0]?.changed_files, ["a.ts"]);

@@ -33,7 +33,7 @@ export interface AxonTaskBrief {
 	assigned_to?: string | null;
 }
 
-export interface Assignment {
+interface AssignmentFields {
 	id: string;
 	task_id: string | null;
 	agent_id: string;
@@ -44,9 +44,6 @@ export interface Assignment {
 	/** Optional GANGLION allocation lease that should be released when this assignment reaches a terminal outcome. */
 	ganglion_id?: string | null;
 	ganglion_allocation_id?: string | null;
-	lion_run_id?: string | null;
-	/** Immutable LION execution generation paired with lion_run_id. Null means a legacy/unverifiable link. */
-	lion_run_incarnation_id?: string | null;
 	outcome_summary?: string | null;
 	changed_files: string[];
 	tests_run: string[];
@@ -55,6 +52,12 @@ export interface Assignment {
 	created_at: string;
 	updated_at: string;
 }
+
+/** An assignment is either unlinked or linked to one exact immutable LION execution. */
+export type Assignment = AssignmentFields & (
+	| { lion_run_id?: null; lion_run_incarnation_id?: null }
+	| { lion_run_id: string; lion_run_incarnation_id: string }
+);
 
 export interface Wave {
 	id: string;

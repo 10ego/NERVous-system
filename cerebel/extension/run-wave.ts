@@ -3,7 +3,15 @@
 import type { LionProgressSnapshot, LionReport, LionRun } from "../../lion/extension/schema.ts";
 import type { Assignment, AssignmentStatus, Wave } from "./schema.ts";
 import { CerebelStore } from "./backend.ts";
-import type { RecordInput } from "./store.ts";
+import { isTerminalAssignmentStatus, type RecordInput } from "./store.ts";
+
+type ExactLionRun = LionRun & { incarnation_id: string };
+
+function requireExactLionRun(run: LionRun): asserts run is ExactLionRun {
+	if (typeof run.incarnation_id !== "string" || !run.incarnation_id.trim()) {
+		throw new Error(`LION run ${run.id} did not provide a non-empty incarnation_id`);
+	}
+}
 
 export interface RunWaveLionAdapter {
 	createRun(assignment: Assignment): Promise<LionRun>;
@@ -23,7 +31,7 @@ export interface RunWaveOptions {
 export interface RunWaveAssignmentResult {
 	assignment_id: string;
 	lion_run_id?: string;
-	lion_run_incarnation_id?: string | null;
+	lion_run_incarnation_id?: string;
 	outcome: AssignmentStatus | "skipped";
 	summary: string;
 	blockers: string[];
@@ -126,11 +134,12 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 		await releaseReservations(store, waveId, [assignment], "host aborted before LION creation");
 		return { assignment_id: assignment.id, outcome: "skipped", summary: "host aborted before LION creation", blockers: [] };
 	}
-	let run: LionRun | undefined;
+	let run: ExactLionRun | undefined;
 	let linkedAssignment: Assignment | undefined;
 	let abortCleanupAttempted = false;
 	try {
 		const createdRun = await adapter.createRun(assignment);
+		requireExactLionRun(createdRun);
 		run = createdRun;
 		if (signal?.aborted) {
 			abortCleanupAttempted = true;
@@ -167,13 +176,13 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 	return runOne(store, adapter, waveId, linkedAssignment, run, signal);
 }
 
-async function recoverSetupFailure(store: CerebelStore, waveId: string, assignment: Assignment, run: LionRun | undefined, summary: string, message: string): Promise<{ superseded: boolean; assignment: Assignment }> {
+async function recoverSetupFailure(store: CerebelStore, waveId: string, assignment: Assignment, run: ExactLionRun | undefined, summary: string, message: string): Promise<{ superseded: boolean; assignment: Assignment }> {
 	const { result } = await store.mutate((ledger) => {
 		const current = ledger.get(waveId)?.assignments.find((a) => a.id === assignment.id);
 		if (!current) throw new Error(`assignment ${assignment.id} not found in wave ${waveId} during LION setup recovery`);
 		const ownedByOtherRun = Boolean(current.lion_run_id && (current.lion_run_id !== run?.id
 			|| (current.lion_run_incarnation_id ?? null) !== (run?.incarnation_id ?? null)));
-		const terminal = ["completed", "partial", "blocked", "failed", "cancelled"].includes(current.status);
+		const terminal = isTerminalAssignmentStatus(current.status);
 		if (ownedByOtherRun || terminal) return { superseded: true, assignment: current };
 		const wave = ledger.record(waveId, {
 			assignment_id: assignment.id,
@@ -190,7 +199,7 @@ async function recoverSetupFailure(store: CerebelStore, waveId: string, assignme
 	return result;
 }
 
-async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
+async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: ExactLionRun, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
 	if (signal?.aborted) return recordWorkerError(store, adapter, waveId, assignment, run, new Error("Host aborted before LION launch"), signal);
 	const progress = createProgressUpdater((snapshot) => adapter.updateProgress?.(run.id, snapshot) ?? Promise.resolve());
 	let out: { text: string; report: LionReport | null };
@@ -232,7 +241,7 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 	});
 }
 
-async function recordWorkerError(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: LionRun, err: unknown, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
+async function recordWorkerError(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: ExactLionRun, err: unknown, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
 	const message = err instanceof Error ? err.message : String(err);
 	const current = await adapter.getRun?.(run.id).catch(() => undefined);
 	const durableCancellation = Boolean(current?.control?.cancel_requested_at);
@@ -258,9 +267,8 @@ async function recordWorkerError(store: CerebelStore, adapter: RunWaveLionAdapte
 	});
 }
 
-async function recordOwnedResult(store: CerebelStore, waveId: string, assignment: Assignment, run: LionRun, input: RecordInput & { assignment_id: string }): Promise<RunWaveAssignmentResult> {
-	const incarnationId = run.incarnation_id ?? null;
-	const { result } = await store.mutate((ledger) => ledger.recordIfOwned(waveId, run.id, incarnationId, input));
+async function recordOwnedResult(store: CerebelStore, waveId: string, assignment: Assignment, run: ExactLionRun, input: RecordInput & { assignment_id: string }): Promise<RunWaveAssignmentResult> {
+	const { result } = await store.mutate((ledger) => ledger.recordIfOwned(waveId, run.id, run.incarnation_id, input));
 	if (!result.committed) return supersededResult(assignment, run, result.assignment, input.summary ?? "LION run result not recorded");
 	return {
 		assignment_id: assignment.id,
@@ -272,11 +280,11 @@ async function recordOwnedResult(store: CerebelStore, waveId: string, assignment
 	};
 }
 
-function supersededResult(assignment: Assignment, run: Pick<LionRun, "id" | "incarnation_id"> | undefined, current: Assignment, localSummary: string): RunWaveAssignmentResult {
+function supersededResult(assignment: Assignment, run: Pick<ExactLionRun, "id" | "incarnation_id"> | undefined, current: Assignment, localSummary: string): RunWaveAssignmentResult {
 	const differentOwner = current.lion_run_id && (current.lion_run_id !== run?.id
 		|| (current.lion_run_incarnation_id ?? null) !== (run?.incarnation_id ?? null));
 	const reason = differentOwner
-		? `assignment is owned by ${current.lion_run_id}/${current.lion_run_incarnation_id ?? "legacy"}`
+		? `assignment is owned by ${current.lion_run_id}/${current.lion_run_incarnation_id}`
 		: `assignment is already ${current.status}`;
 	return {
 		assignment_id: assignment.id,
