@@ -13,6 +13,7 @@ import {
 	getActiveRunIds,
 	markActiveRunControlClosed,
 	replayPendingCancellation,
+	requestRunCancellation,
 } from "../extension/active-runs.ts";
 
 async function makeStore(label: string): Promise<LionStore> {
@@ -77,6 +78,33 @@ describe("namespace-scoped active LION ownership", () => {
 		assert.deepEqual(stale, { delivered: false, reason: "owner_replaced", pid: 202, pgid: null });
 		assert.equal(replacementSignals, 0);
 		finishActiveRun(replacement);
+	});
+
+	it("treats an explicit null legacy incarnation as exact rather than a wildcard", async () => {
+		const store = await makeStore("legacy-null");
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: "run-001", incarnationId: "replacement-incarnation" }, "json");
+		let signals = 0;
+		attachActiveRunProcess(owner, { pid: 305, pgid: null, isAlive: () => true, cancel: () => { signals++; return true; } });
+		const result = await cancelActiveRun({ namespaceId: store.namespaceId, runId: "run-001", incarnationId: null });
+		assert.equal(result.delivered, false);
+		if (!result.delivered) assert.equal(result.reason, "owner_replaced");
+		assert.equal(signals, 0);
+		finishActiveRun(owner);
+	});
+
+	it("treats missing and replacement cancellation targets as settled supersession", async () => {
+		const store = await makeStore("missing-target");
+		const missing = await requestRunCancellation(store, "run-001", "stale wave", { expectedIncarnationId: "old-incarnation" });
+		assert.equal(missing.settled, true);
+		assert.equal(missing.superseded, true);
+		assert.equal(missing.run, undefined);
+
+		const replacement = (await store.mutate((l) => l.create({ objective: "replacement" }))).result;
+		const mismatched = await requestRunCancellation(store, replacement.id, "stale wave", { expectedIncarnationId: "old-incarnation" });
+		assert.equal(mismatched.settled, true);
+		assert.equal(mismatched.superseded, true);
+		assert.equal(mismatched.run?.incarnation_id, replacement.incarnation_id);
+		assert.equal(mismatched.run?.control?.cancel_requested_at, undefined);
 	});
 
 	it("retains cancellation authority after RPC control closes but before process exit", async () => {

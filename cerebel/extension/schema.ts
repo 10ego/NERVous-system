@@ -45,6 +45,8 @@ export interface Assignment {
 	ganglion_id?: string | null;
 	ganglion_allocation_id?: string | null;
 	lion_run_id?: string | null;
+	/** Immutable LION execution generation paired with lion_run_id. Null means a legacy/unverifiable link. */
+	lion_run_incarnation_id?: string | null;
 	outcome_summary?: string | null;
 	changed_files: string[];
 	tests_run: string[];
@@ -119,6 +121,7 @@ const AssignmentInputSchema = Type.Object({
 const DispatchLinkSchema = Type.Object({
 	assignment_id: Type.String(),
 	lion_run_id: Type.Optional(Type.String()),
+	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable incarnation id returned by the linked LION run." })),
 	ganglion_id: Type.Optional(Type.String({ description: "GANGLION id that owns this capacity lease." })),
 	ganglion_allocation_id: Type.Optional(Type.String({ description: "GANGLION allocation id to record/release when this assignment reaches a terminal outcome." })),
 });
@@ -138,6 +141,7 @@ export const CerebelToolParams = Type.Object({
 	assignment_id: Type.Optional(Type.String({ description: "Assignment id to record." })),
 	task_id: Type.Optional(Type.String({ description: "AXON task id to record if assignment_id omitted." })),
 	lion_run_id: Type.Optional(Type.String({ description: "LION run id that handled the assignment." })),
+	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable incarnation id of the LION run that handled the assignment." })),
 	ganglion_id: Type.Optional(Type.String({ description: "GANGLION id for a linked capacity lease if not already stored on the assignment." })),
 	ganglion_allocation_id: Type.Optional(Type.String({ description: "GANGLION allocation id to record/release for this terminal assignment if not already stored on the assignment." })),
 	outcome: Type.Optional(ASSIGNMENT_STATUS_SCHEMA),

@@ -32,7 +32,7 @@ export interface LionProcessInfo {
 }
 
 export interface LionRunRequest {
-	run: Pick<LionRun, "id" | "agent_id" | "task_id" | "objective" | "context" | "model" | "tools" | "steering_messages">;
+	run: Pick<LionRun, "id" | "incarnation_id" | "agent_id" | "task_id" | "objective" | "context" | "model" | "tools" | "steering_messages">;
 	signal?: AbortSignal;
 	timeout_ms?: number;
 	/** Opt in to raw assistant text tails in progress snapshots. Default false/redacted. */

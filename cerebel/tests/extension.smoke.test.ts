@@ -139,6 +139,37 @@ describe("cerebel extension factory", () => {
 		}
 	});
 
+	it("never cancels a replacement LION incarnation through a stale wave link", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-stale-incarnation-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const lionStore = LionStore.fromCwd(dir);
+			const original = (await lionStore.mutate((l) => l.create({ objective: "original" }))).result;
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((t) => t.name === "cerebel");
+			const ctx = { cwd: dir };
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [{ agent_id: "lion-a", objective: "A" }] }, undefined, undefined, ctx);
+			await cerebel.execute("dispatch", { action: "dispatch", links: [{ assignment_id: "assign-001", lion_run_id: original.id, lion_run_incarnation_id: original.incarnation_id }] }, undefined, undefined, ctx);
+			await lionStore.mutate((l) => { l.finish(original.id, { output: "", report: null, status: "failed", error: "done" }); l.delete(original.id); });
+			const replacement = (await lionStore.mutate((l) => l.create({ objective: "replacement" }))).result;
+			let replacementSignals = 0;
+			const owner = beginActiveRun({ namespaceId: lionStore.namespaceId, runId: replacement.id, incarnationId: replacement.incarnation_id }, "json");
+			attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => { replacementSignals++; return true; } });
+			const cancelled = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, ctx);
+			assert.equal(cancelled.isError, undefined);
+			assert.equal(replacementSignals, 0);
+			assert.equal((await lionStore.query((l) => l.get(replacement.id))).result?.control?.cancel_requested_at, undefined);
+			finishActiveRun(owner);
+		} finally {
+			clearActiveRunsForTests();
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
+	});
+
 	it("releases linked GANGLION capacity when cancelling a wave", async () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-cancel-ganglion-"));
@@ -151,10 +182,10 @@ describe("cerebel extension factory", () => {
 			const cerebel = tools.find((t) => t.name === "cerebel");
 			const ctx = { cwd: dir };
 			await cerebel.execute("plan", { action: "plan_wave", assignments: [{ task_id: "task-api", agent_id: "lion-api", objective: "API", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] }, undefined, undefined, ctx);
-			await cerebel.execute("dispatch", { action: "dispatch", links: [{ assignment_id: "assign-001", lion_run_id: "run-001" }] }, undefined, undefined, ctx);
 			const lionStore = LionStore.fromCwd(dir);
 			const lionRun = (await lionStore.mutate((l) => l.create({ objective: "active API work" }))).result;
 			assert.equal(lionRun.id, "run-001");
+			await cerebel.execute("dispatch", { action: "dispatch", links: [{ assignment_id: "assign-001", lion_run_id: lionRun.id, lion_run_incarnation_id: lionRun.incarnation_id }] }, undefined, undefined, ctx);
 			const owner = beginActiveRun({ namespaceId: lionStore.namespaceId, runId: lionRun.id, incarnationId: lionRun.incarnation_id }, "json");
 			let signalResolve!: () => void;
 			const signalReceived = new Promise<void>((resolve) => { signalResolve = resolve; });

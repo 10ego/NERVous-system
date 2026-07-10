@@ -281,6 +281,35 @@ describe("createLionRpcRunner", () => {
 		assert.deepEqual(fake.steered, []);
 	});
 
+	it("does not let an abandoned steering acknowledgement mutate a replacement incarnation", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const original = (await store.mutate((l) => l.create({ objective: "old rpc", runner_mode: "rpc" }))).result;
+		await store.mutate((l) => l.steer(original.id, "old steering", { liveDeliveryAvailable: true }));
+		let releaseSteer!: () => void;
+		let enteredSteer!: () => void;
+		const steerEntered = new Promise<void>((resolve) => { enteredSteer = resolve; });
+		const steerGate = new Promise<void>((resolve) => { releaseSteer = resolve; });
+		fake.steer = async () => { enteredSteer(); await steerGate; };
+		const controller = new AbortController();
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, pollIntervalMs: 5, clientFactory: () => fake });
+		const running = runner({ run: original, signal: controller.signal, timeout_ms: 1000 });
+		await steerEntered;
+		controller.abort();
+		await assert.rejects(() => running, /aborted/);
+		await store.mutate((l) => {
+			l.finish(original.id, { output: "", report: null, status: "aborted", error: "cancelled" });
+			l.delete(original.id);
+		});
+		const replacement = (await store.mutate((l) => l.create({ objective: "new rpc", runner_mode: "rpc" }))).result;
+		await store.mutate((l) => l.steer(replacement.id, "new steering", { liveDeliveryAvailable: true }));
+		releaseSteer();
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		const current = (await store.query((l) => l.get(replacement.id))).result!;
+		assert.notEqual(replacement.incarnation_id, original.incarnation_id);
+		assert.equal(current.steering_messages?.[0]?.status, "pending_delivery");
+	});
+
 	it("fails steering that arrives after RPC idle closes", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();

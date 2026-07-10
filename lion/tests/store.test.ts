@@ -150,6 +150,21 @@ describe("LionLedger", () => {
 		assert.equal(rejected.message.status, "rejected_running");
 	});
 
+	it("fences delayed steering writes by immutable run incarnation", () => {
+		const l = new LionLedger();
+		const original = l.create({ objective: "original", runner_mode: "rpc" });
+		const originalMessage = l.steer(original.id, "old message", { liveDeliveryAvailable: true }).message;
+		l.reservePendingSteeringIfCurrent(original.id, original.incarnation_id);
+		l.finish(original.id, { output: "done", report: null, status: "failed", error: "done" });
+		l.delete(original.id);
+		const replacement = l.create({ objective: "replacement", runner_mode: "rpc" });
+		const replacementMessage = l.steer(replacement.id, "new message", { liveDeliveryAvailable: true }).message;
+		assert.equal(replacementMessage.id, originalMessage.id);
+		const stale = l.markSteeringDeliveredIfCurrent(original.id, original.incarnation_id, originalMessage.id);
+		assert.equal(stale.committed, false);
+		assert.equal(l.get(replacement.id)?.steering_messages?.[0]?.status, "pending_delivery");
+	});
+
 	it("tracks rpc live steering delivery states", () => {
 		const l = new LionLedger();
 		const run = l.create({ objective: "rpc", runner_mode: "rpc" });

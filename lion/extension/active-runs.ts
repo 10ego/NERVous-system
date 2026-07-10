@@ -118,8 +118,12 @@ export function isActiveRunAttached(scope: ActiveRunScope, runnerMode?: LionRunn
 export async function cancelActiveRun(scope: ActiveRunScope | ActiveRunOwner, signal: ActiveCancelSignal = "SIGTERM"): Promise<ActiveCancelResult> {
 	const entry = activeRuns.get(scopeKey(scope));
 	if (!entry) return { delivered: false, reason: "not_attached" };
-	if ((scope.incarnationId ?? null) !== null && (entry.incarnationId ?? null) !== (scope.incarnationId ?? null)) return { delivered: false, reason: "owner_replaced", pid: entry.pid, pgid: entry.pgid };
-	if ("ownerId" in scope && entry.ownerId !== scope.ownerId) return { delivered: false, reason: "owner_replaced", pid: entry.pid, pgid: entry.pgid };
+	const ownerScoped = "ownerId" in scope;
+	if (ownerScoped && entry.ownerId !== scope.ownerId) return { delivered: false, reason: "owner_replaced", pid: entry.pid, pgid: entry.pgid };
+	const hasIncarnation = Object.prototype.hasOwnProperty.call(scope, "incarnationId");
+	if ((!ownerScoped && !hasIncarnation) || (hasIncarnation && (entry.incarnationId ?? null) !== (scope.incarnationId ?? null))) {
+		return { delivered: false, reason: "owner_replaced", pid: entry.pid, pgid: entry.pgid };
+	}
 	const delivered = entry.cancelDelivered.get(signal);
 	if (delivered) return delivered;
 	const inFlight = entry.cancelInFlight.get(signal);
@@ -167,9 +171,12 @@ export async function replayPendingCancellation(owner: ActiveRunOwner, store: {
 	if (!current?.control?.cancel_requested_at) return null;
 	if (current.control.cancel_delivery_status === "delivered" || current.control.cancel_delivery_status === "not_needed") return null;
 	const result = await cancelActiveRunWithEscalation(owner, "SIGTERM", escalationDelayMs);
-	await store.mutate((ledger) => isActiveRunOwner(owner)
-		? ledger.markCancelDeliveryIfCurrent(owner.runId, owner.incarnationId, result.delivered ? "delivered" : result.reason).run
-		: ledger.get(owner.runId));
+	await store.mutate((ledger) => {
+		const current = ledger.get(owner.runId);
+		return isActiveRunOwner(owner) && current
+			? ledger.markCancelDeliveryIfCurrent(owner.runId, owner.incarnationId, result.delivered ? "delivered" : result.reason).run
+			: current;
+	});
 	return result;
 }
 
@@ -186,14 +193,33 @@ export interface RunCancellationResult {
 	delivery?: ActiveCancelResult;
 }
 
-export async function requestRunCancellation(store: LionControlStore, runId: string, reason?: string | null): Promise<RunCancellationResult> {
-	const requested = (await store.mutate((ledger) => ledger.requestCancel(runId, reason))).result;
+export async function requestRunCancellation(
+	store: LionControlStore,
+	runId: string,
+	reason?: string | null,
+	options: { expectedIncarnationId?: string | null } = {},
+): Promise<RunCancellationResult> {
+	const expectedProvided = Object.prototype.hasOwnProperty.call(options, "expectedIncarnationId");
+	const admission = (await store.mutate((ledger) => {
+		const current = ledger.get(runId);
+		if (!current) return { kind: "missing" as const };
+		if (expectedProvided && (current.incarnation_id ?? null) !== (options.expectedIncarnationId ?? null)) {
+			return { kind: "superseded" as const, run: current };
+		}
+		return { kind: "requested" as const, requested: ledger.requestCancel(runId, reason) };
+	})).result;
+	if (admission.kind === "missing") return { run: undefined, settled: true, superseded: true };
+	if (admission.kind === "superseded") return { run: admission.run, settled: true, superseded: true };
+	const requested = admission.requested;
 	if (requested.already_terminal || !requested.signal) return { run: requested.run, settled: true, superseded: false };
 	const scope: ActiveRunScope = { namespaceId: store.namespaceId, runId, incarnationId: requested.run.incarnation_id ?? null };
 	const delivery = await cancelActiveRunWithEscalation(scope, requested.signal);
 	const status = delivery.delivered ? "delivered" : delivery.reason;
-	const persisted = (await store.mutate((ledger) => ledger.markCancelDeliveryIfCurrent(runId, requested.run.incarnation_id, status))).result;
-	return { run: persisted.run, settled: false, superseded: !persisted.committed, delivery };
+	const persisted = (await store.mutate((ledger) => {
+		const current = ledger.get(runId);
+		return current ? ledger.markCancelDeliveryIfCurrent(runId, requested.run.incarnation_id, status) : { run: undefined, committed: false };
+	})).result;
+	return { run: persisted.run, settled: !persisted.run, superseded: !persisted.committed, delivery };
 }
 
 export async function waitForRunSettlement(store: LionControlStore, run: Pick<LionRun, "id" | "incarnation_id">, timeoutMs = 15_000, pollMs = 25): Promise<RunCancellationResult> {

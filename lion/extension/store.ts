@@ -294,6 +294,11 @@ export class LionLedger {
 		return r.status === "running" && r.runner_mode === "rpc" && (r.steering_messages ?? []).some((msg) => msg.status === "pending_delivery");
 	}
 
+	hasPendingSteeringIfCurrent(id: string, incarnationId: string | null | undefined): boolean {
+		const r = this.runsById.get(id);
+		return Boolean(r && (r.incarnation_id ?? null) === (incarnationId ?? null) && r.status === "running" && r.runner_mode === "rpc" && (r.steering_messages ?? []).some((msg) => msg.status === "pending_delivery"));
+	}
+
 	reservePendingSteering(id: string, limit = 10): LionSteeringMessage[] {
 		const r = this.require(id);
 		if (r.status !== "running" || r.runner_mode !== "rpc") return [];
@@ -311,6 +316,12 @@ export class LionLedger {
 		return out;
 	}
 
+	reservePendingSteeringIfCurrent(id: string, incarnationId: string | null | undefined, limit = 10): LionSteeringMessage[] {
+		const r = this.runsById.get(id);
+		if (!r || (r.incarnation_id ?? null) !== (incarnationId ?? null)) return [];
+		return this.reservePendingSteering(id, limit);
+	}
+
 	markSteeringDelivered(id: string, steeringId: string): LionRun {
 		const r = this.require(id);
 		const msg = this.requireSteering(r, steeringId);
@@ -320,6 +331,12 @@ export class LionLedger {
 		msg.reason = "delivered via RPC steer";
 		r.updated_at = ts;
 		return clone(r);
+	}
+
+	markSteeringDeliveredIfCurrent(id: string, incarnationId: string | null | undefined, steeringId: string): { run: LionRun | undefined; committed: boolean } {
+		const r = this.runsById.get(id);
+		if (!r || (r.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: r ? clone(r) : undefined, committed: false };
+		return { run: this.markSteeringDelivered(id, steeringId), committed: true };
 	}
 
 	markSteeringFailed(id: string, steeringId: string, reason: string): LionRun {
@@ -333,11 +350,23 @@ export class LionLedger {
 		return clone(r);
 	}
 
+	markSteeringFailedIfCurrent(id: string, incarnationId: string | null | undefined, steeringId: string, reason: string): { run: LionRun | undefined; committed: boolean } {
+		const r = this.runsById.get(id);
+		if (!r || (r.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: r ? clone(r) : undefined, committed: false };
+		return { run: this.markSteeringFailed(id, steeringId, reason), committed: true };
+	}
+
 	failOpenSteering(id: string, reason: string): LionRun {
 		const r = this.require(id);
 		const ts = now();
 		if (this.failOpenSteeringForRun(r, reason, ts)) r.updated_at = ts;
 		return clone(r);
+	}
+
+	failOpenSteeringIfCurrent(id: string, incarnationId: string | null | undefined, reason: string): { run: LionRun | undefined; committed: boolean } {
+		const r = this.runsById.get(id);
+		if (!r || (r.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: r ? clone(r) : undefined, committed: false };
+		return { run: this.failOpenSteering(id, reason), committed: true };
 	}
 
 	reconcileControls(isAlive: (pid: number) => boolean, options: ReconcileControlsOptions = {}): LionRun[] {

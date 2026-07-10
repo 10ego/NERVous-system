@@ -64,6 +64,22 @@ describe("CerebelLedger", () => {
 		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
 	});
 
+	it("persists immutable LION incarnations and rejects same-id replacement links", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		const linked = l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-original" }] });
+		assert.equal(linked.assignments[0]?.lion_run_incarnation_id, "inc-original");
+		assert.throws(() => l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-replacement" }] }), /cannot replace LION incarnation/);
+		const stale = l.recordIfOwned(w.id, "run-001", "inc-replacement", {
+			assignment_id: "assign-001",
+			lion_run_id: "run-001",
+			lion_run_incarnation_id: "inc-replacement",
+			outcome: "completed",
+		});
+		assert.equal(stale.committed, false);
+		assert.equal(stale.assignment.status, "dispatched");
+	});
+
 	it("requires an exact assignment id for guarded records", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-shared", title: "A" }, { id: "task-shared", title: "B" }] });
@@ -71,7 +87,7 @@ describe("CerebelLedger", () => {
 			{ assignment_id: "assign-001", lion_run_id: "run-foreign" },
 			{ assignment_id: "assign-002", lion_run_id: "run-local" },
 		] });
-		assert.throws(() => l.recordIfOwned(w.id, "run-local", {
+		assert.throws(() => l.recordIfOwned(w.id, "run-local", null, {
 			task_id: "task-shared",
 			lion_run_id: "run-local",
 			outcome: "completed",
@@ -84,7 +100,7 @@ describe("CerebelLedger", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
 		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-local" }] });
-		assert.throws(() => l.recordIfOwned(w.id, "run-local", {
+		assert.throws(() => l.recordIfOwned(w.id, "run-local", null, {
 			assignment_id: "assign-001",
 			lion_run_id: "run-foreign",
 			outcome: "completed",
@@ -98,7 +114,7 @@ describe("CerebelLedger", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
 		l.dispatch(w.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-foreign" }] });
-		const result = l.recordIfOwned(w.id, "run-local", {
+		const result = l.recordIfOwned(w.id, "run-local", null, {
 			assignment_id: "assign-001",
 			lion_run_id: "run-local",
 			outcome: "completed",

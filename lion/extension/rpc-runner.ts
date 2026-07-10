@@ -266,6 +266,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		}
 		childExited = true;
 	};
+	const runIncarnation = req.run.incarnation_id ?? null;
 	const progressState = createLionProgressState({ includeText: req.include_progress_text ?? false });
 	const closeSteeringChannel = () => {
 		if (!channelOpen) return;
@@ -276,7 +277,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	};
 	const failReserved = async (messages: Array<{ id: string }>, reason: string) => {
 		for (const msg of messages) {
-			await opts.store.mutate((l) => l.markSteeringFailed(req.run.id, msg.id, reason)).catch(() => undefined);
+			await opts.store.mutate((l) => l.markSteeringFailedIfCurrent(req.run.id, runIncarnation, msg.id, reason)).catch(() => undefined);
 		}
 	};
 
@@ -286,25 +287,25 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		deliveryPromise = (async () => {
 			const activeClient = client;
 			if (!activeClient) return false;
-			const { result: hasPending } = await opts.store.query((l) => l.hasPendingSteering(req.run.id));
+			const { result: hasPending } = await opts.store.query((l) => l.hasPendingSteeringIfCurrent(req.run.id, runIncarnation));
 			if (!channelOpen || !hasPending) return false;
-			const { result: messages } = await opts.store.mutate((l) => l.reservePendingSteering(req.run.id));
+			const { result: messages } = await opts.store.mutate((l) => l.reservePendingSteeringIfCurrent(req.run.id, runIncarnation));
 			if (!channelOpen) {
 				await failReserved(messages, "RPC steering channel closed before delivery");
 				return false;
 			}
 			for (const msg of messages) {
 				if (!channelOpen) {
-					await opts.store.mutate((l) => l.markSteeringFailed(req.run.id, msg.id, "RPC steering channel closed before delivery")).catch(() => undefined);
+					await opts.store.mutate((l) => l.markSteeringFailedIfCurrent(req.run.id, runIncarnation, msg.id, "RPC steering channel closed before delivery")).catch(() => undefined);
 					continue;
 				}
 				try {
 					// No await may occur between this final gate check and issuing steer().
 					const steering = activeClient.steer(msg.message);
 					await steering;
-					await opts.store.mutate((l) => l.markSteeringDelivered(req.run.id, msg.id));
+					await opts.store.mutate((l) => l.markSteeringDeliveredIfCurrent(req.run.id, runIncarnation, msg.id));
 				} catch (err) {
-					await opts.store.mutate((l) => l.markSteeringFailed(req.run.id, msg.id, `RPC steer failed: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
+					await opts.store.mutate((l) => l.markSteeringFailedIfCurrent(req.run.id, runIncarnation, msg.id, `RPC steer failed: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
 				}
 			}
 			return messages.length > 0;
@@ -388,7 +389,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		closeSteeringChannel();
 		await steeringClosedHook;
 		await waitForInFlightDelivery();
-		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, "run finished before pending steering could be delivered"));
+		await opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, "run finished before pending steering could be delivered"));
 		const text = (await activeClient.getLastAssistantText()) ?? "";
 		const report: LionReport | null = parseLionReport(text);
 		return { text, report };
@@ -396,7 +397,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		primaryError = err;
 		closeSteeringChannel();
 		await steeringClosedHook.catch(() => undefined);
-		await opts.store.mutate((l) => l.failOpenSteering(req.run.id, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
+		await opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)).catch(() => undefined);
 		throw err;
 	} finally {
 		deadline.dispose();

@@ -73,7 +73,9 @@ function resolveRunnerMode(input?: string): LionRunnerMode {
 function isTerminalAssignment(status: AssignmentStatus): boolean { return ["completed", "partial", "blocked", "failed", "cancelled"].includes(status); }
 function ganglionStatusFromAssignment(status: AssignmentStatus): "completed" | "blocked" | "failed" | "cancelled" { return status === "blocked" ? "blocked" : status === "failed" ? "failed" : status === "cancelled" ? "cancelled" : "completed"; }
 function findRecordedAssignment(wave: Wave, p: CerebelToolInput): Assignment | undefined {
-	return wave.assignments.find((a) => (p.assignment_id && a.id === p.assignment_id) || (p.task_id && a.task_id === p.task_id) || (p.lion_run_id && a.lion_run_id === p.lion_run_id));
+	return wave.assignments.find((a) => (p.assignment_id && a.id === p.assignment_id)
+		|| (p.task_id && a.task_id === p.task_id)
+		|| (p.lion_run_id && a.lion_run_id === p.lion_run_id && (!p.lion_run_incarnation_id || a.lion_run_incarnation_id === p.lion_run_incarnation_id)));
 }
 async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefined, p: CerebelToolInput, outcome: AssignmentStatus): Promise<string | null> {
 	if (!assignment || !isTerminalAssignment(outcome)) return null;
@@ -96,7 +98,7 @@ async function recordRunWaveGanglion(cwd: string, result: RunWaveResult): Promis
 		if (assignmentResult.outcome === "skipped") continue;
 		const assignment = result.wave.assignments.find((candidate) => candidate.id === assignmentResult.assignment_id);
 		if (!assignment) continue;
-		const message = await recordLinkedGanglion(cwd, assignment, { action: "record", lion_run_id: assignmentResult.lion_run_id, summary: assignmentResult.summary } as CerebelToolInput, assignmentResult.outcome as AssignmentStatus);
+		const message = await recordLinkedGanglion(cwd, assignment, { action: "record", lion_run_id: assignmentResult.lion_run_id, lion_run_incarnation_id: assignmentResult.lion_run_incarnation_id, summary: assignmentResult.summary } as CerebelToolInput, assignmentResult.outcome as AssignmentStatus);
 		if (message) messages.push(message);
 	}
 	return messages;
@@ -118,7 +120,10 @@ async function settleLinkedLionsBeforeCancel(cwd: string, wave: Wave, reason: st
 	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id && !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status));
 	return Promise.all(assignments.map(async (assignment): Promise<LinkedLionSettlement> => {
 		try {
-			const cancellation = await controls.requestRunCancellation(lionStore, assignment.lion_run_id!, reason);
+			if (!assignment.lion_run_incarnation_id) {
+				return { assignment, settled: false, error: `LION ${assignment.lion_run_id} link is legacy/unverifiable because it has no incarnation id` };
+			}
+			const cancellation = await controls.requestRunCancellation(lionStore, assignment.lion_run_id!, reason, { expectedIncarnationId: assignment.lion_run_incarnation_id });
 			if (!cancellation.run) return { assignment, settled: cancellation.superseded, error: cancellation.superseded ? undefined : "LION run disappeared during cancellation" };
 			const settlement = cancellation.settled
 				? cancellation
@@ -265,7 +270,7 @@ export default function (pi: ExtensionAPI) {
 					const result = await runOp(store, action, (l) => {
 						const id = waveId(l, p.wave_id);
 						if (!id) return fail(action, "record requires wave_id or current wave.");
-						const wave = l.record(id, { assignment_id: p.assignment_id, task_id: p.task_id, lion_run_id: p.lion_run_id, ganglion_id: p.ganglion_id, ganglion_allocation_id: p.ganglion_allocation_id, outcome, summary: p.summary, changed_files: p.changed_files, tests_run: p.tests_run, blockers: p.blockers, next_steps: p.next_steps });
+						const wave = l.record(id, { assignment_id: p.assignment_id, task_id: p.task_id, lion_run_id: p.lion_run_id, lion_run_incarnation_id: p.lion_run_incarnation_id, ganglion_id: p.ganglion_id, ganglion_allocation_id: p.ganglion_allocation_id, outcome, summary: p.summary, changed_files: p.changed_files, tests_run: p.tests_run, blockers: p.blockers, next_steps: p.next_steps });
 						return ok(action, `Recorded result in ${wave.id}. Decision: ${wave.decision?.decision ?? "—"}.`, { wave });
 					});
 					const assignment = result.details.wave ? findRecordedAssignment(result.details.wave, p) : undefined;
@@ -296,13 +301,13 @@ export default function (pi: ExtensionAPI) {
 						return id ? l.get(id) : undefined;
 					})).result;
 					if (!initial) return fail(action, "cancel requires wave_id or current wave.");
-					const settledRunIds = new Set<string>();
+					const settledRunRefs = new Set<string>();
 					let cancelledWave: Wave | undefined;
 					for (let pass = 0; pass < 10 && !cancelledWave; pass++) {
 						const latest = (await store.query((l) => l.get(initial.id))).result ?? initial;
 						const outstandingWave: Wave = {
 							...latest,
-							assignments: latest.assignments.filter((assignment) => assignment.lion_run_id && !settledRunIds.has(assignment.lion_run_id)),
+							assignments: latest.assignments.filter((assignment) => assignment.lion_run_id && !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`)),
 						};
 						const settlements = await settleLinkedLionsBeforeCancel(ctx.cwd, outstandingWave, p.context ?? "CEREBEL wave cancelled");
 						const failures = settlements.filter((settlement) => !settlement.settled);
@@ -310,11 +315,15 @@ export default function (pi: ExtensionAPI) {
 							const message = failures.map((failure) => `${failure.assignment.id}: ${failure.error ?? "LION did not settle"}`).join("; ");
 							return fail(action, `cerebel cancel retained wave/capacity because linked LIONs did not settle: ${message}`, { wave: latest });
 						}
-						for (const settlement of settlements) if (settlement.assignment.lion_run_id) settledRunIds.add(settlement.assignment.lion_run_id);
+						for (const settlement of settlements) if (settlement.assignment.lion_run_id) {
+							settledRunRefs.add(`${settlement.assignment.lion_run_id}\u0000${settlement.assignment.lion_run_incarnation_id ?? "legacy"}`);
+						}
 						const attempt = await store.mutate((l) => {
 							const current = l.get(initial.id);
 							if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
-							const pending = current.assignments.some((assignment) => assignment.lion_run_id && !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status) && !settledRunIds.has(assignment.lion_run_id));
+							const pending = current.assignments.some((assignment) => assignment.lion_run_id
+								&& !["completed", "partial", "blocked", "failed", "cancelled"].includes(assignment.status)
+								&& !settledRunRefs.has(`${assignment.lion_run_id}\u0000${assignment.lion_run_incarnation_id ?? "legacy"}`));
 							return pending ? undefined : l.cancel(initial.id);
 						});
 						cancelledWave = attempt.result;
@@ -323,7 +332,7 @@ export default function (pi: ExtensionAPI) {
 					const result = ok(action, `Cancelled ${cancelledWave.id}.`, { wave: cancelledWave });
 					const releaseMessages: string[] = [];
 					for (const assignment of cancelledWave.assignments.filter((candidate) => candidate.status === "cancelled")) {
-						const message = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: assignment.lion_run_id ?? undefined, summary: "CEREBEL wave cancelled" } as CerebelToolInput, "cancelled");
+						const message = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: assignment.lion_run_id ?? undefined, lion_run_incarnation_id: assignment.lion_run_incarnation_id ?? undefined, summary: "CEREBEL wave cancelled" } as CerebelToolInput, "cancelled");
 						if (message) releaseMessages.push(message);
 					}
 					if (releaseMessages.length) result.content[0]!.text += ` ${releaseMessages.join(" ")}`;

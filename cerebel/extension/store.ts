@@ -52,13 +52,14 @@ export interface PlanWaveInput {
 }
 
 export interface DispatchInput {
-	links?: Array<{ assignment_id: string; lion_run_id?: string; ganglion_id?: string | null; ganglion_allocation_id?: string | null }>;
+	links?: Array<{ assignment_id: string; lion_run_id?: string; lion_run_incarnation_id?: string | null; ganglion_id?: string | null; ganglion_allocation_id?: string | null }>;
 }
 
 export interface RecordInput {
 	assignment_id?: string;
 	task_id?: string;
 	lion_run_id?: string;
+	lion_run_incarnation_id?: string | null;
 	ganglion_id?: string | null;
 	ganglion_allocation_id?: string | null;
 	outcome: AssignmentStatus;
@@ -114,9 +115,16 @@ export class CerebelLedger {
 			const a = requireAssignment(w, link.assignment_id);
 			if (TERMINAL_ASSIGNMENT_STATUS_SET.has(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch terminal assignment ${a.id} from ${a.status}`);
 			if (!["planned", "dispatched"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch assignment ${a.id} from ${a.status}`);
+			if (link.lion_run_incarnation_id && !link.lion_run_id) throw new CerebelError("invalid_arg", `LION incarnation for ${a.id} requires lion_run_id`);
 			if (link.lion_run_id && a.lion_run_id && a.lion_run_id !== link.lion_run_id) throw new CerebelError("invalid_transition", `cannot replace LION link for ${a.id} from ${a.lion_run_id} to ${link.lion_run_id}`);
+			if (link.lion_run_id && a.lion_run_id === link.lion_run_id && a.lion_run_incarnation_id && a.lion_run_incarnation_id !== (link.lion_run_incarnation_id ?? null)) {
+				throw new CerebelError("invalid_transition", `cannot replace LION incarnation link for ${a.id}`);
+			}
 			a.status = "dispatched";
-			if (link.lion_run_id) a.lion_run_id = link.lion_run_id;
+			if (link.lion_run_id) {
+				a.lion_run_id = link.lion_run_id;
+				a.lion_run_incarnation_id = link.lion_run_incarnation_id ?? a.lion_run_incarnation_id ?? null;
+			}
 			if (link.ganglion_id) a.ganglion_id = link.ganglion_id;
 			if (link.ganglion_allocation_id) a.ganglion_allocation_id = link.ganglion_allocation_id;
 			a.updated_at = now();
@@ -140,7 +148,11 @@ export class CerebelLedger {
 		if (!a) throw new CerebelError("not_found", "assignment not found for record");
 		if (["cancelled"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot record cancelled assignment ${a.id}`);
 		a.status = input.outcome;
-		if (input.lion_run_id) a.lion_run_id = input.lion_run_id;
+		if (input.lion_run_incarnation_id && !input.lion_run_id && !a.lion_run_id) throw new CerebelError("invalid_arg", `LION incarnation for ${a.id} requires lion_run_id`);
+		if (input.lion_run_id) {
+			a.lion_run_id = input.lion_run_id;
+			a.lion_run_incarnation_id = input.lion_run_incarnation_id ?? a.lion_run_incarnation_id ?? null;
+		}
 		if (input.ganglion_id) a.ganglion_id = input.ganglion_id;
 		if (input.ganglion_allocation_id) a.ganglion_allocation_id = input.ganglion_allocation_id;
 		a.outcome_summary = input.summary ?? null;
@@ -158,18 +170,23 @@ export class CerebelLedger {
 		return clone(w);
 	}
 
-	/** Atomically records an outcome only while the assignment remains linked to the expected live LION run. */
-	recordIfOwned(waveId: string, expectedLionRunId: string, input: RecordInput & { assignment_id: string }): RecordIfOwnedResult {
+	/** Atomically records an outcome only while the assignment remains linked to the expected LION incarnation. */
+	recordIfOwned(waveId: string, expectedLionRunId: string, expectedLionIncarnationId: string | null, input: RecordInput & { assignment_id: string }): RecordIfOwnedResult {
 		if (!input.assignment_id) throw new CerebelError("invalid_arg", "guarded record requires assignment_id");
 		if (input.lion_run_id && input.lion_run_id !== expectedLionRunId) {
 			throw new CerebelError("invalid_arg", `guarded record for ${expectedLionRunId} cannot write LION link ${input.lion_run_id}`);
 		}
+		if (input.lion_run_incarnation_id !== undefined && input.lion_run_incarnation_id !== expectedLionIncarnationId) {
+			throw new CerebelError("invalid_arg", `guarded record for ${expectedLionRunId} cannot write a different LION incarnation`);
+		}
 		const wave = this.require(waveId);
 		const current = requireAssignment(wave, input.assignment_id);
-		if (TERMINAL_ASSIGNMENT_STATUS_SET.has(current.status) || current.lion_run_id !== expectedLionRunId) {
+		if (TERMINAL_ASSIGNMENT_STATUS_SET.has(current.status)
+			|| current.lion_run_id !== expectedLionRunId
+			|| (current.lion_run_incarnation_id ?? null) !== expectedLionIncarnationId) {
 			return { committed: false, wave: clone(wave), assignment: clone(current) };
 		}
-		const recorded = this.record(waveId, input);
+		const recorded = this.record(waveId, { ...input, lion_run_incarnation_id: expectedLionIncarnationId });
 		return { committed: true, wave: recorded, assignment: recorded.assignments.find((a) => a.id === current.id) ?? clone(current) };
 	}
 
@@ -334,6 +351,7 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			ganglion_id: null,
 			ganglion_allocation_id: null,
 			lion_run_id: null,
+			lion_run_incarnation_id: null,
 			outcome_summary: null,
 			changed_files: [], tests_run: [], blockers: [], next_steps: [],
 			created_at: ts, updated_at: ts,
@@ -351,6 +369,7 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			ganglion_id: a.ganglion_id ?? null,
 			ganglion_allocation_id: a.ganglion_allocation_id ?? null,
 			lion_run_id: null,
+			lion_run_incarnation_id: null,
 			outcome_summary: null,
 			changed_files: [], tests_run: [], blockers: [], next_steps: [],
 			created_at: ts, updated_at: ts,
@@ -436,6 +455,7 @@ function coerceAssignment(value: unknown): Assignment | null {
 		ganglion_id: typeof value.ganglion_id === "string" ? value.ganglion_id : null,
 		ganglion_allocation_id: typeof value.ganglion_allocation_id === "string" ? value.ganglion_allocation_id : null,
 		lion_run_id: typeof value.lion_run_id === "string" ? value.lion_run_id : null,
+		lion_run_incarnation_id: typeof value.lion_run_incarnation_id === "string" ? value.lion_run_incarnation_id : null,
 		outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null,
 		changed_files: strings(value.changed_files),
 		tests_run: strings(value.tests_run),

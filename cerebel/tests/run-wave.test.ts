@@ -24,6 +24,7 @@ function fakeAdapter(reports: Record<string, LionReport | Error>): RunWaveLionAd
 			created.push(`${assignment.id}:${id}`);
 			return {
 				id,
+				incarnation_id: `inc-${id}`,
 				agent_id: assignment.agent_id,
 				status: "running",
 				task_id: assignment.task_id,
