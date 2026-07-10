@@ -78,6 +78,19 @@ export interface LionProgressSnapshot {
 	last_event_at: string;
 }
 
+export const LION_CANCEL_DELIVERY_STATUSES = [
+	"requested",
+	"not_needed",
+	"delivered",
+	"not_attached",
+	"owner_replaced",
+	"already_exited",
+	"not_alive",
+	"no_cancel_handle",
+	"not_signaled",
+] as const;
+export type LionCancelDeliveryStatus = (typeof LION_CANCEL_DELIVERY_STATUSES)[number];
+
 export interface LionControlState {
 	pid?: number | null;
 	pgid?: number | null;
@@ -88,10 +101,9 @@ export interface LionControlState {
 	cancel_requested_at?: string | null;
 	cancel_reason?: string | null;
 	cancel_signal?: string | null;
-	cancel_delivery_status?: string | null;
+	cancel_delivery_status?: LionCancelDeliveryStatus | null;
 	cancel_delivered_at?: string | null;
 	cancel_delivery_error?: string | null;
-	exit_signal?: string | null;
 	reconciled_at?: string | null;
 }
 

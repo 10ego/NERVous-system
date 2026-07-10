@@ -36,6 +36,35 @@ function assignment(): Assignment {
 }
 
 describe("createLionAdapter", () => {
+	it("preserves adapter initialization error provenance", async () => {
+		const rootCause = new Error("invalid model configuration");
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "error-provenance",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const runner = () => async () => ({ text: "", report: null });
+		await assert.rejects(() => createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{
+				lionStore,
+				createLionRunner: runner,
+				createLionRpcRunner: runner,
+				activeRuns,
+				lifecycle,
+				options: { resolveConfiguredLionModel() { throw rootCause; }, resolveLionRunnerMode() { return "json" as const; } } as never,
+			},
+		), (error: unknown) => {
+			assert.match((error as Error).message, /adapter initialization failed: invalid model configuration/);
+			assert.equal((error as Error & { cause?: unknown }).cause, rootCause);
+			return true;
+		});
+	});
+
 	it("retains active ownership until finishRun finalizes the LION ledger", async () => {
 		activeRuns.clearActiveRunsForTests();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-lion-adapter-"));

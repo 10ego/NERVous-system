@@ -3,11 +3,27 @@
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, Text } from "@earendil-works/pi-tui";
 import type { Ganglion, GanglionStatus, GanglionSummary, MemberStatus } from "./schema.ts";
+import type { AllocationReleaseDisposition } from "./store.ts";
 
 type AnyTheme = { fg(color: string, text: string): string; bold(text: string): string };
 const G_ICON: Record<GanglionStatus, string> = { forming: "◇", active: "▶", paused: "Ⅱ", draining: "…", completed: "✓", cancelled: "⊘" };
 const G_COLOR: Record<GanglionStatus, string> = { forming: "accent", active: "success", paused: "warning", draining: "warning", completed: "success", cancelled: "muted" };
 const M_ICON: Record<MemberStatus, string> = { available: "○", busy: "●", offline: "◌", failed: "✗" };
+
+export function formatAllocationReleaseDisposition(disposition: AllocationReleaseDisposition): string {
+	switch (disposition) {
+		case "released": return "capacity released";
+		case "already_free": return "capacity was already free";
+		case "member_unavailable": return "member has no active lease but remains unavailable";
+		case "retained_by_newer_allocation": return "capacity retained by a newer allocation";
+		case "not_terminal": return "no terminal capacity release";
+		default: return assertNever(disposition);
+	}
+}
+
+function assertNever(value: never): never {
+	throw new Error(`unknown allocation release disposition: ${String(value)}`);
+}
 
 export function summarizeGanglion(g: Ganglion): string {
 	const lines = [`# ${g.id} — ${g.name}`, ""];

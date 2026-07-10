@@ -277,7 +277,7 @@ describe("cerebel extension factory", () => {
 			await lionStore.mutate((l) => l.finish(lionRun.id, { output: "", report: null, status: "aborted", error: "cancelled" }));
 			finishActiveRun(owner);
 			const cancelled = await cancelling;
-			assert.match(cancelled.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded and capacity released/);
+			assert.match(cancelled.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded; capacity released/);
 			await ganglionStore.mutate((l) => l.allocate("ganglion-001", { tasks: [{ id: "task-new", title: "New work" }] }));
 			const repeated = await cerebel.execute("cancel-again", { action: "cancel" }, undefined, undefined, ctx);
 			assert.match(repeated.content[0].text, /capacity retained by a newer allocation/);

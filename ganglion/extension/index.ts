@@ -6,7 +6,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { GanglionStore } from "./backend.ts";
 import { GanglionError, GanglionToolParams, type AllocationStatus, type Ganglion, type GanglionReconcileReport, type GanglionStatus, type GanglionSummary, type GanglionToolInput, type MemberStatus } from "./schema.ts";
 import type { GanglionRecordResult, LionRunBrief } from "./store.ts";
-import { renderGanglionCall, renderGanglionResult, summarizeGanglion, summarizeList, summarizeSummary } from "./render.ts";
+import { formatAllocationReleaseDisposition, renderGanglionCall, renderGanglionResult, summarizeGanglion, summarizeList, summarizeSummary } from "./render.ts";
 
 interface GanglionDetails { action: string; ganglion?: Ganglion; ganglions?: Ganglion[]; summary?: GanglionSummary; reconcile?: GanglionReconcileReport; record?: GanglionRecordResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: GanglionDetails; isError?: boolean };
@@ -65,11 +65,7 @@ export default function (pi: ExtensionAPI) {
 					const id = gid(l, p.ganglion_id); const status = p.allocation_status;
 					if (!id || !status) return fail(action, "record requires ganglion_id/current and allocation_status.");
 					const record = l.recordWithResult(id, { allocation_id: p.allocation_id, task_id: p.task_id, lion_run_id: p.lion_run_id, status: status as AllocationStatus, summary: p.summary });
-					const disposition = record.release_disposition === "released" ? "capacity released"
-						: record.release_disposition === "already_free" ? "capacity already free"
-						: record.release_disposition === "member_unavailable" ? "member has no active lease but remains unavailable"
-						: record.release_disposition === "retained_by_newer_allocation" ? "capacity retained by newer allocation"
-						: "no terminal capacity release";
+					const disposition = formatAllocationReleaseDisposition(record.release_disposition);
 					return ok(action, `Recorded allocation result in ${record.ganglion.id}; ${disposition}.`, { ganglion: record.ganglion, record });
 				});
 				case "release": return runOp(store, action, (l) => { const id = gid(l, p.ganglion_id); const target = p.allocation_id ?? p.member_id; if (!id || !target) return fail(action, "release requires ganglion_id/current and allocation_id or member_id."); const g = l.release(id, target); return ok(action, `Released ${target} in ${g.id}.`, { ganglion: g }); });

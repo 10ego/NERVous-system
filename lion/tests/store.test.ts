@@ -273,10 +273,12 @@ describe("LionLedger", () => {
 		assert.deepEqual(back.get(r.id)?.tools, ["read", "bash"]);
 		assert.equal(back.get(r.id)?.progress, null);
 
-		const bad = LionLedger.fromJSON({ runs: { "run-x": { status: "wat", agent_id: 123, objective: 5, progress: { event: "nope", activity: 7, active_tools: ["read", 1], tool_uses: 2.8 } } } });
+		const bad = LionLedger.fromJSON({ runs: { "run-x": { status: "wat", agent_id: 123, objective: 5, progress: { event: "nope", activity: 7, active_tools: ["read", 1], tool_uses: 2.8 }, control: { cancel_delivery_status: "typo", exit_signal: "SIGTERM" } } } });
 		assert.equal(bad.get("run-x")?.status, "failed");
 		assert.equal(bad.get("run-x")?.agent_id, "lion-unknown");
 		assert.equal(bad.get("run-x")?.progress?.event, "heartbeat");
 		assert.deepEqual(bad.get("run-x")?.progress?.active_tools, ["read"]);
+		assert.equal(bad.get("run-x")?.control?.cancel_delivery_status, null);
+		assert.equal("exit_signal" in (bad.get("run-x")?.control ?? {}), false);
 	});
 });

@@ -8,6 +8,7 @@
 
 import { randomUUID } from "node:crypto";
 import {
+	LION_CANCEL_DELIVERY_STATUSES,
 	LION_PROGRESS_EVENTS,
 	LION_RUN_STATUSES,
 	LionError,
@@ -16,6 +17,7 @@ import {
 	type LionModelRole,
 	type LionProgressEvent,
 	type LionRunnerMode,
+	type LionCancelDeliveryStatus,
 	type LionControlState,
 	type LionProgressSnapshot,
 	type LionReport,
@@ -30,6 +32,7 @@ const VERSION = 1;
 
 const STATUS_SET = new Set<string>(LION_RUN_STATUSES);
 const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
+const CANCEL_DELIVERY_STATUS_SET = new Set<string>(LION_CANCEL_DELIVERY_STATUSES);
 const STEERING_STATUS_SET = new Set<string>(LION_STEERING_STATUSES);
 const DEFAULT_RECONCILE_GRACE_MS = 30_000;
 const MAX_STEERING_MESSAGE_CHARS = 4_000;
@@ -238,7 +241,7 @@ export class LionLedger {
 		return { run: clone(r), signal: r.status === "running" ? "SIGTERM" : undefined, pid: r.control.pid ?? undefined, pgid: r.control.pgid ?? null };
 	}
 
-	markCancelDelivery(id: string, status: string, error?: string | null): LionRun {
+	markCancelDelivery(id: string, status: LionCancelDeliveryStatus, error?: string | null): LionRun {
 		const r = this.require(id);
 		if (r.control?.cancel_delivery_status === "delivered" && status !== "delivered") return clone(r);
 		const ts = now();
@@ -253,7 +256,7 @@ export class LionLedger {
 		return clone(r);
 	}
 
-	markCancelDeliveryIfCurrent(id: string, incarnationId: string | null | undefined, status: string, error?: string | null): { run: LionRun; committed: boolean } {
+	markCancelDeliveryIfCurrent(id: string, incarnationId: string | null | undefined, status: LionCancelDeliveryStatus, error?: string | null): { run: LionRun; committed: boolean } {
 		const r = this.require(id);
 		if ((r.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: clone(r), committed: false };
 		return { run: this.markCancelDelivery(id, status, error), committed: true };
@@ -673,10 +676,9 @@ function coerceControl(value: unknown): LionControlState | null {
 		cancel_requested_at: typeof value.cancel_requested_at === "string" ? value.cancel_requested_at : null,
 		cancel_reason: typeof value.cancel_reason === "string" ? value.cancel_reason : null,
 		cancel_signal: typeof value.cancel_signal === "string" ? value.cancel_signal : null,
-		cancel_delivery_status: typeof value.cancel_delivery_status === "string" ? value.cancel_delivery_status : null,
+		cancel_delivery_status: typeof value.cancel_delivery_status === "string" && CANCEL_DELIVERY_STATUS_SET.has(value.cancel_delivery_status) ? value.cancel_delivery_status as LionCancelDeliveryStatus : null,
 		cancel_delivered_at: typeof value.cancel_delivered_at === "string" ? value.cancel_delivered_at : null,
 		cancel_delivery_error: typeof value.cancel_delivery_error === "string" ? value.cancel_delivery_error : null,
-		exit_signal: typeof value.exit_signal === "string" ? value.exit_signal : null,
 		reconciled_at: typeof value.reconciled_at === "string" ? value.reconciled_at : null,
 	};
 }
