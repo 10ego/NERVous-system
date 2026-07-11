@@ -10,6 +10,7 @@ import {
 	type AxonTaskBrief,
 	type CerebelFile,
 	type CerebelSummary,
+	type CleanupPendingSettlement,
 	type DecisionReport,
 	type OrchestrationDecision,
 	type Priority,
@@ -84,6 +85,12 @@ export interface RecordIfOwnedResult {
 	committed: boolean;
 	wave: Wave;
 	assignment: Assignment;
+}
+
+export interface CleanupPendingSettlementRef {
+	wave_id: string;
+	assignment: Assignment;
+	settlement: CleanupPendingSettlement;
 }
 
 export class CerebelLedger {
@@ -184,6 +191,56 @@ export class CerebelLedger {
 		w.updated_at = now();
 		if (w.status === "completed") w.completed_at = w.updated_at;
 		return clone(w);
+	}
+
+	/** Durably marks the exact late-settlement obligation before cleanup authority is handed off. */
+	markCleanupPendingSettlementIfOwned(waveId: string, assignmentId: string, expectedLionRunId: string, expectedLionIncarnationId: string): RecordIfOwnedResult {
+		const wave = this.require(waveId);
+		const assignment = requireAssignment(wave, assignmentId);
+		const currentRef = assignmentRunRef(assignment);
+		if (isTerminalAssignmentStatus(assignment.status)
+			|| !currentRef
+			|| !sameRunRef(currentRef, { run_id: expectedLionRunId, incarnation_id: expectedLionIncarnationId })) {
+			return { committed: false, wave: clone(wave), assignment: clone(assignment) };
+		}
+		const existing = assignment.cleanup_pending_settlement;
+		if (existing && (existing.lion_run_id !== expectedLionRunId || existing.lion_run_incarnation_id !== expectedLionIncarnationId)) {
+			return { committed: false, wave: clone(wave), assignment: clone(assignment) };
+		}
+		assignment.cleanup_pending_settlement = existing ?? {
+			lion_run_id: expectedLionRunId,
+			lion_run_incarnation_id: expectedLionIncarnationId,
+			observed_at: now(),
+			ganglion_id: assignment.ganglion_id ?? null,
+			ganglion_allocation_id: assignment.ganglion_allocation_id ?? null,
+		};
+		assignment.updated_at = now();
+		wave.updated_at = assignment.updated_at;
+		return { committed: true, wave: clone(wave), assignment: clone(assignment) };
+	}
+
+	completeCleanupPendingSettlementIfOwned(waveId: string, assignmentId: string, expectedLionRunId: string, expectedLionIncarnationId: string): boolean {
+		const wave = this.require(waveId);
+		const assignment = requireAssignment(wave, assignmentId);
+		const pending = assignment.cleanup_pending_settlement;
+		if (!pending
+			|| pending.lion_run_id !== expectedLionRunId
+			|| pending.lion_run_incarnation_id !== expectedLionIncarnationId
+			|| assignment.lion_run_id !== expectedLionRunId
+			|| assignment.lion_run_incarnation_id !== expectedLionIncarnationId
+			|| !isTerminalAssignmentStatus(assignment.status)) return false;
+		assignment.cleanup_pending_settlement = null;
+		assignment.updated_at = now();
+		wave.updated_at = assignment.updated_at;
+		return true;
+	}
+
+	cleanupPendingSettlements(): CleanupPendingSettlementRef[] {
+		const out: CleanupPendingSettlementRef[] = [];
+		for (const wave of this.wavesById.values()) for (const assignment of wave.assignments) {
+			if (assignment.cleanup_pending_settlement) out.push({ wave_id: wave.id, assignment: clone(assignment), settlement: clone(assignment.cleanup_pending_settlement) });
+		}
+		return out;
 	}
 
 	/** Atomically records an outcome only while the assignment remains linked to the expected LION incarnation. */
@@ -367,6 +424,7 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			status: "planned",
 			ganglion_id: null,
 			ganglion_allocation_id: null,
+			cleanup_pending_settlement: null,
 			lion_run_id: null,
 			lion_run_incarnation_id: null,
 			outcome_summary: null,
@@ -385,6 +443,7 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			status: "planned",
 			ganglion_id: a.ganglion_id ?? null,
 			ganglion_allocation_id: a.ganglion_allocation_id ?? null,
+			cleanup_pending_settlement: null,
 			lion_run_id: null,
 			lion_run_incarnation_id: null,
 			outcome_summary: null,
@@ -511,6 +570,7 @@ function coerceAssignment(value: unknown): Assignment | null {
 		status: typeof value.status === "string" && ASSIGNMENT_STATUS_SET.has(value.status) ? (value.status as AssignmentStatus) : "failed",
 		ganglion_id: typeof value.ganglion_id === "string" ? value.ganglion_id : null,
 		ganglion_allocation_id: typeof value.ganglion_allocation_id === "string" ? value.ganglion_allocation_id : null,
+		cleanup_pending_settlement: null,
 		outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null,
 		changed_files: strings(value.changed_files),
 		tests_run: strings(value.tests_run),
@@ -525,10 +585,32 @@ function coerceAssignment(value: unknown): Assignment | null {
 		throw new CerebelError("invalid_arg", `assignment ${base.id} has invalid LION provenance; delete/reset this clean-slate record because migration and incarnation backfill are unsupported`);
 	}
 	if (!hasRunId) return { ...base, lion_run_id: null, lion_run_incarnation_id: null };
+	const lionRunId = requireNonEmpty(value.lion_run_id, `assignment ${base.id} lion_run_id`);
+	const lionIncarnationId = requireNonEmpty(value.lion_run_incarnation_id, `assignment ${base.id} lion_run_incarnation_id`);
+	const pending = coerceCleanupPendingSettlement(value.cleanup_pending_settlement);
 	return {
 		...base,
-		lion_run_id: requireNonEmpty(value.lion_run_id, `assignment ${base.id} lion_run_id`),
-		lion_run_incarnation_id: requireNonEmpty(value.lion_run_incarnation_id, `assignment ${base.id} lion_run_incarnation_id`),
+		cleanup_pending_settlement: pending
+			&& pending.lion_run_id === lionRunId
+			&& pending.lion_run_incarnation_id === lionIncarnationId ? pending : null,
+		lion_run_id: lionRunId,
+		lion_run_incarnation_id: lionIncarnationId,
+	};
+}
+
+function coerceCleanupPendingSettlement(value: unknown): CleanupPendingSettlement | null {
+	if (!isObject(value)
+		|| typeof value.lion_run_id !== "string"
+		|| !value.lion_run_id.trim()
+		|| typeof value.lion_run_incarnation_id !== "string"
+		|| !value.lion_run_incarnation_id.trim()
+		|| typeof value.observed_at !== "string") return null;
+	return {
+		lion_run_id: value.lion_run_id,
+		lion_run_incarnation_id: value.lion_run_incarnation_id,
+		observed_at: value.observed_at,
+		ganglion_id: typeof value.ganglion_id === "string" ? value.ganglion_id : null,
+		ganglion_allocation_id: typeof value.ganglion_allocation_id === "string" ? value.ganglion_allocation_id : null,
 	};
 }
 

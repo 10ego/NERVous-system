@@ -121,7 +121,7 @@ describe("runWave", () => {
 		);
 	});
 
-	it("returns cleanup_pending with assignment/capacity retained, then records one late exact settlement", async () => {
+	it("settles a late-aborted cleanup_pending assignment and retained capacity as cancelled once", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((ledger) => ledger.planWave({
 			max_parallel: 1,
@@ -131,8 +131,9 @@ describe("runWave", () => {
 		const controller = new AbortController();
 		let lateSettlement: ((settlement: import("../../lion/extension/cleanup-supervisor.ts").LionCleanupFinalization) => Promise<void>) | undefined;
 		let foregroundFinishes = 0;
-		adapter.run = async (run, _assignment, _progress, _signal, onCleanupSettled) => {
+		adapter.run = async (run, _assignment, _progress, _signal, onCleanupSettled, prepareCleanupHandoff) => {
 			lateSettlement = onCleanupSettled;
+			await prepareCleanupHandoff?.();
 			controller.abort();
 			return { settlement: "cleanup_pending", run_id: run.id, incarnation_id: run.incarnation_id ?? null, owner_id: "owner-001" };
 		};
@@ -151,6 +152,7 @@ describe("runWave", () => {
 		assert.equal(result.assignment_results[0]?.outcome, "cleanup_pending");
 		assert.equal(result.wave.assignments[0]?.status, "dispatched");
 		assert.equal(result.wave.assignments[0]?.ganglion_allocation_id, "alloc-001");
+		assert.equal(result.wave.assignments[0]?.cleanup_pending_settlement?.lion_run_incarnation_id, "inc-run-001");
 		assert.equal(foregroundFinishes, 0);
 		assert.ok(lateSettlement);
 		const terminalSettlement = {
@@ -159,23 +161,24 @@ describe("runWave", () => {
 				id: "run-001",
 				incarnation_id: "inc-run-001",
 				agent_id: "lion-a",
-				status: "completed",
+				status: "aborted",
 				task_id: null,
 				objective: "A",
 				context: "",
 				started_at: new Date().toISOString(),
 				updated_at: new Date().toISOString(),
-				output: "done",
-				report: completedReport("late done"),
-				error: null,
+				output: "",
+				report: null,
+				error: "Cancelled: late durable stop",
 			} as LionRun,
 		};
 		await assert.rejects(() => lateSettlement!(terminalSettlement), /transient capacity persistence failure/);
 		await lateSettlement!(terminalSettlement);
 		const settled = (await store.query((ledger) => ledger.get(wave.id))).result!;
-		assert.equal(settled.assignments[0]?.status, "completed");
+		assert.equal(settled.assignments[0]?.status, "cancelled");
+		assert.equal(settled.assignments[0]?.cleanup_pending_settlement, null);
 		assert.equal(lateAttempts, 2);
-		assert.deepEqual(lateResults, [`${wave.id}:completed`]);
+		assert.deepEqual(lateResults, [`${wave.id}:cancelled`]);
 	});
 
 	it("reserves assignments before creating LION runs", async () => {

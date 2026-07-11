@@ -65,7 +65,7 @@ export default function (pi: ExtensionAPI) {
 				case "record": return runOp(store, action, (l) => {
 					const id = gid(l, p.ganglion_id); const status = p.allocation_status;
 					if (!id || !status) return fail(action, "record requires ganglion_id/current and allocation_status.");
-					const record = l.recordWithResult(id, { allocation_id: p.allocation_id, task_id: p.task_id, lion_run_id: p.lion_run_id, status: status as AllocationStatus, summary: p.summary });
+					const record = l.recordWithResult(id, { allocation_id: p.allocation_id, task_id: p.task_id, lion_run_id: p.lion_run_id, lion_run_incarnation_id: p.lion_run_incarnation_id, status: status as AllocationStatus, summary: p.summary });
 					const disposition = formatAllocationReleaseDisposition(record.release_disposition);
 					return ok(action, `Recorded allocation result in ${record.ganglion.id}; ${disposition}.`, { ganglion: record.ganglion, record });
 				});

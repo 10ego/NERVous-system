@@ -25,6 +25,14 @@ export type OrchestrationDecision = (typeof ORCHESTRATION_DECISIONS)[number];
 export const CEREBEL_ACTIONS = ["plan_wave", "dispatch", "record", "decide", "complete_wave", "cancel", "run_wave", "get", "list", "summary"] as const;
 export type CerebelAction = (typeof CEREBEL_ACTIONS)[number];
 
+export interface CleanupPendingSettlement {
+	lion_run_id: string;
+	lion_run_incarnation_id: string;
+	observed_at: string;
+	ganglion_id: string | null;
+	ganglion_allocation_id: string | null;
+}
+
 export interface AxonTaskBrief {
 	id: string;
 	title: string;
@@ -44,6 +52,8 @@ interface AssignmentFields {
 	/** Optional GANGLION allocation lease that should be released when this assignment reaches a terminal outcome. */
 	ganglion_id?: string | null;
 	ganglion_allocation_id?: string | null;
+	/** Exact durable obligation retained until CEREBEL and linked GANGLION settlement complete. */
+	cleanup_pending_settlement?: CleanupPendingSettlement | null;
 	outcome_summary?: string | null;
 	changed_files: string[];
 	tests_run: string[];

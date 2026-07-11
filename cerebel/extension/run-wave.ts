@@ -7,7 +7,7 @@ import type { Assignment, AssignmentStatus, Wave } from "./schema.ts";
 import { CerebelStore } from "./backend.ts";
 import { isTerminalAssignmentStatus, normalizeParallelism, type RecordInput } from "./store.ts";
 
-type ExactLionRun = LionRun & { incarnation_id: string };
+export type ExactLionRun = LionRun & { incarnation_id: string };
 
 function requireExactLionRun(run: LionRun): asserts run is ExactLionRun {
 	if (typeof run.incarnation_id !== "string" || !run.incarnation_id.trim()) {
@@ -23,6 +23,7 @@ export interface RunWaveLionAdapter {
 		onProgress: (progress: LionProgressSnapshot) => void,
 		signal?: AbortSignal,
 		onCleanupSettled?: (settlement: LionCleanupFinalization) => Promise<void>,
+		prepareCleanupHandoff?: () => Promise<void>,
 	): Promise<LionRunnerOutcome | { text: string; report: LionReport | null }>;
 	finishRun(runId: string, result: { output: string; report: LionReport | null; status?: "completed" | "blocked" | "failed" | "aborted"; error?: string | null }): Promise<LionRun>;
 	getRun?(runId: string): Promise<LionRun | undefined>;
@@ -35,6 +36,8 @@ export interface RunWaveOptions {
 	max_parallel?: number;
 	reservation_stale_ms?: number;
 	signal?: AbortSignal;
+	/** Invoked before cleanup handoff, after the exact CEREBEL obligation is durable. */
+	onCleanupHandoff?: (assignment: Assignment, run: ExactLionRun, waveId: string) => Promise<void> | void;
 	/** Invoked only after a late exact LION finalization records its CEREBEL result. */
 	onLateSettlement?: (result: RunWaveAssignmentResult, waveId: string) => Promise<void> | void;
 }
@@ -240,6 +243,13 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 			if (settlement.disposition !== "terminal") return;
 			const result = await recordLateWorkerSettlement(store, waveId, assignment, run, settlement.run);
 			await options.onLateSettlement?.(result, waveId);
+			if (!assignment.ganglion_allocation_id || options.onLateSettlement) {
+				await store.mutate((ledger) => ledger.completeCleanupPendingSettlementIfOwned(waveId, assignment.id, run.id, run.incarnation_id));
+			}
+		}, async () => {
+			const { result } = await store.mutate((ledger) => ledger.markCleanupPendingSettlementIfOwned(waveId, assignment.id, run.id, run.incarnation_id));
+			if (!result.committed) throw new Error(`cleanup-pending settlement obligation was superseded for ${waveId}/${assignment.id}/${run.id}/${run.incarnation_id}`);
+			await options.onCleanupHandoff?.(result.assignment, run, waveId);
 		});
 		if ("settlement" in out && out.settlement === "cleanup_pending") {
 			// Supervisor authority is already registered. Foreground abort/progress

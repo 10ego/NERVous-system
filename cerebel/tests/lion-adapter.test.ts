@@ -171,7 +171,7 @@ describe("createLionAdapter", () => {
 		activeRuns.clearActiveRunsForTests();
 	});
 
-	it("keeps run_wave ownership and assignment settlement authority in the late cleanup supervisor", async () => {
+	it("honors durable run_wave cancellation requested after cleanup handoff", async () => {
 		const ledger = new LionLedger();
 		const lionStore = {
 			namespaceId: "run-wave-cleanup-pending",
@@ -185,7 +185,6 @@ describe("createLionAdapter", () => {
 		const rpcFactory = () => async (request: LionRunRequest) => {
 			const processInfo = { pid: 404, pgid: null, isAlive: () => alive, cancel: () => true };
 			request.onProcessStart?.(processInfo);
-			controller.abort();
 			const accepted = await request.registerCleanupSupervisor?.({
 				namespaceId: request.cleanupOwner!.namespaceId,
 				runId: request.run.id,
@@ -216,10 +215,12 @@ describe("createLionAdapter", () => {
 		assert.equal("settlement" in outcome ? outcome.settlement : "settled", "cleanup_pending");
 		assert.equal(ledger.get(run.id)?.status, "running");
 		assert.deepEqual(activeRuns.getActiveRunIds(lionStore.namespaceId), [run.id]);
+		ledger.requestCancel(run.id, "late run_wave cancellation");
 		alive = false;
 		resolveExit();
 		for (let index = 0; index < 100 && ledger.get(run.id)?.status === "running"; index++) await new Promise((resolve) => setTimeout(resolve, 2));
 		assert.equal(ledger.get(run.id)?.status, "aborted");
+		assert.match(ledger.get(run.id)?.error ?? "", /late run_wave cancellation/);
 		assert.equal(lateSettlements, 1);
 		assert.deepEqual(activeRuns.getActiveRunIds(lionStore.namespaceId), []);
 	});

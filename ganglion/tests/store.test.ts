@@ -76,6 +76,33 @@ describe("GanglionLedger", () => {
 		assert.equal(r.members[0]?.last_run_id, "run-001");
 	});
 
+	it("fences exact allocation settlement by immutable LION incarnation", () => {
+		const l = new GanglionLedger();
+		const g = l.create({ member_count: 1 });
+		l.allocate(g.id, { tasks: [{ id: "task-exact", title: "Exact" }] });
+		assert.equal(l.linkRunIfUnlinked(g.id, "alloc-001", "run-001", "inc-original").committed, true);
+		assert.equal(l.linkRunIfUnlinked(g.id, "alloc-001", "run-001", "inc-replacement").committed, false);
+		const replacement = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-replacement", { status: "completed" });
+		assert.equal(replacement.committed, false);
+		assert.equal(replacement.allocation.status, "assigned");
+		const exact = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-original", { status: "completed", summary: "done" });
+		assert.equal(exact.committed, true);
+		assert.equal(exact.allocation.lion_run_incarnation_id, "inc-original");
+		assert.equal(exact.ganglion.members[0]?.status, "available");
+		const repeated = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-original", { status: "completed" });
+		assert.equal(repeated.committed, false);
+		assert.equal(repeated.allocation.status, "completed");
+	});
+
+	it("does not backfill incarnation provenance onto a legacy run-linked allocation", () => {
+		const l = new GanglionLedger();
+		const g = l.create({ member_count: 1 });
+		l.allocate(g.id, { tasks: [{ id: "task-legacy", title: "Legacy" }] });
+		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-legacy", status: "running" });
+		assert.equal(l.linkRunIfUnlinked(g.id, "alloc-001", "run-legacy", "inc-inferred").committed, false);
+		assert.equal(l.get(g.id)?.allocations[0]?.lion_run_incarnation_id, null);
+	});
+
 	it("does not release a newer member lease when an old allocation is recorded again", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });

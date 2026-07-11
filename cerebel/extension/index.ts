@@ -79,6 +79,7 @@ function formatGanglionRecordMessage(
 
 async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefined, p: CerebelToolInput, outcome: AssignmentStatus): Promise<string | null> {
 	if (!assignment || !isTerminalAssignmentStatus(outcome)) return null;
+	if (assignment.cleanup_pending_settlement) return `GANGLION capacity retained for cleanup-pending assignment ${assignment.id}.`;
 	const ganglionId = p.ganglion_id ?? assignment.ganglion_id;
 	const allocationId = p.ganglion_allocation_id ?? assignment.ganglion_allocation_id;
 	if (!allocationId) return null;
@@ -88,7 +89,7 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 			import("../../ganglion/extension/backend.ts"),
 			import("../../ganglion/extension/disposition.ts"),
 		]);
-		const { result } = await GanglionStore.fromCwd(cwd).mutate((l) => l.recordWithResult(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
+		const { result } = await GanglionStore.fromCwd(cwd).mutate((l) => l.recordWithResult(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, lion_run_incarnation_id: p.lion_run_incarnation_id ?? assignment.lion_run_incarnation_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
 		return formatGanglionRecordMessage(ganglionId, allocationId, result.release_disposition, formatAllocationReleaseDisposition);
 	} catch (e) {
 		return `GANGLION release failed for ${ganglionId}/${allocationId}: ${e instanceof Error ? e.message : String(e)}`;
@@ -100,6 +101,7 @@ interface GroupedGanglionRecord {
 	ganglionId?: string | null;
 	allocationId: string;
 	lionRunId?: string;
+	lionRunIncarnationId?: string;
 	outcome: AssignmentStatus;
 	summary: string;
 }
@@ -109,12 +111,13 @@ function* runWaveGanglionRecords(result: RunWaveResult): Generator<GroupedGangli
 	for (const assignmentResult of result.assignment_results) {
 		if (assignmentResult.outcome === "skipped" || assignmentResult.outcome === "cleanup_pending") continue;
 		const assignment = assignments.get(assignmentResult.assignment_id);
-		if (!assignment?.ganglion_allocation_id) continue;
+		if (!assignment || assignment.cleanup_pending_settlement || !assignment.ganglion_allocation_id) continue;
 		yield {
 			assignmentId: assignment.id,
 			ganglionId: assignment.ganglion_id,
 			allocationId: assignment.ganglion_allocation_id,
 			lionRunId: assignmentResult.lion_run_id,
+			lionRunIncarnationId: assignmentResult.lion_run_incarnation_id,
 			outcome: assignmentResult.outcome,
 			summary: assignmentResult.summary,
 		};
@@ -129,6 +132,7 @@ function* cancelledWaveGanglionRecords(wave: Wave): Generator<GroupedGanglionRec
 			ganglionId: assignment.ganglion_id,
 			allocationId: assignment.ganglion_allocation_id,
 			lionRunId: assignment.lion_run_id ?? undefined,
+			lionRunIncarnationId: assignment.lion_run_incarnation_id ?? undefined,
 			outcome: assignment.status,
 			summary: `CEREBEL cancellation reconciled terminal assignment ${assignment.status}`,
 		};
@@ -162,7 +166,7 @@ async function recordGroupedGanglion(cwd: string, entries: Iterable<GroupedGangl
 					const allocationIds = new Set(ganglion.allocations.map((allocation) => allocation.id));
 					return group.map((entry) => {
 						if (!allocationIds.has(entry.allocationId)) return { entry, errorMessage: `allocation ${entry.allocationId} not found` };
-						return { entry, releaseDisposition: ledger.recordWithResult(ganglionId, { allocation_id: entry.allocationId, lion_run_id: entry.lionRunId, status: ganglionStatusFromAssignment(entry.outcome), summary: entry.summary }).release_disposition };
+						return { entry, releaseDisposition: ledger.recordWithResult(ganglionId, { allocation_id: entry.allocationId, lion_run_id: entry.lionRunId, lion_run_incarnation_id: entry.lionRunIncarnationId, status: ganglionStatusFromAssignment(entry.outcome), summary: entry.summary }).release_disposition };
 					});
 				});
 				for (const record of records) {
@@ -185,6 +189,32 @@ export async function recordRunWaveGanglion(cwd: string, result: RunWaveResult):
 
 async function reconcileCancelledWaveGanglion(cwd: string, wave: Wave): Promise<string[]> {
 	return recordGroupedGanglion(cwd, cancelledWaveGanglionRecords(wave));
+}
+
+async function settleCleanupGanglion(cwd: string, assignment: Assignment, runId: string, incarnationId: string, summary: string): Promise<void> {
+	if (!assignment.ganglion_allocation_id) return;
+	if (!assignment.ganglion_id) throw new Error(`cleanup-pending assignment ${assignment.id} has allocation ${assignment.ganglion_allocation_id} but no ganglion_id`);
+	const { GanglionStore } = await import("../../ganglion/extension/backend.ts");
+	const { result } = await GanglionStore.fromCwd(cwd).mutate((ledger) => ledger.recordIfOwned(
+		assignment.ganglion_id!,
+		assignment.ganglion_allocation_id!,
+		runId,
+		incarnationId,
+		{ status: ganglionStatusFromAssignment(assignment.status), summary },
+	));
+	const exactTerminal = result.allocation.lion_run_id === runId
+		&& result.allocation.lion_run_incarnation_id === incarnationId
+		&& ["completed", "blocked", "failed", "cancelled"].includes(result.allocation.status);
+	if (!result.committed && !exactTerminal) throw new Error(`GANGLION allocation settlement was superseded for ${assignment.ganglion_id}/${assignment.ganglion_allocation_id}/${runId}/${incarnationId}`);
+}
+
+async function linkRunWaveGanglion(cwd: string, assignment: Assignment, run: Pick<LionRun, "id" | "incarnation_id">): Promise<void> {
+	if (!assignment.ganglion_allocation_id) return;
+	if (!assignment.ganglion_id) throw new Error(`run_wave assignment ${assignment.id} has allocation ${assignment.ganglion_allocation_id} but no ganglion_id`);
+	if (!run.incarnation_id) throw new Error(`run_wave LION ${run.id} has no incarnation provenance`);
+	const { GanglionStore } = await import("../../ganglion/extension/backend.ts");
+	const { result } = await GanglionStore.fromCwd(cwd).mutate((ledger) => ledger.linkRunIfUnlinked(assignment.ganglion_id!, assignment.ganglion_allocation_id!, run.id, run.incarnation_id!));
+	if (!result.committed) throw new Error(`GANGLION allocation provenance was superseded for ${assignment.ganglion_id}/${assignment.ganglion_allocation_id}/${run.id}/${run.incarnation_id}`);
 }
 
 export interface LinkedLionSettlement {

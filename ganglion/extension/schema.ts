@@ -70,6 +70,8 @@ export interface Allocation {
 	required_capabilities: string[];
 	status: AllocationStatus;
 	lion_run_id?: string | null;
+	/** Immutable exact execution provenance; legacy records are never backfilled by inference. */
+	lion_run_incarnation_id?: string | null;
 	outcome_summary?: string | null;
 	reason: string;
 	created_at: string;
@@ -162,6 +164,7 @@ export const GanglionToolParams = Type.Object({
 	allocation_id: Type.Optional(Type.String({ description: "Allocation id." })),
 	task_id: Type.Optional(Type.String({ description: "Task id if allocation_id omitted." })),
 	lion_run_id: Type.Optional(Type.String({ description: "LION run id for record." })),
+	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable LION incarnation id for exact allocation settlement." })),
 	allocation_status: Type.Optional(ALLOCATION_STATUS_SCHEMA),
 	summary: Type.Optional(Type.String({ description: "Outcome summary for record." })),
 	// list filters

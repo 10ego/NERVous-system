@@ -48,7 +48,8 @@ export interface CreateGanglionInput {
 	member_count?: number;
 }
 export interface AllocateInput { tasks: WorkItemBrief[]; context?: string }
-export interface RecordInput { allocation_id?: string; task_id?: string; lion_run_id?: string; status: AllocationStatus; summary?: string }
+export interface RecordInput { allocation_id?: string; task_id?: string; lion_run_id?: string; lion_run_incarnation_id?: string; status: AllocationStatus; summary?: string }
+export interface AllocationIfOwnedResult { committed: boolean; ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
 export type AllocationReleaseDisposition = "released" | "already_free" | "member_unavailable" | "retained_by_newer_allocation" | "not_terminal";
 export interface GanglionRecordResult { ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
 export interface LionRunBrief { id: string; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
@@ -159,6 +160,38 @@ export class GanglionLedger {
 		return clone(g);
 	}
 
+	linkRunIfUnlinked(ganglionId: string, allocationId: string, lionRunId: string, lionRunIncarnationId: string): { committed: boolean; ganglion: Ganglion; allocation: Allocation } {
+		const g = this.require(ganglionId);
+		const allocation = requireAllocation(g, allocationId);
+		const hasRunId = Boolean(allocation.lion_run_id);
+		const hasIncarnation = Boolean(allocation.lion_run_incarnation_id);
+		if (hasRunId || hasIncarnation) {
+			const exact = allocation.lion_run_id === lionRunId && allocation.lion_run_incarnation_id === lionRunIncarnationId;
+			return { committed: exact, ganglion: clone(g), allocation: clone(allocation) };
+		}
+		if (["completed", "blocked", "failed", "cancelled"].includes(allocation.status)) {
+			return { committed: false, ganglion: clone(g), allocation: clone(allocation) };
+		}
+		allocation.lion_run_id = lionRunId;
+		allocation.lion_run_incarnation_id = lionRunIncarnationId;
+		allocation.updated_at = now();
+		g.updated_at = allocation.updated_at;
+		return { committed: true, ganglion: clone(g), allocation: clone(allocation) };
+	}
+
+	recordIfOwned(ganglionId: string, allocationId: string, lionRunId: string, lionRunIncarnationId: string, input: Omit<RecordInput, "allocation_id" | "task_id" | "lion_run_id" | "lion_run_incarnation_id">): AllocationIfOwnedResult {
+		const g = this.require(ganglionId);
+		const allocation = requireAllocation(g, allocationId);
+		if (allocation.lion_run_id !== lionRunId || allocation.lion_run_incarnation_id !== lionRunIncarnationId) {
+			return { committed: false, ganglion: clone(g), allocation: clone(allocation), release_disposition: "not_terminal" };
+		}
+		if (["completed", "blocked", "failed", "cancelled"].includes(allocation.status)) {
+			return { committed: false, ganglion: clone(g), allocation: clone(allocation), release_disposition: "already_free" };
+		}
+		const result = this.recordWithResult(ganglionId, { ...input, allocation_id: allocationId, lion_run_id: lionRunId, lion_run_incarnation_id: lionRunIncarnationId });
+		return { committed: true, ...result };
+	}
+
 	record(ganglionId: string, input: RecordInput): Ganglion {
 		return this.recordWithResult(ganglionId, input).ganglion;
 	}
@@ -168,8 +201,20 @@ export class GanglionLedger {
 		if (!A_STATUS.has(input.status)) throw new GanglionError("invalid_arg", `invalid allocation status ${input.status}`);
 		const a = input.allocation_id ? requireAllocation(g, input.allocation_id) : findAllocation(g, input.task_id);
 		if (!a) throw new GanglionError("not_found", "allocation not found");
+		if (input.lion_run_incarnation_id && !input.lion_run_id) throw new GanglionError("invalid_arg", "lion_run_incarnation_id requires lion_run_id");
+		if (input.lion_run_id && input.lion_run_incarnation_id) {
+			const existingRunId = a.lion_run_id;
+			const existingIncarnationId = a.lion_run_incarnation_id;
+			if ((existingRunId || existingIncarnationId)
+				&& (existingRunId !== input.lion_run_id || existingIncarnationId !== input.lion_run_incarnation_id)) {
+				throw new GanglionError("invalid_transition", `cannot replace allocation provenance for ${a.id}`);
+			}
+			a.lion_run_id = input.lion_run_id;
+			a.lion_run_incarnation_id = input.lion_run_incarnation_id;
+		} else if (input.lion_run_id && !a.lion_run_id) {
+			a.lion_run_id = input.lion_run_id;
+		}
 		a.status = input.status;
-		if (input.lion_run_id) a.lion_run_id = input.lion_run_id;
 		a.outcome_summary = input.summary ?? null;
 		a.updated_at = now();
 		const m = requireMember(g, a.member_id);
@@ -297,7 +342,7 @@ function makeAllocation(g: Ganglion, task: WorkItemBrief, m: Member, context: st
 	const ts = now();
 	const id = `alloc-${String(g.allocations.length + 1).padStart(3, "0")}`;
 	const required = (task.required_capabilities ?? []).map(normalizeCap).filter(Boolean);
-	return { id, task_id: task.id, member_id: m.id, objective: `${task.title}${task.description ? `\n\n${task.description}` : ""}`, context, priority: priorityOf(task.priority), required_capabilities: required, status: "assigned", lion_run_id: null, outcome_summary: null, reason: allocationReason(m, required), created_at: ts, updated_at: ts };
+	return { id, task_id: task.id, member_id: m.id, objective: `${task.title}${task.description ? `\n\n${task.description}` : ""}`, context, priority: priorityOf(task.priority), required_capabilities: required, status: "assigned", lion_run_id: null, lion_run_incarnation_id: null, outcome_summary: null, reason: allocationReason(m, required), created_at: ts, updated_at: ts };
 }
 function allocationReason(m: Member, required: string[]): string { return required.length ? `matched ${required.filter((r) => m.capabilities.includes(r)).join(", ") || "available member"}` : "no specific capability required"; }
 function releaseMember(m: Member, runId?: string): void { m.status = "available"; m.current_task_id = null; m.current_allocation_id = null; if (runId) m.last_run_id = runId; m.updated_at = now(); }
@@ -325,6 +370,6 @@ function coerceMember(value: unknown): Member | null {
 }
 function coerceAllocation(value: unknown): Allocation | null {
 	if (!isObject(value)) return null; const created = typeof value.created_at === "string" ? value.created_at : now();
-	return { id: typeof value.id === "string" ? value.id : "alloc-unknown", task_id: typeof value.task_id === "string" ? value.task_id : "", member_id: typeof value.member_id === "string" ? value.member_id : "lion-unknown", objective: typeof value.objective === "string" ? value.objective : "", context: typeof value.context === "string" ? value.context : "", priority: priorityOf(value.priority), required_capabilities: strings(value.required_capabilities), status: typeof value.status === "string" && A_STATUS.has(value.status) ? (value.status as AllocationStatus) : "failed", lion_run_id: typeof value.lion_run_id === "string" ? value.lion_run_id : null, outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null, reason: typeof value.reason === "string" ? value.reason : "", created_at: created, updated_at: typeof value.updated_at === "string" ? value.updated_at : created };
+	return { id: typeof value.id === "string" ? value.id : "alloc-unknown", task_id: typeof value.task_id === "string" ? value.task_id : "", member_id: typeof value.member_id === "string" ? value.member_id : "lion-unknown", objective: typeof value.objective === "string" ? value.objective : "", context: typeof value.context === "string" ? value.context : "", priority: priorityOf(value.priority), required_capabilities: strings(value.required_capabilities), status: typeof value.status === "string" && A_STATUS.has(value.status) ? (value.status as AllocationStatus) : "failed", lion_run_id: typeof value.lion_run_id === "string" ? value.lion_run_id : null, lion_run_incarnation_id: typeof value.lion_run_incarnation_id === "string" ? value.lion_run_incarnation_id : null, outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null, reason: typeof value.reason === "string" ? value.reason : "", created_at: created, updated_at: typeof value.updated_at === "string" ? value.updated_at : created };
 }
 function isObject(x: unknown): x is Record<string, unknown> { return typeof x === "object" && x !== null; }
