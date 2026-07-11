@@ -172,6 +172,19 @@ describe("exact-incarnation progress sidecars", () => {
 		assert.equal(await exists(paths.primary), false);
 	});
 
+	it("removes abandoned atomic-write temp files before capacity accounting", async () => {
+		const { backend, store } = await makeStore("temp-cleanup");
+		const run = await createRunning(store);
+		const paths = backend.progress.paths({ id: run.id, incarnation_id: run.incarnation_id! });
+		const abandoned = `${paths.primary}.tmp-999-00000000-0000-4000-8000-000000000000`;
+		await fs.writeFile(abandoned, Buffer.alloc(MAX_PROGRESS_ENVELOPE_BYTES), { mode: 0o600 });
+
+		await store.flushProgress(run, snapshot("after crash"));
+
+		assert.equal(await exists(abandoned), false);
+		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.progress?.activity, "after crash");
+	});
+
 	it("recovers an interrupted snapshot replacement from the last accepted envelope", async () => {
 		const { backend, store } = await makeStore("append-crash");
 		const run = await createRunning(store);
