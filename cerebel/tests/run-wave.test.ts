@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import { CerebelStore, FileBackend } from "../extension/backend.ts";
-import { runWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
+import { RunWaveBatchError, runWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
 import { createProgressUpdater } from "../../lion/extension/lifecycle.ts";
 import type { LionReport, LionRun } from "../../lion/extension/schema.ts";
 import type { Assignment, Wave } from "../extension/schema.ts";
@@ -70,6 +70,26 @@ describe("runWave", () => {
 		await updater.drain();
 		assert.deepEqual(persisted, ["first", "third", "final"]);
 	});
+	it("preserves completed results when post-batch bookkeeping fails", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((ledger) => ledger.planWave({ max_parallel: 1, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("A done"), "assign-002": completedReport("B done") });
+		const originalQuery = store.query.bind(store);
+		let queries = 0;
+		(store as any).query = async (fn: never) => {
+			queries++;
+			if (queries === 2) throw new Error("post-batch load failed");
+			return originalQuery(fn);
+		};
+		await assert.rejects(() => runWave(store, adapter, { wave_id: wave.id }), (error: unknown) => {
+			assert.equal(error instanceof RunWaveBatchError, true);
+			const batch = error as RunWaveBatchError;
+			assert.match(batch.message, /post-batch bookkeeping failed/);
+			assert.equal(batch.result.assignment_results.some((result) => result.assignment_id === "assign-001" && result.outcome === "completed"), true);
+			return true;
+		});
+	});
+
 	it("runs planned assignments in bounded batches and records results", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 1, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;

@@ -8,6 +8,7 @@ import { GanglionStore } from "../../ganglion/extension/backend.ts";
 import { LionStore } from "../../lion/extension/backend.ts";
 import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun } from "../../lion/extension/active-runs.ts";
 import factory, { recordRunWaveGanglion, resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel } from "../extension/index.ts";
+import { CerebelStore } from "../extension/backend.ts";
 import { CerebelLedger } from "../extension/store.ts";
 import { RunWaveBatchError } from "../extension/run-wave.ts";
 import { renderCerebelResult } from "../extension/render.ts";
@@ -106,6 +107,30 @@ describe("cerebel extension factory", () => {
 		});
 		assert.deepEqual(settlements, []);
 		assert.equal(runtimeLoads, 0);
+	});
+
+	it("fails closed instead of cancelling across a fresh unlinked run_wave reservation", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-unlinked-cancel-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			const ctx = { cwd: dir };
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [{ agent_id: "lion-a", objective: "A" }] }, undefined, undefined, ctx);
+			await cerebel.execute("reserve", { action: "dispatch" }, undefined, undefined, ctx);
+			const cancelled = await cerebel.execute("cancel", { action: "cancel", reason: "stop" }, undefined, undefined, ctx);
+			assert.equal(cancelled.isError, true);
+			assert.match(cancelled.content[0].text, /stable settled assignment set; no capacity was released/);
+			const current = (await CerebelStore.fromCwd(dir).query((ledger) => ledger.current())).result;
+			assert.equal(current?.status, "dispatched");
+			assert.equal(current?.assignments[0]?.status, "dispatched");
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
 	});
 
 	it("admits whole-wave linked cancellation in one batch", async () => {

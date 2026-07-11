@@ -127,6 +127,9 @@ export interface LinkedLionSettlement {
 
 const DEFAULT_CANCEL_SETTLE_TIMEOUT_MS = 15_000;
 const MAX_CANCEL_SETTLE_TIMEOUT_MS = 120_000;
+/** Covers short reservation→exact-link races; exhaustion fails closed and retains capacity. */
+const CANCEL_STABILITY_MAX_ATTEMPTS = 10;
+const CANCEL_STABILITY_RETRY_MS = 50;
 
 function lionRunRefKey(runId: string, incarnationId: string | null | undefined): string {
 	return JSON.stringify([runId, incarnationId ?? null]);
@@ -365,7 +368,7 @@ export default function (pi: ExtensionAPI) {
 						if (!initial) return fail(action, "cancel requires wave_id or current wave.");
 						const settledRunRefs = new Set<string>();
 						let cancelledWave: Wave | undefined;
-						for (let pass = 0; pass < 10 && !cancelledWave; pass++) {
+						for (let pass = 0; pass < CANCEL_STABILITY_MAX_ATTEMPTS && !cancelledWave; pass++) {
 							const latest = (await store.query((l) => l.get(initial.id))).result ?? initial;
 							const outstandingWave: Wave = {
 								...latest,
@@ -383,12 +386,14 @@ export default function (pi: ExtensionAPI) {
 							const attempt = await store.mutate((l) => {
 								const current = l.get(initial.id);
 								if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
-								const pending = current.assignments.some((assignment) => assignment.lion_run_id
-									&& !isTerminalAssignmentStatus(assignment.status)
-									&& !settledRunRefs.has(lionRunRefKey(assignment.lion_run_id, assignment.lion_run_incarnation_id)));
+								const pending = current.assignments.some((assignment) => !isTerminalAssignmentStatus(assignment.status) && (
+									(assignment.status === "dispatched" && !assignment.lion_run_id)
+									|| (assignment.lion_run_id && !settledRunRefs.has(lionRunRefKey(assignment.lion_run_id, assignment.lion_run_incarnation_id)))
+								));
 								return pending ? undefined : l.cancel(initial.id);
 							});
 							cancelledWave = attempt.result;
+							if (!cancelledWave && pass + 1 < CANCEL_STABILITY_MAX_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, CANCEL_STABILITY_RETRY_MS));
 						}
 						if (!cancelledWave) return fail(action, "cerebel cancel could not obtain a stable settled assignment set; no capacity was released", { wave: (await store.query((l) => l.get(initial.id))).result });
 						const result = ok(action, `Cancelled ${cancelledWave.id}.`, { wave: cancelledWave });

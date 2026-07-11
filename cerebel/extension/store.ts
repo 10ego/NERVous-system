@@ -105,7 +105,7 @@ export class CerebelLedger {
 			id: this.nextWaveId(),
 			goal_id: input.goal_id ?? null,
 			status: "planned",
-			max_parallel: clampParallel(input.max_parallel),
+			max_parallel: normalizeParallelism(input.max_parallel),
 			assignments,
 			decision: null,
 			created_at: ts,
@@ -467,7 +467,7 @@ function computeDecision(w: Wave): DecisionReport {
 		created_at: now(),
 	};
 }
-function clampParallel(n: unknown): number {
+export function normalizeParallelism(n: unknown): number {
 	return typeof n === "number" && Number.isFinite(n) ? Math.max(1, Math.min(10, Math.floor(n))) : 3;
 }
 function normalizePriority(p: unknown): Priority {
@@ -480,7 +480,7 @@ function coerceWave(id: string, value: unknown): Wave | null {
 		id: typeof value.id === "string" ? value.id : id,
 		goal_id: typeof value.goal_id === "string" ? value.goal_id : null,
 		status: typeof value.status === "string" && STATUS_SET.has(value.status) ? (value.status as WaveStatus) : "needs_replan",
-		max_parallel: clampParallel(value.max_parallel),
+		max_parallel: normalizeParallelism(value.max_parallel),
 		assignments: Array.isArray(value.assignments) ? value.assignments.map(coerceAssignment).filter((x): x is Assignment => !!x) : [],
 		decision: isObject(value.decision) ? (value.decision as unknown as DecisionReport) : null,
 		created_at: created,

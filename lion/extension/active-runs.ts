@@ -47,6 +47,21 @@ export type ActiveCancelResult =
 	| { delivered: false; owner?: ActiveRunOwner; reason: "not_attached" | "owner_replaced" | "already_exited" | "not_alive" | "no_cancel_handle" | "not_signaled"; pid?: number; pgid?: number | null };
 
 const activeRuns = new Map<string, ActiveRunEntry>();
+const MAX_CONCURRENT_CANCELLATION_DELIVERIES = 8;
+
+async function mapBounded<T, R>(items: readonly T[], limit: number, worker: (item: T, index: number) => Promise<R>): Promise<R[]> {
+	const results = new Array<R>(items.length);
+	let next = 0;
+	const runWorker = async () => {
+		for (;;) {
+			const index = next++;
+			if (index >= items.length) return;
+			results[index] = await worker(items[index]!, index);
+		}
+	};
+	await Promise.all(Array.from({ length: Math.min(limit, items.length) }, runWorker));
+	return results;
+}
 
 function scopeKey(scope: ActiveRunScope): string {
 	return `${scope.namespaceId}\u0000${scope.runId}`;
@@ -214,12 +229,12 @@ export async function requestRunCancellations(store: LionControlStore, requests:
 		});
 	})).result;
 
-	const deliveries = await Promise.all(admissions.map(async (admission) => {
+	const deliveries = await mapBounded(admissions, MAX_CONCURRENT_CANCELLATION_DELIVERIES, async (admission) => {
 		if (admission.kind !== "requested" || admission.requested.already_terminal || !admission.requested.signal) return undefined;
 		const run = admission.requested.run;
 		const scope: ActiveRunScope = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null };
 		return cancelActiveRunWithEscalation(scope, admission.requested.signal);
-	}));
+	});
 
 	const deliveryIndexes = admissions.flatMap((admission, index) => admission.kind === "requested" && deliveries[index] ? [index] : []);
 	const persistedByIndex = new Map<number, { run: LionRun | undefined; committed: boolean }>();

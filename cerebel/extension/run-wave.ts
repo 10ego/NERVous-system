@@ -3,7 +3,7 @@
 import type { LionProgressSnapshot, LionReport, LionRun } from "@nervous-system/lion/extension/schema.ts";
 import type { Assignment, AssignmentStatus, Wave } from "./schema.ts";
 import { CerebelStore } from "./backend.ts";
-import { isTerminalAssignmentStatus, type RecordInput } from "./store.ts";
+import { isTerminalAssignmentStatus, normalizeParallelism, type RecordInput } from "./store.ts";
 
 type ExactLionRun = LionRun & { incarnation_id: string };
 
@@ -59,14 +59,21 @@ interface ReservationResult {
 export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, options: RunWaveOptions = {}): Promise<RunWaveResult> {
 	const results: RunWaveAssignmentResult[] = [];
 	let wave = await loadWave(store, options.wave_id);
-	const maxParallel = clampParallel(options.max_parallel ?? wave.max_parallel);
+	const maxParallel = normalizeParallelism(options.max_parallel ?? wave.max_parallel);
 
 	for (;;) {
 		if (options.signal?.aborted) break;
-		const reservation = await reservePlannedAssignments(store, wave.id, maxParallel, options.reservation_stale_ms, options.signal);
+		let reservation: ReservationResult;
+		try {
+			reservation = await reservePlannedAssignments(store, wave.id, maxParallel, options.reservation_stale_ms, options.signal);
+		} catch (error) {
+			throwPartialIfResults("run_wave reservation bookkeeping failed", error, wave, results);
+			throw error;
+		}
 		wave = reservation.wave;
 		if (options.signal?.aborted && reservation.assignments.length) {
-			await releaseReservations(store, wave.id, reservation.assignments, "host aborted before LION creation");
+			try { await releaseReservations(store, wave.id, reservation.assignments, "host aborted before LION creation"); }
+			catch (error) { throw new RunWaveBatchError(`run_wave reservation release failed: ${errorMessage(error)}`, finalizeRunWave(wave, results), [error]); }
 			break;
 		}
 		if (wave.assignments.some((a) => a.status === "blocked" || a.status === "failed")) break;
@@ -78,15 +85,27 @@ export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, 
 			if (outcome.status === "fulfilled") results.push(outcome.value);
 			else failures.push(outcome.reason);
 		}
-		wave = await loadWave(store, wave.id);
+		try { wave = await loadWave(store, wave.id); }
+		catch (error) {
+			const allFailures = [...failures, error];
+			throw new RunWaveBatchError(`run_wave post-batch bookkeeping failed: ${allFailures.map(errorMessage).join("; ")}`, finalizeRunWave(wave, results), allFailures);
+		}
 		if (failures.length) {
 			const partial = finalizeRunWave(wave, results);
 			throw new RunWaveBatchError(`run_wave batch failed after all launched workers settled: ${failures.map(errorMessage).join("; ")}`, partial, failures);
 		}
 	}
 
-	wave = await loadWave(store, wave.id);
+	try { wave = await loadWave(store, wave.id); }
+	catch (error) {
+		throwPartialIfResults("run_wave final bookkeeping failed", error, wave, results);
+		throw error;
+	}
 	return finalizeRunWave(wave, results);
+}
+
+function throwPartialIfResults(message: string, error: unknown, wave: Wave, results: RunWaveAssignmentResult[]): void {
+	if (results.length) throw new RunWaveBatchError(`${message}: ${errorMessage(error)}`, finalizeRunWave(wave, results), [error]);
 }
 
 function finalizeRunWave(wave: Wave, completedResults: RunWaveAssignmentResult[]): RunWaveResult {
@@ -314,10 +333,6 @@ function assignmentStatusFromReport(report: LionReport | null, fallback: LionRun
 	if (fallback === "blocked") return "blocked";
 	if (fallback === "failed" || fallback === "aborted") return "failed";
 	return "completed";
-}
-
-function clampParallel(value: unknown): number {
-	return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.min(10, Math.floor(value))) : 3;
 }
 
 export function summarizeRunWave(wave: Wave, results: RunWaveAssignmentResult[]): string {

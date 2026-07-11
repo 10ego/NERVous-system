@@ -95,6 +95,33 @@ describe("namespace-scoped active LION ownership", () => {
 		finishActiveRun(owner);
 	});
 
+	it("bounds cancellation delivery concurrency while preserving result order", async () => {
+		const store = await makeStore("bounded-delivery");
+		const runs = (await store.mutate((ledger) => Array.from({ length: 20 }, (_, index) => ledger.create({ objective: `run-${index}` })))).result;
+		let active = 0;
+		let maxActive = 0;
+		const owners = runs.map((run) => {
+			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id }, "json");
+			attachActiveRunProcess(owner, {
+				pid: process.pid,
+				pgid: null,
+				isAlive: () => true,
+				cancel: async () => {
+					active++;
+					maxActive = Math.max(maxActive, active);
+					await new Promise((resolve) => setTimeout(resolve, 10));
+					active--;
+					return true;
+				},
+			});
+			return owner;
+		});
+		const results = await requestRunCancellations(store, runs.map((run) => ({ runId: run.id, expectedIncarnationId: run.incarnation_id, expectIncarnation: true })));
+		assert.equal(maxActive, 8);
+		assert.deepEqual(results.map((result) => result.run?.id), runs.map((run) => run.id));
+		for (const owner of owners) finishActiveRun(owner);
+	});
+
 	it("admits and persists a cancellation batch with two ledger mutations", async () => {
 		const store = await makeStore("batch-admission");
 		const runs = await Promise.all(["A", "B", "C"].map(async (objective) => (await store.mutate((ledger) => ledger.create({ objective }))).result));
