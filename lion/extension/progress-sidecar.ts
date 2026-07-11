@@ -263,6 +263,25 @@ export class ProgressSnapshotStore {
 		await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
 		if (!await this.assertSafeRootUnlocked()) throw new ProgressSidecarError(`progress sidecar root disappeared: ${this.root}`);
 		await fs.chmod(this.root, 0o700);
+		await this.removeAbandonedTempsUnlocked();
+	}
+
+	private async removeAbandonedTempsUnlocked(): Promise<void> {
+		const names = await fs.readdir(this.root);
+		let removed = false;
+		for (const name of names) {
+			if (!/^[a-f0-9]{64}\.(json|bak)\.tmp-\d+-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(name)) continue;
+			const filePath = path.join(this.root, name);
+			try {
+				const stat = await fs.lstat(filePath);
+				if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+				await fs.unlink(filePath);
+				removed = true;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+			}
+		}
+		if (removed) await fsyncDirectory(this.root);
 	}
 
 	private async assertSafeRootUnlocked(): Promise<boolean> {
