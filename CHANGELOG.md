@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.0.5](https://github.com/10ego/NERVous-system/compare/v1.0.4...v1.0.5) (2026-07-11)
+
+
+### Miscellaneous Chores
+
+* **release:** version every conventional PR ([33efcd0](https://github.com/10ego/NERVous-system/commit/33efcd05bc8e703c20e706a631d56d14a2016475))
+
 ## [1.0.4](https://github.com/10ego/NERVous-system/compare/v1.0.3...v1.0.4) (2026-07-11)
 
 
