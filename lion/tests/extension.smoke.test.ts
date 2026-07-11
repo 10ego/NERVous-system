@@ -61,6 +61,41 @@ describe("lion extension factory", () => {
 		}
 	});
 
+	it("starts a queued steered run through the public tool boundary", async () => {
+		const { pi, tools } = stubPi();
+		factory(pi);
+		const lion = tools.find((tool) => tool.name === "lion");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-public-start-"));
+		const binDir = path.join(dir, "bin");
+		await fs.mkdir(binDir);
+		const fakePi = path.join(binDir, "pi");
+		const reportText = '```json\n{"WORKER_REPORT":{"outcome":"completed","summary":"started successfully","changed_files":[],"tests_run":[],"blockers":[],"next_steps":[]}}\n```';
+		await fs.writeFile(fakePi, `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\"message_end\",message:{role:\"assistant\",content:[{type:\"text\",text:${JSON.stringify(reportText)}}]}})+\"\\n\");\n`);
+		await fs.chmod(fakePi, 0o755);
+		const oldRunsPath = process.env.LION_RUNS_PATH, oldPath = process.env.PATH, oldScript = process.argv[1];
+		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
+		process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+		process.argv[1] = path.join(dir, "missing-pi-entry.js");
+		try {
+			const ctx = { cwd: dir, isProjectTrusted: () => false };
+			const dry = await lion.execute("queue", { action: "run", objective: "queued work", dry_run: true }, undefined, undefined, ctx);
+			const id = dry.details.run.id;
+			await lion.execute("steer", { action: "steer", id, message: "Run the focused tests" }, undefined, undefined, ctx);
+			const started = await lion.execute("start", { action: "start", id, timeout_ms: 5_000 }, undefined, undefined, ctx);
+			assert.equal(started.isError, undefined);
+			assert.equal(started.details.run.status, "completed");
+			assert.equal(started.details.run.report?.summary, "started successfully");
+			assert.equal(started.details.run.steering_messages[0]?.status, "applied");
+			assert.equal(started.details.run.progress?.event, "message_end");
+			const store = LionStore.fromCwd(dir);
+			assert.deepEqual((await store.query((ledger) => ledger.get(id))).result?.status, "completed");
+		} finally {
+			process.argv[1] = oldScript;
+			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH; else process.env.LION_RUNS_PATH = oldRunsPath;
+			if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+		}
+	});
+
 	it("rejects cancellation of an unknown direct run id", async () => {
 		const { pi, tools } = stubPi();
 		factory(pi);

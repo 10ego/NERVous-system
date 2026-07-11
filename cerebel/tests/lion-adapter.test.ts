@@ -2,16 +2,22 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, it } from "vitest";
+import { afterEach, describe, it, vi } from "vitest";
 import { createLionAdapter } from "../extension/index.ts";
 import { LionLedger } from "../../lion/extension/store.ts";
 import * as activeRuns from "../../lion/extension/active-runs.ts";
 import * as lifecycle from "../../lion/extension/lifecycle.ts";
+import * as options from "../../lion/extension/options.ts";
 import type { Assignment } from "../extension/schema.ts";
 import type { LionReport } from "../../lion/extension/schema.ts";
 import type { LionRunRequest } from "../../lion/extension/subprocess.ts";
 
 const report: LionReport = { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] };
+
+afterEach(() => {
+	activeRuns.clearActiveRunsForTests();
+	vi.restoreAllMocks();
+});
 
 function assignment(): Assignment {
 	return {
@@ -63,6 +69,72 @@ describe("createLionAdapter", () => {
 			assert.equal((error as Error & { cause?: unknown }).cause, rootCause);
 			return true;
 		});
+	});
+
+	it("selects the RPC runner explicitly and through LION_RUNNER", async () => {
+		const oldRunner = process.env.LION_RUNNER;
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "runner-selection",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		let jsonCalls = 0, rpcCalls = 0;
+		const jsonFactory = () => { jsonCalls++; return async () => ({ text: "", report: null }); };
+		const rpcFactory = (config: { store: unknown }) => {
+			rpcCalls++;
+			assert.equal(config.store, lionStore);
+			return async () => ({ text: "", report: null });
+		};
+		const deps = {
+			lionStore,
+			createLionRunner: jsonFactory,
+			createLionRpcRunner: rpcFactory,
+			activeRuns,
+			options: { ...options, resolveConfiguredLionModel: () => undefined },
+		};
+		try {
+			await createLionAdapter({ cwd: process.cwd(), isProjectTrusted: () => false } as never, { action: "run_wave", runner_mode: "rpc" } as never, undefined, undefined, deps as never);
+			process.env.LION_RUNNER = "rpc";
+			await createLionAdapter({ cwd: process.cwd(), isProjectTrusted: () => false } as never, { action: "run_wave" } as never, undefined, undefined, deps as never);
+			assert.equal(jsonCalls, 0);
+			assert.equal(rpcCalls, 2);
+		} finally {
+			if (oldRunner === undefined) delete process.env.LION_RUNNER; else process.env.LION_RUNNER = oldRunner;
+		}
+	});
+
+	it("reports process metadata and pending-cancellation replay failures", async () => {
+		const ledger = new LionLedger();
+		let mutations = 0;
+		const lionStore = {
+			namespaceId: "control-diagnostics",
+			async mutate<T>(fn: (l: LionLedger) => T) {
+				mutations++;
+				if (mutations === 2) throw new Error("metadata unavailable");
+				return { result: fn(ledger) };
+			},
+			async query<T>(_fn: (l: LionLedger) => T): Promise<{ result: T }> { throw new Error("replay unavailable"); },
+		};
+		const warnings = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const runner = () => async (req: LionRunRequest) => {
+			req.onProcessStart?.({ pid: process.pid, pgid: null, isAlive: () => false, cancel: () => false });
+			req.onProcessExit?.();
+			return { text: "ok", report };
+		};
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns },
+		);
+		const run = await adapter.createRun(assignment());
+		await adapter.run(run, assignment(), () => undefined);
+		for (let index = 0; index < 5 && warnings.mock.calls.length < 2; index++) await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal(warnings.mock.calls.some((call) => String(call[0]).includes("process metadata persistence failed")), true);
+		assert.equal(warnings.mock.calls.some((call) => String(call[0]).includes("pending cancellation replay failed")), true);
+		await adapter.finishRun(run.id, { output: "ok", report });
 	});
 
 	it("retains active ownership until finishRun finalizes the LION ledger", async () => {
