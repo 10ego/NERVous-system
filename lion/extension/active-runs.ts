@@ -44,7 +44,7 @@ interface ActiveRunEntry extends ActiveRunOwner {
 
 export type ActiveCancelResult =
 	| { delivered: true; owner: ActiveRunOwner; pid?: number; pgid?: number | null }
-	| { delivered: false; owner?: ActiveRunOwner; reason: "not_attached" | "owner_replaced" | "already_exited" | "not_alive" | "no_cancel_handle" | "not_signaled"; pid?: number; pgid?: number | null };
+	| { delivered: false; owner?: ActiveRunOwner; reason: "not_attached" | "owner_replaced" | "already_exited" | "not_alive" | "no_cancel_handle" | "not_signaled" | "delivery_failed"; error?: string; pid?: number; pgid?: number | null };
 
 const activeRuns = new Map<string, ActiveRunEntry>();
 const MAX_CONCURRENT_CANCELLATION_DELIVERIES = 8;
@@ -158,14 +158,19 @@ export async function cancelActiveRun(scope: ActiveRunScope | ActiveRunOwner, si
 
 	const attempt = (async (): Promise<ActiveCancelResult> => {
 		const owner = { namespaceId: entry.namespaceId, runId: entry.runId, incarnationId: entry.incarnationId, ownerId: entry.ownerId };
-		if (entry.state === "exited") return { delivered: false, owner, reason: "already_exited", pid: entry.pid, pgid: entry.pgid };
-		if (entry.isAlive && !entry.isAlive()) return { delivered: false, owner, reason: "not_alive", pid: entry.pid, pgid: entry.pgid };
-		if (!entry.cancel) return { delivered: false, owner, reason: "no_cancel_handle", pid: entry.pid, pgid: entry.pgid };
-		const signaled = await entry.cancel(signal);
-		if (!signaled) return { delivered: false, owner, reason: "not_signaled", pid: entry.pid, pgid: entry.pgid };
-		const result = { delivered: true, owner: { namespaceId: entry.namespaceId, runId: entry.runId, incarnationId: entry.incarnationId, ownerId: entry.ownerId }, pid: entry.pid, pgid: entry.pgid } as const;
-		entry.cancelDelivered.set(signal, result);
-		return result;
+		try {
+			if (entry.state === "exited") return { delivered: false, owner, reason: "already_exited", pid: entry.pid, pgid: entry.pgid };
+			if (entry.isAlive && !entry.isAlive()) return { delivered: false, owner, reason: "not_alive", pid: entry.pid, pgid: entry.pgid };
+			if (!entry.cancel) return { delivered: false, owner, reason: "no_cancel_handle", pid: entry.pid, pgid: entry.pgid };
+			const signaled = await entry.cancel(signal);
+			if (!signaled) return { delivered: false, owner, reason: "not_signaled", pid: entry.pid, pgid: entry.pgid };
+			const result = { delivered: true, owner: { namespaceId: entry.namespaceId, runId: entry.runId, incarnationId: entry.incarnationId, ownerId: entry.ownerId }, pid: entry.pid, pgid: entry.pgid } as const;
+			entry.cancelDelivered.set(signal, result);
+			return result;
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			return { delivered: false, owner, reason: "delivery_failed", error: message.slice(0, 1_000), pid: entry.pid, pgid: entry.pgid };
+		}
 	})().finally(() => entry.cancelInFlight.delete(signal));
 	entry.cancelInFlight.set(signal, attempt);
 	return attempt;
@@ -201,7 +206,7 @@ export async function replayPendingCancellation(owner: ActiveRunOwner, store: {
 	await store.mutate((ledger) => {
 		const current = ledger.get(owner.runId);
 		return isActiveRunOwner(owner) && current
-			? ledger.markCancelDeliveryIfCurrent(owner.runId, owner.incarnationId, result.delivered ? "delivered" : result.reason).run
+			? ledger.markCancelDeliveryIfCurrent(owner.runId, owner.incarnationId, result.delivered ? "delivered" : result.reason, result.delivered ? undefined : result.error).run
 			: current;
 	});
 	return result;
@@ -259,7 +264,7 @@ export async function requestRunCancellations(store: LionControlStore, requests:
 			const delivery = deliveries[index]!;
 			const current = ledger.get(admission.requested.run.id);
 			return current
-				? ledger.markCancelDeliveryIfCurrent(admission.requested.run.id, admission.requested.run.incarnation_id, delivery.delivered ? "delivered" : delivery.reason)
+				? ledger.markCancelDeliveryIfCurrent(admission.requested.run.id, admission.requested.run.incarnation_id, delivery.delivered ? "delivered" : delivery.reason, delivery.delivered ? undefined : delivery.error)
 				: { run: undefined, committed: false };
 		}))).result;
 		deliveryIndexes.forEach((index, offset) => persistedByIndex.set(index, persisted[offset]!));

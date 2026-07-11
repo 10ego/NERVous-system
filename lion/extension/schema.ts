@@ -101,6 +101,7 @@ export const LION_CANCEL_DELIVERY_STATUSES = [
 	"not_alive",
 	"no_cancel_handle",
 	"not_signaled",
+	"delivery_failed",
 ] as const;
 export type LionCancelDeliveryStatus = (typeof LION_CANCEL_DELIVERY_STATUSES)[number];
 

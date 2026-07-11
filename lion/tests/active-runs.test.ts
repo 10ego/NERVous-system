@@ -112,7 +112,7 @@ describe("namespace-scoped active LION ownership", () => {
 		const runs = (await store.mutate((ledger) => Array.from({ length: 20 }, (_, index) => ledger.create({ objective: `run-${index}` })))).result;
 		let active = 0;
 		let maxActive = 0;
-		const owners = runs.map((run) => {
+		const owners = runs.map((run, index) => {
 			const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id }, "json");
 			attachActiveRunProcess(owner, {
 				pid: process.pid,
@@ -121,9 +121,13 @@ describe("namespace-scoped active LION ownership", () => {
 				cancel: async () => {
 					active++;
 					maxActive = Math.max(maxActive, active);
-					await new Promise((resolve) => setTimeout(resolve, 10));
-					active--;
-					return true;
+					try {
+						await new Promise((resolve) => setTimeout(resolve, 10));
+						if (index === 0) throw new Error("individual delivery failed");
+						return true;
+					} finally {
+						active--;
+					}
 				},
 			});
 			return owner;
@@ -131,6 +135,10 @@ describe("namespace-scoped active LION ownership", () => {
 		const results = await requestRunCancellations(store, runs.map((run) => ({ runId: run.id, expectedIncarnationId: run.incarnation_id, expectIncarnation: true })));
 		assert.equal(maxActive, 8);
 		assert.deepEqual(results.map((result) => result.run?.id), runs.map((run) => run.id));
+		assert.equal(results[0]?.delivery?.delivered, false);
+		assert.equal(results[0]?.delivery?.delivered === false && results[0].delivery.reason, "delivery_failed");
+		assert.match(results[0]?.run?.control?.cancel_delivery_error ?? "", /individual delivery failed/);
+		assert.equal(results.slice(1).every((result) => result.delivery?.delivered), true);
 		for (const owner of owners) finishActiveRun(owner);
 	});
 
