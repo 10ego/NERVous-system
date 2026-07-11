@@ -10,6 +10,7 @@ import type { LionReport, LionRun } from "../../lion/extension/schema.ts";
 import type { Assignment, Wave } from "../extension/schema.ts";
 import { summarizeAssignmentGroup, summarizeRunWaveResult } from "../extension/render.ts";
 import { CerebelLedger } from "../extension/store.ts";
+import { GanglionLedger } from "../../ganglion/extension/store.ts";
 
 async function tmpStore(): Promise<CerebelStore> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-run-wave-"));
@@ -123,9 +124,12 @@ describe("runWave", () => {
 
 	it("settles a late-aborted cleanup_pending assignment and retained capacity as cancelled once", async () => {
 		const store = await tmpStore();
+		const ganglion = new GanglionLedger();
+		const group = ganglion.create({ member_count: 1 });
+		ganglion.allocate(group.id, { tasks: [{ id: "task-001", title: "A" }] });
 		const wave = (await store.mutate((ledger) => ledger.planWave({
 			max_parallel: 1,
-			assignments: [{ agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }],
+			assignments: [{ task_id: "task-001", agent_id: "lion-a", objective: "A", ganglion_id: group.id, ganglion_allocation_id: "alloc-001" }],
 		}))).result;
 		const adapter = fakeAdapter({});
 		const controller = new AbortController();
@@ -143,9 +147,14 @@ describe("runWave", () => {
 		const result = await runWave(store, adapter, {
 			wave_id: wave.id,
 			signal: controller.signal,
+			onCleanupHandoff: async (_assignment, exactRun) => {
+				assert.equal(ganglion.linkRunIfUnlinked(group.id, "alloc-001", exactRun.id, exactRun.incarnation_id).committed, true);
+			},
 			onLateSettlement: async (late, lateWaveId) => {
 				lateAttempts++;
 				if (lateAttempts === 1) throw new Error("transient capacity persistence failure");
+				const exact = ganglion.recordIfOwned(group.id, "alloc-001", late.lion_run_id!, late.lion_run_incarnation_id!, { status: "cancelled", summary: late.summary });
+				assert.equal(exact.committed, true);
 				lateResults.push(`${lateWaveId}:${late.outcome}`);
 			},
 		});
@@ -179,6 +188,9 @@ describe("runWave", () => {
 		assert.equal(settled.assignments[0]?.cleanup_pending_settlement, null);
 		assert.equal(lateAttempts, 2);
 		assert.deepEqual(lateResults, [`${wave.id}:cancelled`]);
+		assert.equal(ganglion.get(group.id)?.allocations[0]?.status, "cancelled");
+		assert.notEqual(ganglion.get(group.id)?.allocations[0]?.status, "completed");
+		assert.equal(ganglion.get(group.id)?.members[0]?.status, "available");
 	});
 
 	it("reserves assignments before creating LION runs", async () => {
