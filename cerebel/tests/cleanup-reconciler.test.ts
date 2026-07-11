@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { describe, it } from "vitest";
 import { CerebelStore, FileBackend } from "../extension/backend.ts";
 import { reconcileCleanupPendingSettlements } from "../extension/cleanup-reconciler.ts";
+import { CerebelLedger } from "../extension/store.ts";
 import { LionLedger } from "../../lion/extension/store.ts";
 import { GanglionLedger } from "../../ganglion/extension/store.ts";
 
@@ -111,6 +112,41 @@ describe("cleanup-pending settlement reconciliation", () => {
 		const waveAfter = (await stores.fresh().query((ledger) => ledger.get(wave.id))).result!;
 		assert.equal(waveAfter.assignments[0]?.status, "failed");
 		assert.equal(waveAfter.assignments[0]?.cleanup_pending_settlement, null);
+	});
+
+	it("never clears an obligation when current capacity provenance differs", async () => {
+		const stores = await cerebelStores();
+		const lionLedger = new LionLedger();
+		const run = lionLedger.create({ objective: "late cleanup", runner_mode: "rpc" });
+		const ganglion = setupGanglion();
+		const wave = (await stores.first.mutate((ledger) => ledger.planWave({
+			assignments: [{ task_id: "task-001", objective: "cleanup task", ganglion_id: ganglion.ganglionId, ganglion_allocation_id: ganglion.allocationId }],
+		}))).result;
+		await stores.first.mutate((ledger) => ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: run.id, lion_run_incarnation_id: run.incarnation_id! }] }));
+		await stores.first.mutate((ledger) => ledger.markCleanupPendingSettlementIfOwned(wave.id, "assign-001", run.id, run.incarnation_id!));
+		lionLedger.finish(run.id, { output: "done", report });
+
+		const persisted = (await stores.first.query((ledger) => ledger.get(wave.id))).result!;
+		const corrupted = structuredClone(persisted);
+		corrupted.assignments[0]!.ganglion_id = "ganglion-replacement";
+		corrupted.assignments[0]!.ganglion_allocation_id = "alloc-replacement";
+		const corruptedLedger = new CerebelLedger(undefined, [corrupted]);
+		let ganglionMutations = 0;
+		const result = await reconcileCleanupPendingSettlements(stores.dir, {
+			cerebelStore: memoryStore(corruptedLedger) as never,
+			lionStore: memoryStore(lionLedger),
+			ganglionStore: {
+				...memoryStore(ganglion.ledger),
+				async mutate<R>(fn: (value: GanglionLedger) => R) { ganglionMutations++; return { result: fn(ganglion.ledger) }; },
+			},
+		});
+		assert.equal(result[0]?.settled, false);
+		assert.match(result[0]?.reason ?? "", /capacity provenance differs/);
+		assert.equal(ganglionMutations, 0);
+		const unchanged = corruptedLedger.get(wave.id)!.assignments[0]!;
+		assert.equal(unchanged.status, "dispatched");
+		assert.equal(unchanged.cleanup_pending_settlement?.ganglion_id, ganglion.ganglionId);
+		assert.equal(unchanged.ganglion_id, "ganglion-replacement");
 	});
 
 	it("ignores a replacement LION incarnation and retains the exact obligation", async () => {

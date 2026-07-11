@@ -137,6 +137,7 @@ export class CerebelLedger {
 			if (existingRef && incomingRef && !sameRunRef(existingRef, incomingRef)) {
 				throw new CerebelError("invalid_transition", `cannot replace LION provenance for ${a.id} from ${formatRunRef(existingRef)} to ${formatRunRef(incomingRef)}`);
 			}
+			assertFrozenGanglionProvenance(a, link.ganglion_id, link.ganglion_allocation_id, "dispatch");
 			a.status = "dispatched";
 			if (incomingRef && !existingRef) {
 				a.lion_run_id = incomingRef.run_id;
@@ -171,6 +172,7 @@ export class CerebelLedger {
 		if (existingRef && incomingRef && !sameRunRef(existingRef, incomingRef)) {
 			throw new CerebelError("invalid_transition", `cannot replace LION provenance for ${a.id} from ${formatRunRef(existingRef)} to ${formatRunRef(incomingRef)}`);
 		}
+		assertFrozenGanglionProvenance(a, input.ganglion_id, input.ganglion_allocation_id, "record");
 		a.status = input.outcome;
 		if (incomingRef && !existingRef) {
 			a.lion_run_id = incomingRef.run_id;
@@ -228,6 +230,8 @@ export class CerebelLedger {
 			|| pending.lion_run_incarnation_id !== expectedLionIncarnationId
 			|| assignment.lion_run_id !== expectedLionRunId
 			|| assignment.lion_run_incarnation_id !== expectedLionIncarnationId
+			|| assignment.ganglion_id !== pending.ganglion_id
+			|| assignment.ganglion_allocation_id !== pending.ganglion_allocation_id
 			|| !isTerminalAssignmentStatus(assignment.status)) return false;
 		assignment.cleanup_pending_settlement = null;
 		assignment.updated_at = now();
@@ -465,6 +469,23 @@ export function sameRunRef(left: ExactLionRunRef, right: ExactLionRunRef): boole
 
 function formatRunRef(ref: ExactLionRunRef): string {
 	return `${ref.run_id}/${ref.incarnation_id}`;
+}
+
+function assertFrozenGanglionProvenance(
+	assignment: Assignment,
+	incomingGanglionId: string | null | undefined,
+	incomingAllocationId: string | null | undefined,
+	operation: string,
+): void {
+	if (!assignmentRunRef(assignment) && !assignment.cleanup_pending_settlement) return;
+	const replacesGanglion = incomingGanglionId !== undefined && incomingGanglionId !== assignment.ganglion_id;
+	const replacesAllocation = incomingAllocationId !== undefined && incomingAllocationId !== assignment.ganglion_allocation_id;
+	if (replacesGanglion || replacesAllocation) {
+		throw new CerebelError(
+			"invalid_transition",
+			`cannot replace frozen GANGLION provenance for ${assignment.id} during ${operation}; exact LION linkage or cleanup settlement already exists`,
+		);
+	}
 }
 
 export function assignmentRunRef(assignment: Pick<Assignment, "id" | "lion_run_id" | "lion_run_incarnation_id">): ExactLionRunRef | undefined {

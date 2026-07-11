@@ -106,6 +106,11 @@ export async function reconcileCleanupPendingSettlements(
 	const results: CleanupSettlementReconcileResult[] = [];
 	for (const obligation of obligations) {
 		const expected = obligation.settlement;
+		if (obligation.assignment.ganglion_id !== expected.ganglion_id
+			|| obligation.assignment.ganglion_allocation_id !== expected.ganglion_allocation_id) {
+			results.push({ wave_id: obligation.wave_id, assignment_id: obligation.assignment.id, lion_run_id: expected.lion_run_id, lion_run_incarnation_id: expected.lion_run_incarnation_id, settled: false, reason: "CEREBEL assignment capacity provenance differs from its cleanup obligation" });
+			continue;
+		}
 		const run = (await lionStore.query((ledger) => ledger.get(expected.lion_run_id))).result;
 		if (!run
 			|| run.incarnation_id !== expected.lion_run_incarnation_id
@@ -171,7 +176,11 @@ export async function reconcileCleanupPendingSettlements(
 				continue;
 			}
 		}
-		await cerebelStore.mutate((ledger) => ledger.completeCleanupPendingSettlementIfOwned(obligation.wave_id, obligation.assignment.id, expected.lion_run_id, expected.lion_run_incarnation_id));
+		const { result: completed } = await cerebelStore.mutate((ledger) => ledger.completeCleanupPendingSettlementIfOwned(obligation.wave_id, obligation.assignment.id, expected.lion_run_id, expected.lion_run_incarnation_id));
+		if (!completed) {
+			results.push({ wave_id: obligation.wave_id, assignment_id: obligation.assignment.id, lion_run_id: expected.lion_run_id, lion_run_incarnation_id: expected.lion_run_incarnation_id, settled: false, reason: "CEREBEL cleanup obligation changed before completion" });
+			continue;
+		}
 		results.push({ wave_id: obligation.wave_id, assignment_id: obligation.assignment.id, lion_run_id: expected.lion_run_id, lion_run_incarnation_id: expected.lion_run_incarnation_id, settled: true, reason: "exact cleanup settlement reconciled" });
 	}
 	return results;

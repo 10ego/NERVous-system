@@ -73,6 +73,38 @@ describe("CerebelLedger", () => {
 		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
 	});
 
+	it("freezes GANGLION provenance once exact LION linkage exists", () => {
+		const ledger = new CerebelLedger();
+		const wave = ledger.planWave({ assignments: [{ objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] });
+		ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] });
+		assert.equal(ledger.markCleanupPendingSettlementIfOwned(wave.id, "assign-001", "run-001", "inc-001").committed, true);
+		assert.doesNotThrow(() => ledger.dispatch(wave.id, { links: [{
+			assignment_id: "assign-001",
+			lion_run_id: "run-001",
+			lion_run_incarnation_id: "inc-001",
+			ganglion_id: "ganglion-001",
+			ganglion_allocation_id: "alloc-001",
+		}] }));
+		assert.throws(() => ledger.dispatch(wave.id, { links: [{
+			assignment_id: "assign-001",
+			lion_run_id: "run-001",
+			lion_run_incarnation_id: "inc-001",
+			ganglion_id: "ganglion-002",
+			ganglion_allocation_id: "alloc-002",
+		}] }), /cannot replace frozen GANGLION provenance/);
+		assert.throws(() => ledger.record(wave.id, {
+			assignment_id: "assign-001",
+			lion_run_id: "run-001",
+			lion_run_incarnation_id: "inc-001",
+			ganglion_allocation_id: "alloc-002",
+			outcome: "completed",
+		}), /cannot replace frozen GANGLION provenance/);
+		const current = ledger.get(wave.id)?.assignments[0];
+		assert.equal(current?.ganglion_id, "ganglion-001");
+		assert.equal(current?.ganglion_allocation_id, "alloc-001");
+		assert.equal(current?.status, "dispatched");
+	});
+
 	it("persists immutable LION incarnations and rejects same-id replacement links", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
