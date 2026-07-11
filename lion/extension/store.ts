@@ -213,7 +213,9 @@ export class LionLedger {
 
 	updateProgressIfCurrent(id: string, incarnationId: string | null | undefined, input: UpdateProgressInput): { run: LionRun | undefined; committed: boolean } {
 		const current = this.runsById.get(id);
-		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: current ? clone(current) : undefined, committed: false };
+		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null) || (current.status !== "running" && current.status !== "queued")) {
+			return { run: current ? clone(current) : undefined, committed: false };
+		}
 		return { run: this.updateProgress(id, input), committed: true };
 	}
 

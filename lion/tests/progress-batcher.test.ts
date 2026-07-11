@@ -31,6 +31,20 @@ describe("namespace progress batching", () => {
 		assert.deepEqual(current.map((run) => run?.progress?.activity), ["step-0", "step-1", "step-2"]);
 	});
 
+	it("skips a terminal entry without aborting unrelated running progress", async () => {
+		const store = await makeStore();
+		const [terminal, running] = (await store.mutate((ledger) => [ledger.create({ objective: "terminal" }), ledger.create({ objective: "running" })])).result;
+		const terminalWrite = persistBatchedProgress(store, terminal!, progress("too late"), 5);
+		const runningWrite = persistBatchedProgress(store, running!, progress("still working"), 5);
+		await store.mutate((ledger) => ledger.finish(terminal!.id, { output: "done", report: null, status: "completed" }));
+		const [terminalResult, runningResult] = await Promise.all([terminalWrite, runningWrite]);
+		assert.equal(terminalResult, undefined);
+		assert.equal(runningResult?.progress?.activity, "still working");
+		const current = (await store.query((ledger) => [ledger.get(terminal!.id), ledger.get(running!.id)])).result;
+		assert.equal(current[0]?.progress, null);
+		assert.equal(current[1]?.progress?.activity, "still working");
+	});
+
 	it("drops a stale-incarnation batch item without mutating its replacement", async () => {
 		const store = await makeStore();
 		const run = (await store.mutate((ledger) => ledger.create({ objective: "replacement" }))).result;
