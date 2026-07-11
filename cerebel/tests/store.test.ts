@@ -55,6 +55,15 @@ describe("CerebelLedger", () => {
 		assert.equal(d.decision?.decision, "wait");
 	});
 
+	it("subtracts existing dispatches before repeated automatic dispatch", () => {
+		const ledger = new CerebelLedger();
+		const wave = ledger.planWave({ max_parallel: 2, tasks: [{ id: "a", title: "A" }, { id: "b", title: "B" }, { id: "c", title: "C" }, { id: "d", title: "D" }] });
+		ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001" }] });
+		const repeated = ledger.dispatch(wave.id);
+		assert.equal(repeated.assignments.filter((assignment) => assignment.status === "dispatched").length, 2);
+		assert.equal(repeated.assignments.filter((assignment) => assignment.status === "planned").length, 2);
+	});
+
 	it("preserves existing LION links on redispatch", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
@@ -215,6 +224,19 @@ describe("CerebelLedger", () => {
 		assert.equal(c.status, "cancelled");
 		assert.equal(c.assignments[0]?.status, "cancelled");
 		assert.equal(c.decision?.decision, "cancelled");
+	});
+
+	it("preserves cancelled wave status while terminal sibling records settle", () => {
+		const ledger = new CerebelLedger();
+		const wave = ledger.planWave({ tasks: [{ id: "a", title: "A" }, { id: "b", title: "B" }] });
+		ledger.dispatch(wave.id);
+		ledger.record(wave.id, { task_id: "a", outcome: "failed", summary: "failed first" });
+		ledger.record(wave.id, { task_id: "b", outcome: "blocked", summary: "blocked first" });
+		assert.equal(ledger.cancel(wave.id).status, "cancelled");
+		const settled = ledger.record(wave.id, { task_id: "b", outcome: "completed", summary: "late sibling result" });
+		assert.equal(settled.status, "cancelled");
+		assert.equal(settled.decision?.decision, "cancelled");
+		assert.equal(settled.assignments.find((assignment) => assignment.task_id === "b")?.status, "completed");
 	});
 
 	it("lists, summarizes, and round-trips JSON", () => {

@@ -290,6 +290,45 @@ describe("cerebel extension factory", () => {
 		}
 	});
 
+	it("retries an unreleased terminal GANGLION lease during wave cancellation", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-retry-terminal-lease-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const ganglionStore = GanglionStore.fromCwd(dir);
+			await ganglionStore.mutate((ledger) => {
+				const group = ledger.create({ members: [{ id: "lion-a" }] });
+				ledger.allocate(group.id, { tasks: [{ id: "task-a", title: "A" }] });
+			});
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			const ctx = { cwd: dir };
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [
+				{ task_id: "task-a", agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" },
+				{ task_id: "task-b", agent_id: "lion-b", objective: "B" },
+			] }, undefined, undefined, ctx);
+			await cerebel.execute("dispatch", { action: "dispatch", links: [{ assignment_id: "assign-001" }] }, undefined, undefined, ctx);
+			const originalMutate = GanglionStore.prototype.mutate;
+			const failedRelease = vi.spyOn(GanglionStore.prototype, "mutate")
+				.mockImplementationOnce(async () => { throw new Error("temporary GANGLION write failure"); })
+				.mockImplementation(function (this: GanglionStore, fn: any) { return originalMutate.call(this, fn); });
+			const recorded = await cerebel.execute("record", { action: "record", assignment_id: "assign-001", outcome: "completed", summary: "done" }, undefined, undefined, ctx);
+			assert.match(recorded.content[0].text, /GANGLION release failed/);
+			assert.equal((await ganglionStore.query((ledger) => ledger.get("ganglion-001"))).result?.members[0]?.status, "busy");
+			failedRelease.mockRestore();
+			const cancelled = await cerebel.execute("cancel", { action: "cancel", reason: "stop remaining work" }, undefined, undefined, ctx);
+			assert.match(cancelled.content[0].text, /GANGLION ganglion-001\/alloc-001 recorded; capacity released/);
+			const group = (await ganglionStore.query((ledger) => ledger.get("ganglion-001"))).result;
+			assert.equal(group?.members[0]?.status, "available");
+			assert.equal(group?.allocations[0]?.status, "completed");
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
+	});
+
 	it("never cancels a replacement LION incarnation through a stale wave link", async () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-stale-incarnation-"));

@@ -140,7 +140,9 @@ export class CerebelLedger {
 			a.updated_at = now();
 		}
 		if (!links.length) {
-			for (const a of w.assignments.filter((a) => a.status === "planned").slice(0, w.max_parallel)) {
+			const dispatched = w.assignments.filter((assignment) => assignment.status === "dispatched").length;
+			const remainingCapacity = Math.max(0, w.max_parallel - dispatched);
+			for (const a of w.assignments.filter((a) => a.status === "planned").slice(0, remainingCapacity)) {
 				a.status = "dispatched";
 				a.updated_at = now();
 			}
@@ -434,6 +436,7 @@ function findAssignment(w: Wave, task_id?: string, lion_run_id?: string): Assign
 	return w.assignments.find((a) => (task_id && a.task_id === task_id) || (lion_run_id && a.lion_run_id === lion_run_id));
 }
 function statusFromAssignments(w: Wave): WaveStatus {
+	if (w.status === "cancelled") return "cancelled";
 	const statuses = w.assignments.map((a) => a.status);
 	if (statuses.every((s) => s === "completed" || s === "partial")) return "completed";
 	if (statuses.some((s) => s === "failed")) return "needs_replan";

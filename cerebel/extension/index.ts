@@ -419,8 +419,8 @@ export default function (pi: ExtensionAPI) {
 						if (!cancelledWave) return fail(action, "cerebel cancel could not obtain a stable settled assignment set; no capacity was released", { wave: (await store.query((l) => l.get(initial.id))).result });
 						const result = ok(action, `Cancelled ${cancelledWave.id}.`, { wave: cancelledWave });
 						const releaseMessages: string[] = [];
-						for (const assignment of cancelledWave.assignments.filter((candidate) => candidate.status === "cancelled")) {
-							const message = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: assignment.lion_run_id ?? undefined, lion_run_incarnation_id: assignment.lion_run_incarnation_id ?? undefined, summary: "CEREBEL wave cancelled" } as CerebelToolInput, "cancelled");
+						for (const assignment of cancelledWave.assignments.filter((candidate) => isTerminalAssignmentStatus(candidate.status) && candidate.ganglion_allocation_id)) {
+							const message = await recordLinkedGanglion(ctx.cwd, assignment, { action: "record", lion_run_id: assignment.lion_run_id ?? undefined, lion_run_incarnation_id: assignment.lion_run_incarnation_id ?? undefined, summary: `CEREBEL cancellation reconciled terminal assignment ${assignment.status}` } as CerebelToolInput, assignment.status);
 							if (message) releaseMessages.push(message);
 						}
 						if (releaseMessages.length) result.content[0]!.text += ` ${releaseMessages.join(" ")}`;
