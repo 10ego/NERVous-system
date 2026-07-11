@@ -106,6 +106,31 @@ describe("CerebelLedger", () => {
 		assert.equal(current?.status, "dispatched");
 	});
 
+	it("selects unguarded records by exact LION incarnation when run ids are reused", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-old", title: "Old" }, { id: "task-new", title: "New" }] });
+		l.dispatch(w.id, { links: [
+			{ assignment_id: "assign-001", lion_run_id: "run-reused", lion_run_incarnation_id: "inc-old" },
+			{ assignment_id: "assign-002", lion_run_id: "run-reused", lion_run_incarnation_id: "inc-new" },
+		] });
+		assert.throws(() => l.record(w.id, { lion_run_id: "run-reused", outcome: "completed" }), /requires both lion_run_id and lion_run_incarnation_id/);
+		const recorded = l.record(w.id, { lion_run_id: "run-reused", lion_run_incarnation_id: "inc-new", outcome: "completed", summary: "replacement done" });
+		assert.equal(recorded.assignments[0]?.status, "dispatched");
+		assert.equal(recorded.assignments[1]?.status, "completed");
+		assert.equal(recorded.assignments[1]?.outcome_summary, "replacement done");
+	});
+
+	it("preserves explicit record selectors and exact clean-slate provenance", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ tasks: [{ id: "task-a", title: "A" }, { id: "task-b", title: "B" }] });
+		const first = l.record(w.id, { assignment_id: "assign-001", lion_run_id: "run-new", lion_run_incarnation_id: "inc-new", outcome: "completed" });
+		assert.equal(first.assignments[0]?.lion_run_id, "run-new");
+		assert.equal(first.assignments[0]?.lion_run_incarnation_id, "inc-new");
+		const second = l.record(w.id, { task_id: "task-b", outcome: "completed" });
+		assert.equal(second.assignments[1]?.status, "completed");
+		assert.equal(second.assignments[1]?.lion_run_id, null);
+	});
+
 	it("rejects persisted linked assignments without an exact incarnation instead of backfilling", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
@@ -169,14 +194,45 @@ describe("CerebelLedger", () => {
 		assert.equal(l.get(w.id)?.assignments[0]?.lion_run_id, "run-001");
 	});
 
-	it("recovers stale dispatched reservations without LION run ids", () => {
+	it("restores a planned wave after releasing every unlinked reservation", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ max_parallel: 2, tasks: [{ id: "task-001", title: "A" }, { id: "task-002", title: "B" }] });
+		l.dispatch(w.id);
+		const released = l.releaseReservations(w.id, ["assign-001", "assign-002"]);
+		const current = l.get(w.id)!;
+		assert.equal(released.length, 2);
+		assert.equal(current.status, "planned");
+		assert.equal(current.decision?.decision, "dispatch");
+		assert.deepEqual(current.decision?.ready_assignment_ids, ["assign-001", "assign-002"]);
+	});
+
+	it("restores planned status when completed siblings leave every nonterminal assignment planned", () => {
+		const l = new CerebelLedger();
+		const w = l.planWave({ max_parallel: 2, tasks: [{ id: "task-001", title: "A" }, { id: "task-002", title: "B" }] });
+		l.dispatch(w.id, { links: [
+			{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" },
+			{ assignment_id: "assign-002" },
+		] });
+		l.record(w.id, { assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001", outcome: "completed" });
+		l.releaseReservations(w.id, ["assign-002"]);
+		const current = l.get(w.id)!;
+		assert.equal(current.status, "planned");
+		assert.equal(current.decision?.decision, "dispatch");
+		assert.deepEqual(current.decision?.ready_assignment_ids, ["assign-002"]);
+	});
+
+	it("recovers stale dispatched reservations to a coherent planned wave", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
 		l.dispatch(w.id, { links: [{ assignment_id: "assign-001" }] });
 		const recovered = l.recoverOrphanedReservations(w.id, { stale_after_ms: 0, now_ms: Date.now() + 1000 });
+		const current = l.get(w.id)!;
 		assert.equal(recovered.length, 1);
-		assert.equal(l.get(w.id)?.assignments[0]?.status, "planned");
-		assert.match(l.get(w.id)?.assignments[0]?.outcome_summary ?? "", /recovered/);
+		assert.equal(current.status, "planned");
+		assert.equal(current.assignments[0]?.status, "planned");
+		assert.equal(current.decision?.decision, "dispatch");
+		assert.deepEqual(current.decision?.ready_assignment_ids, ["assign-001"]);
+		assert.match(current.assignments[0]?.outcome_summary ?? "", /recovered/);
 	});
 
 	it("records completion and decides to complete", () => {

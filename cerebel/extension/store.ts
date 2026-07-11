@@ -156,7 +156,7 @@ export class CerebelLedger {
 	record(waveId: string, input: RecordInput): Wave {
 		const w = this.require(waveId);
 		if (!ASSIGNMENT_STATUS_SET.has(input.outcome)) throw new CerebelError("invalid_arg", `invalid outcome ${input.outcome}`);
-		const a = input.assignment_id ? requireAssignment(w, input.assignment_id) : findAssignment(w, input.task_id, input.lion_run_id);
+		const a = selectAssignmentForRecord(w, input);
 		if (!a) throw new CerebelError("not_found", "assignment not found for record");
 		if (["cancelled"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot record cancelled assignment ${a.id}`);
 		const existingRef = assignmentRunRef(a);
@@ -249,9 +249,9 @@ export class CerebelLedger {
 			released.push(clone(a));
 		}
 		if (released.length) {
+			if (w.status === "dispatched" || w.status === "collecting") this.transitionLenient(w, statusFromAssignments(w));
 			w.decision = this.computeDecision(w);
 			w.updated_at = ts;
-			if (w.status === "dispatched" || w.status === "collecting") this.transitionLenient(w, statusFromAssignments(w));
 		}
 		return released;
 	}
@@ -271,9 +271,9 @@ export class CerebelLedger {
 			recovered.push(clone(a));
 		}
 		if (recovered.length) {
+			if (w.status === "dispatched" || w.status === "collecting") this.transitionLenient(w, statusFromAssignments(w));
 			w.decision = this.computeDecision(w);
 			w.updated_at = new Date(nowMs).toISOString();
-			if (w.status === "dispatched" || w.status === "collecting") this.transitionLenient(w, statusFromAssignments(w));
 		}
 		return recovered;
 	}
@@ -432,8 +432,14 @@ function requireAssignment(w: Wave, id: string): Assignment {
 	if (!a) throw new CerebelError("not_found", `assignment ${id} not found in ${w.id}`);
 	return a;
 }
-function findAssignment(w: Wave, task_id?: string, lion_run_id?: string): Assignment | undefined {
-	return w.assignments.find((a) => (task_id && a.task_id === task_id) || (lion_run_id && a.lion_run_id === lion_run_id));
+function selectAssignmentForRecord(w: Wave, input: RecordInput): Assignment | undefined {
+	if (input.assignment_id) return requireAssignment(w, input.assignment_id);
+	if (input.task_id) return w.assignments.find((a) => a.task_id === input.task_id);
+	if (input.lion_run_id !== undefined || input.lion_run_incarnation_id !== undefined) {
+		const ref = optionalRunRef(input.lion_run_id, input.lion_run_incarnation_id, "record selection by lion_run_id");
+		return ref ? w.assignments.find((a) => a.lion_run_id === ref.run_id && a.lion_run_incarnation_id === ref.incarnation_id) : undefined;
+	}
+	return undefined;
 }
 function statusFromAssignments(w: Wave): WaveStatus {
 	if (w.status === "cancelled") return "cancelled";
@@ -443,6 +449,7 @@ function statusFromAssignments(w: Wave): WaveStatus {
 	if (statuses.some((s) => s === "blocked")) return "blocked";
 	if (statuses.some((s) => s === "cancelled")) return "cancelled";
 	if (statuses.some((s) => s === "dispatched")) return "collecting";
+	if (statuses.some((s) => s === "planned") && statuses.every((s) => s === "planned" || s === "completed" || s === "partial")) return "planned";
 	return w.status;
 }
 function computeDecision(w: Wave): DecisionReport {
