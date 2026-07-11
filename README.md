@@ -12,7 +12,7 @@ A modular multi-agent coding-agent extension framework for [pi](https://pi.dev),
 | **MAGI** | Configurable deliberation council (≤3 councillors) | ✅ [`magi/`](./magi) |
 | **AXON** | Persistent task ledger (survives compaction/restart) | ✅ [`axon/`](./axon) |
 | **CEREBEL** | Orchestration controller for LION worker waves | ✅ [`cerebel/`](./cerebel) |
-| **LION** | Local Intelligence Operations Node — an isolated coding subagent | ✅ [`lion/`](./lion) |
+| **LION** | Local Intelligence Operations Node — an isolated coding subagent with durable live progress telemetry | ✅ [`lion/`](./lion) |
 | **GANGLION** | Working-group roster/capability allocator for LIONs | ✅ [`ganglion/`](./ganglion) |
 | **SYNAPSE** | Transient shared coordination scratchpad | ✅ [`synapse/`](./synapse) |
 | **AMYGDALA** | Risk escalation and safety triage | ✅ [`amygdala/`](./amygdala) |
@@ -31,6 +31,15 @@ LIONs complete → update AXON → CEREBEL assigns more → … → CORTEX check
 
 **Key principle:** AXON is durable state; SYNAPSE is transient coordination. Interrupted work resumes from AXON without the original context window.
 
+### Live worker controls
+
+- **Telemetry:** LION persists bounded progress snapshots and emits `nervous:lion:*` lifecycle/progress events; the dashboard displays linked LION and CEREBEL progress.
+- **Orchestration:** CEREBEL can optionally `run_wave` planned assignments through LION and records grouped outcomes while preserving partial results.
+- **Exact provenance:** CEREBEL links and settles exact immutable LION incarnations before cancellation releases GANGLION capacity. Incomplete pre-release links require operator delete/reset; provenance is never backfilled.
+- **Control:** Cancellation is best-effort, pre-start steering is queued, and RPC live steering requires explicit `runner_mode="rpc"` opt-in. JSON remains the default and rejects running steering.
+
+The workspace is released as one version-aligned distribution; see [RELEASES.md](RELEASES.md) for the 1.0 compatibility and clean-slate state policy.
+
 ## State isolation
 
 NERVous runtime state is global but isolated by project and work context. By default, component ledgers live under:
@@ -42,7 +51,7 @@ NERVous runtime state is global but isolated by project and work context. By def
 - **Project namespace** prevents cross-repo contamination. It is derived from the git root path; set `NERVOUS_PROJECT=<name>` to override.
 - **Context namespace** prevents stale completed work from bleeding into a new effort. It defaults to the current git branch, or `default` outside git; set `NERVOUS_CONTEXT=<work-id>` to intentionally start/resume a workstream.
 - Set `NERVOUS_STATE_ROOT=/path/to/root` to move all NERVous state elsewhere.
-- Existing explicit component paths still win, e.g. `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, `MAGI_HISTORY_PATH`.
+- Existing explicit component paths still win, e.g. `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, `MAGI_HISTORY_PATH`. LION resolves a direct-file symlink override to one canonical operational target so atomic writes do not split its lock and active-owner namespace.
 
 Examples:
 

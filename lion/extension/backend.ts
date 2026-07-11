@@ -6,6 +6,7 @@
  */
 
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { resolveNervousStateFile } from "@nervous-system/state";
 import { LionLedger } from "./store.ts";
@@ -23,6 +24,35 @@ export interface LionLocation {
 export function resolveLionLocation(cwd: string): LionLocation {
 	const runsPath = resolveNervousStateFile(cwd, "lion", "runs.json", "LION_RUNS_PATH");
 	return { runsPath, dir: path.dirname(runsPath) };
+}
+
+export function canonicalLionNamespace(runsPath: string): string {
+	let absolute = path.resolve(runsPath);
+	const seenLinks = new Set<string>();
+	for (;;) {
+		try {
+			const stat = fsSync.lstatSync(absolute);
+			if (!stat.isSymbolicLink()) break;
+			if (seenLinks.has(absolute)) throw new Error(`lion: symlink cycle at ${absolute}`);
+			seenLinks.add(absolute);
+			absolute = path.resolve(path.dirname(absolute), fsSync.readlinkSync(absolute));
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
+			break;
+		}
+	}
+	let existing = absolute;
+	while (!fsSync.existsSync(existing)) {
+		const parent = path.dirname(existing);
+		if (parent === existing) return absolute;
+		existing = parent;
+	}
+	try {
+		const canonicalBase = fsSync.realpathSync.native(existing);
+		return path.join(canonicalBase, path.relative(existing, absolute));
+	} catch {
+		return absolute;
+	}
 }
 
 interface LockInfo {
@@ -106,13 +136,43 @@ export class FileBackend {
 	private readonly bakPath: string;
 
 	constructor(location: LionLocation) {
-		this.location = location;
-		this.lockPath = `${location.runsPath}.lock`;
-		this.tmpPath = `${location.runsPath}.tmp`;
-		this.bakPath = `${location.runsPath}.bak`;
+		const runsPath = canonicalLionNamespace(location.runsPath);
+		this.location = { runsPath, dir: path.dirname(runsPath) };
+		this.lockPath = `${runsPath}.lock`;
+		this.tmpPath = `${runsPath}.tmp`;
+		this.bakPath = `${runsPath}.bak`;
 	}
 
 	async load(): Promise<LoadResult> {
+		return this.loadUnlocked();
+	}
+
+	async save(ledger: LionLedger): Promise<void> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		await withLock(this.lockPath, async () => this.saveUnlocked(ledger));
+	}
+
+	async mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T; warnings: string[] }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { ledger, warnings } = await this.loadUnlocked();
+			const result = fn(ledger);
+			await this.saveUnlocked(ledger);
+			return { result, warnings };
+		});
+	}
+
+	async mutateMaybe<T>(fn: (ledger: LionLedger) => { result: T; changed: boolean }): Promise<{ result: T; warnings: string[]; changed: boolean }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { ledger, warnings } = await this.loadUnlocked();
+			const outcome = fn(ledger);
+			if (outcome.changed) await this.saveUnlocked(ledger);
+			return { result: outcome.result, warnings, changed: outcome.changed };
+		});
+	}
+
+	private async loadUnlocked(): Promise<LoadResult> {
 		let raw: string;
 		try {
 			raw = await fs.readFile(this.location.runsPath, "utf8");
@@ -141,27 +201,26 @@ export class FileBackend {
 		}
 	}
 
-	async save(ledger: LionLedger): Promise<void> {
-		await fs.mkdir(this.location.dir, { recursive: true });
-		await withLock(this.lockPath, async () => {
-			const data = JSON.stringify(ledger.toJSON(), null, 2);
-			try {
-				await fs.copyFile(this.location.runsPath, this.bakPath);
-			} catch (err) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") throw err;
-			}
-			await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
-			await fs.rename(this.tmpPath, this.location.runsPath);
-		});
+	private async saveUnlocked(ledger: LionLedger): Promise<void> {
+		const data = JSON.stringify(ledger.toJSON(), null, 2);
+		try {
+			await fs.copyFile(this.location.runsPath, this.bakPath);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") throw err;
+		}
+		await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
+		await fs.rename(this.tmpPath, this.location.runsPath);
 	}
 }
 
 export class LionStore {
 	readonly backend: FileBackend;
+	readonly namespaceId: string;
 
 	constructor(backend: FileBackend) {
 		this.backend = backend;
+		this.namespaceId = canonicalLionNamespace(backend.location.runsPath);
 	}
 
 	static fromCwd(cwd: string): LionStore {
@@ -174,9 +233,10 @@ export class LionStore {
 	}
 
 	async mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T; warnings: string[] }> {
-		const { ledger, warnings } = await this.backend.load();
-		const result = fn(ledger);
-		await this.backend.save(ledger);
-		return { result, warnings };
+		return this.backend.mutate(fn);
+	}
+
+	async mutateMaybe<T>(fn: (ledger: LionLedger) => { result: T; changed: boolean }): Promise<{ result: T; warnings: string[]; changed: boolean }> {
+		return this.backend.mutateMaybe(fn);
 	}
 }

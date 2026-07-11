@@ -47,6 +47,31 @@ describe("FileBackend", () => {
 		assert.ok(!(await exists(`${backend.location.cerebelPath}.tmp`)));
 		assert.ok(await exists(`${backend.location.cerebelPath}.bak`));
 	});
+	it("serializes concurrent mutate load-write transactions", async () => {
+		const { store } = await tmpStore();
+		await Promise.all([
+			store.mutate((l) => l.planWave({ tasks: [{ id: "a", title: "A" }] })),
+			store.mutate((l) => l.planWave({ tasks: [{ id: "b", title: "B" }] })),
+			store.mutate((l) => l.planWave({ tasks: [{ id: "c", title: "C" }] })),
+		]);
+		const { result } = await store.query((l) => l.all());
+		assert.equal(result.length, 3);
+		assert.deepEqual(new Set(result.map((w) => w.id)), new Set(["wave-001", "wave-002", "wave-003"]));
+	});
+	it("fails closed without rewriting state when exact provenance is malformed", async () => {
+		const { backend, store, dir } = await tmpStore();
+		const wave = (await store.mutate((ledger) => ledger.planWave({ tasks: [{ id: "task-001", title: "A" }] }))).result;
+		await store.mutate((ledger) => ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] }));
+		const raw = JSON.parse(await fs.readFile(backend.location.cerebelPath, "utf8"));
+		raw.waves[wave.id].assignments[0].lion_run_incarnation_id = null;
+		await fs.writeFile(backend.location.cerebelPath, JSON.stringify(raw), "utf8");
+		await assert.rejects(() => backend.load(), /no migration or automatic reset was performed/);
+		await assert.rejects(() => backend.mutate((ledger) => ledger.planWave({ tasks: [{ id: "task-002", title: "B" }] })), /no migration or automatic reset was performed/);
+		const persisted = await fs.readFile(backend.location.cerebelPath, "utf8");
+		assert.match(persisted, /run-001/);
+		assert.equal((await fs.readdir(dir)).some((entry) => entry.startsWith("cerebel.json.corrupt-")), false);
+	});
+
 	it("recovers corrupt files", async () => {
 		const { backend, dir } = await tmpStore();
 		await fs.writeFile(backend.location.cerebelPath, "{ broken", "utf8");

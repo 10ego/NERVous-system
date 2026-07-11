@@ -1,6 +1,6 @@
 {
   "name": "@nervous-system/magi",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "MAGI \u2014 a configurable deliberation council (max 3 councillors) for the NERVous System. Default council: The Mind, The Heart, The Hand.",
   "keywords": [
     "pi-package",
@@ -38,6 +38,6 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "@nervous-system/state": "0.1.0"
+    "@nervous-system/state": "1.0.0"
   }
 }

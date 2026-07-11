@@ -1,4 +1,6 @@
+import * as fs from "node:fs/promises";
 import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
+import { resolveNervousStateFile } from "@nervous-system/state";
 import { Key, matchesKey, truncateToWidth, type Component, type TUI, visibleWidth } from "@earendil-works/pi-tui";
 import { AmygdalaStore } from "../../amygdala/extension/backend.ts";
 import type { Incident } from "../../amygdala/extension/schema.ts";
@@ -18,6 +20,15 @@ import type { Note } from "../../synapse/extension/schema.ts";
 
 type Tab = "cortex" | "magi" | "axon" | "synapse" | "lion" | "cerebel" | "ganglion" | "amygdala";
 const TABS: Tab[] = ["cortex", "magi", "axon", "synapse", "ganglion", "lion", "cerebel", "amygdala"];
+export const DASHBOARD_AUTO_REFRESH_MS = 1000;
+
+function formatRefreshInterval(ms: number): string {
+	if (ms <= 0) return "manual";
+	if (ms < 1000) return `auto ${ms}ms`;
+	const seconds = ms / 1000;
+	const label = Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1).replace(/\.0$/, "")}s`;
+	return `auto ${label}`;
+}
 
 type Detail =
 	| { kind: "cortex"; item: Goal }
@@ -29,7 +40,15 @@ type Detail =
 	| { kind: "ganglion"; item: Ganglion }
 	| { kind: "amygdala"; item: Incident };
 
-interface DashboardData {
+type RefreshTimer = ReturnType<typeof setTimeout>;
+
+interface DashboardRefreshOptions {
+	autoRefreshMs?: number;
+	maxAutoRefreshMs?: number;
+	changeDetector?: () => Promise<boolean | Tab[]>;
+}
+
+export interface DashboardData {
 	goals: Goal[];
 	magi: MagiRecord[];
 	tasks: Task[];
@@ -39,30 +58,87 @@ interface DashboardData {
 	ganglions: Ganglion[];
 	incidents: Incident[];
 	warnings: string[];
+	warningGroups?: Partial<Record<Tab, string[]>>;
 }
 
-async function loadDashboardData(cwd: string): Promise<DashboardData> {
-	const [cortex, axon, synapse, lion, cerebel, ganglion, amygdala, magi] = await Promise.all([
-		CortexStore.fromCwd(cwd).query((store) => store.all().sort((a, b) => b.created_at.localeCompare(a.created_at))),
-		AxonStore.fromCwd(cwd).query((ledger) => ledger.all()),
-		SynapseStore.fromCwd(cwd).query((log) => log.list({ limit: 100 })),
-		LionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 })),
-		CerebelStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 })),
-		GanglionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 })),
-		AmygdalaStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 })),
-		MagiHistoryStore.fromCwd(cwd).list(100),
-	]);
-	return {
-		goals: cortex.result,
-		magi,
-		tasks: axon.result,
-		notes: synapse.result,
-		runs: lion.result,
-		waves: cerebel.result,
-		ganglions: ganglion.result,
-		incidents: amygdala.result,
-		warnings: [...cortex.warnings, ...axon.warnings, ...synapse.warnings, ...lion.warnings, ...cerebel.warnings, ...ganglion.warnings, ...amygdala.warnings],
+const DASHBOARD_STATE_FILES = [
+	["cortex", "cortex.json", "CORTEX_PATH"],
+	["axon", "ledger.json", "AXON_LEDGER_PATH"],
+	["synapse", "synapse.json", "SYNAPSE_PATH"],
+	["lion", "runs.json", "LION_RUNS_PATH"],
+	["cerebel", "cerebel.json", "CEREBEL_PATH"],
+	["ganglion", "ganglion.json", "GANGLION_PATH"],
+	["amygdala", "amygdala.json", "AMYGDALA_PATH"],
+	["magi", "history.json", "MAGI_HISTORY_PATH"],
+] as const;
+
+const DASHBOARD_COMPONENTS = DASHBOARD_STATE_FILES.map(([component]) => component) as Tab[];
+
+function resolveDashboardStatePaths(cwd: string, resolveFile = resolveNervousStateFile): string[] {
+	return DASHBOARD_STATE_FILES.map(([component, file, env]) => resolveFile(cwd, component, file, env));
+}
+
+async function dashboardStateFingerprints(statePaths: string[]): Promise<string[]> {
+	return Promise.all(statePaths.map(async (statePath) => {
+		try { const stat = await fs.stat(statePath); return `${statePath}:${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`; }
+		catch (error) { return `${statePath}:${(error as NodeJS.ErrnoException).code ?? "missing"}`; }
+	}));
+}
+
+export async function createDashboardChangeDetector(cwd: string, resolveFile = resolveNervousStateFile): Promise<() => Promise<Tab[]>> {
+	const statePaths = resolveDashboardStatePaths(cwd, resolveFile);
+	let previous = await dashboardStateFingerprints(statePaths);
+	return async () => {
+		const current = await dashboardStateFingerprints(statePaths);
+		const changed = DASHBOARD_COMPONENTS.filter((_component, index) => current[index] !== previous[index]);
+		previous = current;
+		return changed;
 	};
+}
+
+export async function loadDashboardData(cwd: string, components: Tab[] = DASHBOARD_COMPONENTS, previous?: DashboardData): Promise<DashboardData> {
+	const data: DashboardData = previous ? {
+		...previous,
+		goals: [...previous.goals], magi: [...previous.magi], tasks: [...previous.tasks], notes: [...previous.notes],
+		runs: [...previous.runs], waves: [...previous.waves], ganglions: [...previous.ganglions], incidents: [...previous.incidents],
+		warningGroups: { ...(previous.warningGroups ?? {}) },
+	} : { goals: [], magi: [], tasks: [], notes: [], runs: [], waves: [], ganglions: [], incidents: [], warnings: [], warningGroups: {} };
+	const warningGroups = data.warningGroups!;
+	await Promise.all([...new Set(components)].map(async (component) => {
+		switch (component) {
+			case "cortex": {
+				const loaded = await CortexStore.fromCwd(cwd).query((store) => store.all().sort((a, b) => b.created_at.localeCompare(a.created_at)));
+				data.goals = loaded.result; warningGroups.cortex = loaded.warnings; return;
+			}
+			case "magi": data.magi = await MagiHistoryStore.fromCwd(cwd).list(100); warningGroups.magi = []; return;
+			case "axon": {
+				const loaded = await AxonStore.fromCwd(cwd).query((ledger) => ledger.all());
+				data.tasks = loaded.result; warningGroups.axon = loaded.warnings; return;
+			}
+			case "synapse": {
+				const loaded = await SynapseStore.fromCwd(cwd).query((log) => log.list({ limit: 100 }));
+				data.notes = loaded.result; warningGroups.synapse = loaded.warnings; return;
+			}
+			case "lion": {
+				const loaded = await LionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+				data.runs = loaded.result; warningGroups.lion = loaded.warnings; return;
+			}
+			case "cerebel": {
+				const loaded = await CerebelStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+				data.waves = loaded.result; warningGroups.cerebel = loaded.warnings; return;
+			}
+			case "ganglion": {
+				const loaded = await GanglionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+				data.ganglions = loaded.result; warningGroups.ganglion = loaded.warnings; return;
+			}
+			case "amygdala": {
+				const loaded = await AmygdalaStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+				data.incidents = loaded.result; warningGroups.amygdala = loaded.warnings; return;
+			}
+		}
+	}));
+	data.warnings = DASHBOARD_COMPONENTS.flatMap((component) => warningGroups[component] ?? []);
+	return data;
 }
 
 function countByStatus(items: Array<{ status?: string }>): Record<string, number> {
@@ -225,6 +301,60 @@ function summary(counts: Record<string, number>): string {
 		.join(" ") || "empty";
 }
 
+const PROGRESS_STALE_MS = 2 * 60_000;
+
+function relativeAge(iso: string | null | undefined, nowMs = Date.now()): { label: string; stale: boolean } {
+	if (!iso) return { label: "unknown age", stale: false };
+	const ts = Date.parse(iso);
+	if (!Number.isFinite(ts)) return { label: "unknown age", stale: false };
+	const delta = Math.max(0, nowMs - ts);
+	const seconds = Math.floor(delta / 1000);
+	const label = seconds < 5 ? "just now"
+		: seconds < 60 ? `${seconds}s ago`
+		: seconds < 3600 ? `${Math.floor(seconds / 60)}m ago`
+		: `${Math.floor(seconds / 3600)}h ago`;
+	return { label, stale: delta > PROGRESS_STALE_MS };
+}
+
+export function describeLionProgress(run: LionRun, nowMs = Date.now()): string {
+	const p = run.progress;
+	if (!p) return run.status === "running" || run.status === "queued" ? "no progress snapshot yet" : "no progress snapshot";
+	const age = relativeAge(p.last_event_at, nowMs);
+	const bits = [p.activity || p.event];
+	if (p.active_tools.length) bits.push(`tools:${p.active_tools.join(",")}`);
+	if (p.tool_uses > 0) bits.push(`${p.tool_uses} tool${p.tool_uses === 1 ? "" : "s"}`);
+	if (p.turn_count > 0) bits.push(`turns:${p.turn_count}`);
+	if (typeof p.token_total === "number" && p.token_total > 0) bits.push(`${p.token_total} tokens`);
+	bits.push(`${age.stale && (run.status === "running" || run.status === "queued") ? "stale " : ""}${age.label}`);
+	return bits.join(" · ");
+}
+
+function lionRunRefKey(runId: string, incarnationId: string | null | undefined): string {
+	return JSON.stringify([runId, incarnationId ?? null]);
+}
+
+export function summarizeWaveProgress(wave: Wave, runs: LionRun[], nowMs = Date.now()): string {
+	if (!wave.assignments.length) return "no assignments";
+	const runsByRef = new Map(runs.map((run) => [lionRunRefKey(run.id, run.incarnation_id), run]));
+	const linkedRuns = wave.assignments
+		.map((a) => a.lion_run_id ? runsByRef.get(lionRunRefKey(a.lion_run_id, a.lion_run_incarnation_id)) : undefined)
+		.filter((r): r is LionRun => Boolean(r));
+	const assignmentCounts = countByStatus(wave.assignments);
+	const assignmentSummary = Object.entries(assignmentCounts)
+		.sort((a, b) => statusOrder(a[0]) - statusOrder(b[0]) || a[0].localeCompare(b[0]))
+		.map(([status, count]) => `${status}:${count}`)
+		.join(" ");
+	if (!linkedRuns.length) return `assignments ${assignmentSummary}; no linked LION runs`;
+	const runCounts = countByStatus(linkedRuns);
+	const runSummary = Object.entries(runCounts)
+		.sort((a, b) => statusOrder(a[0]) - statusOrder(b[0]) || a[0].localeCompare(b[0]))
+		.map(([status, count]) => `lion-${status}:${count}`)
+		.join(" ");
+	const active = linkedRuns.find((r) => r.status === "running" || r.status === "queued");
+	const activity = active ? `; active ${active.id}: ${describeLionProgress(active, nowMs)}` : "";
+	return `assignments ${assignmentSummary}; ${runSummary}${activity}`;
+}
+
 type Column = { text: string; width?: number };
 function columnLine(totalWidth: number, columns: Column[]): string {
 	const gap = "  ";
@@ -244,7 +374,7 @@ function headerColumnLine(theme: Theme, width: number, columns: Column[]): strin
 	return theme.fg("muted", theme.bold(columnLine(width, columns)));
 }
 
-class NervousDashboard implements Component {
+export class NervousDashboard implements Component {
 	private tabIndex = 0;
 	private selected = 0;
 	private detail: Detail | null = null;
@@ -252,22 +382,41 @@ class NervousDashboard implements Component {
 	private detailLineCount = 0;
 	private readonly detailViewportRows = 20;
 	private refreshing = false;
+	private reloadPending = false;
+	private pendingFullReload = false;
+	private reloadFailed = false;
+	private readonly dirtyVersions = new Map<Tab, number>();
+	private readonly inFlightVersions = new Map<Tab, number>();
+	private showRefreshing = false;
+	private closed = false;
 	private error: string | null = null;
 	private cachedWidth?: number;
 	private cachedLines?: string[];
+	private refreshTimer: RefreshTimer | null = null;
+	private readonly autoRefreshMs: number;
+	private readonly maxAutoRefreshMs: number;
+	private readonly changeDetector?: () => Promise<boolean | Tab[]>;
+	private nextAutoRefreshMs: number;
 
 	constructor(
 		private data: DashboardData,
 		private readonly tui: TUI,
 		private readonly theme: Theme,
 		private readonly done: () => void,
-		private readonly refresh: () => Promise<DashboardData>,
-	) {}
+		private readonly refresh: (components?: Tab[]) => Promise<DashboardData>,
+		options: DashboardRefreshOptions = {},
+	) {
+		this.autoRefreshMs = options.autoRefreshMs ?? DASHBOARD_AUTO_REFRESH_MS;
+		this.maxAutoRefreshMs = Math.max(this.autoRefreshMs, options.maxAutoRefreshMs ?? 8_000);
+		this.changeDetector = options.changeDetector;
+		this.nextAutoRefreshMs = this.autoRefreshMs;
+		this.startAutoRefresh(this.autoRefreshMs);
+	}
 
 	handleInput(data: string): void {
 		if (matchesKey(data, Key.escape) || data === "q" || matchesKey(data, Key.ctrl("c"))) {
 			if (this.detail) return this.closeDetail();
-			this.done();
+			this.closeDashboard();
 			return;
 		}
 		if (this.detail) {
@@ -301,11 +450,12 @@ class NervousDashboard implements Component {
 		const lines: string[] = [hline(this.theme, w, "┌", "┐"), frameLine(this.header(w), w, this.theme), hline(this.theme, w, "├", "┤")];
 		if (this.error) lines.push(frameLine(this.theme.fg("error", this.error), w, this.theme));
 		for (const warning of this.data.warnings.slice(0, 2)) lines.push(frameLine(this.theme.fg("warning", warning), w, this.theme));
-		if (this.refreshing) lines.push(frameLine(this.theme.fg("accent", "Refreshing…"), w, this.theme));
+		if (this.refreshing && this.showRefreshing) lines.push(frameLine(this.theme.fg("accent", "Refreshing…"), w, this.theme));
 		if (this.detail) this.renderDetailViewport(lines, w);
 		else this.renderList(lines, w);
 		lines.push(hline(this.theme, w, "├", "┤"));
-		lines.push(frameLine(this.detail ? "↑/↓ scroll • pgup/pgdn jump • esc/backspace close detail • r refresh • q close" : "←/→ or tab switch systems • ↑/↓ select • enter details • r refresh • q/esc close", w, this.theme));
+		const refreshLabel = formatRefreshInterval(this.autoRefreshMs);
+		lines.push(frameLine(this.detail ? `↑/↓ scroll • pgup/pgdn jump • esc/backspace close detail • r refresh • ${refreshLabel} • q close` : `←/→ or tab switch systems • ↑/↓ select • enter details • r refresh • ${refreshLabel} • q/esc close`, w, this.theme));
 		lines.push(hline(this.theme, w, "└", "┘"));
 		this.cachedWidth = width;
 		this.cachedLines = lines;
@@ -383,8 +533,8 @@ class NervousDashboard implements Component {
 			case "magi": return headerColumnLine(this.theme, inner, [{ text: "RECORD", width: 9 }, { text: "CONF", width: 8 }, { text: "COUNCIL", width: 16 }, { text: "ISSUE" }]);
 			case "axon": return headerColumnLine(this.theme, inner, [{ text: "TASK", width: 9 }, { text: "STATUS", width: 14 }, { text: "PRI", width: 8 }, { text: "REVIEW", width: 13 }, { text: "TITLE" }]);
 			case "synapse": return headerColumnLine(this.theme, inner, [{ text: "NOTE", width: 9 }, { text: "EVENT", width: 12 }, { text: "AGENT", width: 14 }, { text: "TASK", width: 17 }, { text: "MESSAGE" }]);
-			case "lion": return headerColumnLine(this.theme, inner, [{ text: "RUN", width: 9 }, { text: "AGENT", width: 18 }, { text: "STATUS", width: 20 }, { text: "TASK", width: 11 }, { text: "OBJECTIVE" }]);
-			case "cerebel": return headerColumnLine(this.theme, inner, [{ text: "WAVE", width: 9 }, { text: "STATUS", width: 14 }, { text: "ASSIGN", width: 8 }, { text: "DECISION" }]);
+			case "lion": return headerColumnLine(this.theme, inner, [{ text: "RUN", width: 9 }, { text: "AGENT", width: 18 }, { text: "STATUS", width: 20 }, { text: "TASK", width: 11 }, { text: "PROGRESS / OBJECTIVE" }]);
+			case "cerebel": return headerColumnLine(this.theme, inner, [{ text: "WAVE", width: 9 }, { text: "STATUS", width: 14 }, { text: "ASSIGN", width: 8 }, { text: "PROGRESS / DECISION" }]);
 			case "ganglion": return headerColumnLine(this.theme, inner, [{ text: "GROUP", width: 12 }, { text: "STATUS", width: 12 }, { text: "MEMBERS", width: 9 }, { text: "ACTIVE", width: 8 }, { text: "NAME" }]);
 			case "amygdala": return headerColumnLine(this.theme, inner, [{ text: "RISK", width: 9 }, { text: "STATUS", width: 14 }, { text: "SEV", width: 9 }, { text: "RECOMMEND", width: 18 }, { text: "TITLE" }]);
 		}
@@ -403,9 +553,14 @@ class NervousDashboard implements Component {
 			case "lion": {
 				const task = detail.item.task_id ? this.data.tasks.find((t) => t.id === detail.item.task_id) : undefined;
 				const historical = task?.status === "completed" && ["failed", "blocked", "aborted"].includes(detail.item.status) ? this.theme.fg("muted", "+historical") : "";
-				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: detail.item.agent_id, width: 18 }, { text: `${styleStatus(this.theme, detail.item.status)}${historical ? ` ${historical}` : ""}`, width: 20 }, { text: detail.item.task_id ?? "—", width: 11 }, { text: detail.item.objective }]);
+				const progress = ["queued", "running"].includes(detail.item.status) && detail.item.progress ? describeLionProgress(detail.item) : detail.item.objective;
+				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: detail.item.agent_id, width: 18 }, { text: `${styleStatus(this.theme, detail.item.status)}${historical ? ` ${historical}` : ""}`, width: 20 }, { text: detail.item.task_id ?? "—", width: 11 }, { text: progress }]);
 			}
-			case "cerebel": return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: String(detail.item.assignments.length), width: 8 }, { text: detail.item.decision?.decision ?? "" }]);
+			case "cerebel": {
+				const progress = summarizeWaveProgress(detail.item, this.data.runs);
+				const decision = detail.item.decision ? `decision:${detail.item.decision.decision}` : "";
+				return columnLine(inner, [{ text: detail.item.id, width: 9 }, { text: styleStatus(this.theme, detail.item.status), width: 14 }, { text: String(detail.item.assignments.length), width: 8 }, { text: [progress, decision].filter(Boolean).join(" · ") }]);
+			}
 			case "ganglion": {
 				const note = ganglionConsistencyNote(detail.item, this.data.runs, this.data.goals);
 				return columnLine(inner, [{ text: detail.item.id, width: 12 }, { text: styleStatus(this.theme, detail.item.status), width: 12 }, { text: String(detail.item.members.length), width: 9 }, { text: `${activeGanglionAllocations(detail.item).length}${note ? this.theme.fg("warning", " ⚠") : ""}`, width: 8 }, { text: detail.item.name }]);
@@ -508,6 +663,7 @@ class NervousDashboard implements Component {
 		this.title(lines, width, `LION ${r.agent_id}: ${r.id}`);
 		const task = r.task_id ? this.data.tasks.find((t) => t.id === r.task_id) : undefined;
 		pushWrapped(lines, "Status", r.status, width, this.theme);
+		pushWrapped(lines, "Progress", describeLionProgress(r), width, this.theme);
 		pushWrapped(lines, "Task", task ? `${r.task_id} • AXON ${task.status} • ${task.title}` : r.task_id, width, this.theme);
 		if (task?.status === "completed" && ["failed", "blocked", "aborted"].includes(r.status)) pushWrapped(lines, "Interpretation", "Historical failed/blocked LION attempt; linked AXON task is now completed by a later path.", width, this.theme);
 		pushWrapped(lines, "Objective", r.objective, width, this.theme);
@@ -516,7 +672,18 @@ class NervousDashboard implements Component {
 		pushWrapped(lines, "Blockers", r.report?.blockers.join(" | ") || r.error, width, this.theme);
 		pushWrapped(lines, "Next", r.report?.next_steps.join(" | "), width, this.theme);
 	}
-	private renderCerebel(lines: string[], width: number, w: Wave): void { this.title(lines, width, `CEREBEL ${w.id}`); pushWrapped(lines, "Status", w.status, width, this.theme); pushWrapped(lines, "Goal", w.goal_id, width, this.theme); pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme); pushWrapped(lines, "Assignments", w.assignments.map((a) => `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}${a.ganglion_allocation_id ? `/ganglion:${a.ganglion_id ?? "?"}/${a.ganglion_allocation_id}` : ""}`).join(" | "), width, this.theme); }
+	private renderCerebel(lines: string[], width: number, w: Wave): void {
+		this.title(lines, width, `CEREBEL ${w.id}`);
+		pushWrapped(lines, "Status", w.status, width, this.theme);
+		pushWrapped(lines, "Goal", w.goal_id, width, this.theme);
+		pushWrapped(lines, "Progress", summarizeWaveProgress(w, this.data.runs), width, this.theme);
+		pushWrapped(lines, "Decision", w.decision ? `${w.decision.decision}: ${w.decision.reason}` : "—", width, this.theme);
+		pushWrapped(lines, "Assignments", w.assignments.map((a) => {
+			const linked = a.lion_run_id ? this.data.runs.find((r) => r.id === a.lion_run_id && (r.incarnation_id ?? null) === (a.lion_run_incarnation_id ?? null)) : undefined;
+			const progress = linked?.progress ? ` progress:${describeLionProgress(linked)}` : "";
+			return `${a.id}/${a.agent_id}/${a.status}${a.lion_run_id ? `/${a.lion_run_id}` : ""}${a.ganglion_allocation_id ? `/ganglion:${a.ganglion_id ?? "?"}/${a.ganglion_allocation_id}` : ""}${progress}`;
+		}).join(" | "), width, this.theme);
+	}
 	private renderGanglion(lines: string[], width: number, g: Ganglion): void {
 		this.title(lines, width, `GANGLION ${g.id}: ${g.name}`);
 		pushWrapped(lines, "Status", g.status, width, this.theme);
@@ -529,6 +696,12 @@ class NervousDashboard implements Component {
 	private renderAmygdala(lines: string[], width: number, i: Incident): void { this.title(lines, width, `AMYGDALA ${i.id}: ${i.title}`); pushWrapped(lines, "Status", `${i.status} • ${i.severity}/${i.category} • ${i.recommendation}`, width, this.theme); pushWrapped(lines, "Source", `${i.source}${i.source_id ? `:${i.source_id}` : ""}`, width, this.theme); pushWrapped(lines, "Description", i.description, width, this.theme); pushWrapped(lines, "Reason", i.reason, width, this.theme); pushWrapped(lines, "Mitigation", i.mitigation_plan.join(" | "), width, this.theme); pushWrapped(lines, "Latest note", i.notes.at(-1)?.text, width, this.theme); }
 
 	private closeDetail(): void { this.detail = null; this.detailScroll = 0; this.invalidate(); this.tui.requestRender(); }
+	private closeDashboard(): void {
+		if (this.closed) return;
+		this.closed = true;
+		this.dispose();
+		this.done();
+	}
 	private switchTab(delta: number): void { this.tabIndex = (this.tabIndex + delta + TABS.length) % TABS.length; this.selected = 0; this.detailScroll = 0; this.invalidate(); this.tui.requestRender(); }
 	private move(delta: number): void { this.selected = Math.max(0, Math.min(Math.max(0, this.items().length - 1), this.selected + delta)); this.invalidate(); this.tui.requestRender(); }
 	private scrollDetail(delta: number): void { this.scrollDetailTo(this.detailScroll + delta); }
@@ -538,20 +711,128 @@ class NervousDashboard implements Component {
 		this.invalidate();
 		this.tui.requestRender();
 	}
-	private reload(): void {
-		if (this.refreshing) return;
+	private markDirty(components: Tab[]): void {
+		for (const component of components) this.dirtyVersions.set(component, (this.dirtyVersions.get(component) ?? 0) + 1);
+	}
+	private startAutoRefresh(intervalMs: number): void {
+		if (intervalMs <= 0 || this.closed) return;
+		this.refreshTimer = setTimeout(() => {
+			this.refreshTimer = null;
+			void (async () => {
+				let detected: boolean | Tab[] = this.reloadFailed ? [] : !this.changeDetector;
+				try { if (!this.reloadFailed && this.changeDetector) detected = await this.changeDetector(); }
+				catch { detected = true; }
+				if (this.closed) return;
+				const components = detected === true ? DASHBOARD_COMPONENTS : detected === false ? [] : detected;
+				if (components.length) this.markDirty(components);
+				const dirty = [...this.dirtyVersions.keys()].filter((component) => !this.refreshing || (this.dirtyVersions.get(component) ?? 0) > (this.inFlightVersions.get(component) ?? -1));
+				if (dirty.length) this.reload({ showIndicator: false, components: dirty });
+				this.nextAutoRefreshMs = dirty.length ? this.autoRefreshMs : Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
+				this.startAutoRefresh(this.nextAutoRefreshMs);
+			})();
+		}, intervalMs);
+		const maybeUnref = this.refreshTimer as RefreshTimer & { unref?: () => void };
+		maybeUnref.unref?.();
+	}
+	dispose(): void {
+		this.closed = true;
+		if (!this.refreshTimer) return;
+		clearTimeout(this.refreshTimer);
+		this.refreshTimer = null;
+	}
+	private reload(options: { showIndicator?: boolean; components?: Tab[] } = {}): void {
+		if (this.closed) return;
+		if (this.refreshing) {
+			this.reloadPending = true;
+			if (!options.components) this.pendingFullReload = true;
+			return;
+		}
+		const requested = options.components ?? DASHBOARD_COMPONENTS;
+		const versions = new Map(requested.map((component) => [component, this.dirtyVersions.get(component) ?? 0]));
+		this.inFlightVersions.clear();
+		for (const [component, version] of versions) this.inFlightVersions.set(component, version);
 		this.refreshing = true;
+		this.showRefreshing = options.showIndicator ?? true;
 		this.error = null;
-		this.invalidate();
-		this.tui.requestRender();
-		void this.refresh().then((data) => { this.data = data; this.detail = null; }).catch((err) => { this.error = err instanceof Error ? err.message : String(err); }).finally(() => { this.refreshing = false; this.selected = Math.min(this.selected, Math.max(0, this.items().length - 1)); this.invalidate(); this.tui.requestRender(); });
+		if (this.showRefreshing) {
+			this.invalidate();
+			this.tui.requestRender();
+		}
+		void this.refresh(options.components)
+			.then((data) => {
+				if (this.closed) return;
+				const selectedKey = this.currentSelectedKey();
+				const detailKey = this.detail ? this.detailKey(this.detail) : null;
+				this.data = data;
+				for (const [component, version] of versions) if ((this.dirtyVersions.get(component) ?? 0) === version) this.dirtyVersions.delete(component);
+				this.reloadFailed = this.dirtyVersions.size > 0;
+				this.restoreSelection(selectedKey);
+				this.restoreDetail(detailKey);
+			})
+			.catch((err) => {
+				if (!this.closed) {
+					for (const component of requested) if (!this.dirtyVersions.has(component)) this.markDirty([component]);
+					this.reloadFailed = true;
+					this.error = err instanceof Error ? err.message : String(err);
+				}
+			})
+			.finally(() => {
+				this.refreshing = false;
+				this.inFlightVersions.clear();
+				this.showRefreshing = false;
+				if (this.closed) return;
+				this.selected = Math.min(this.selected, Math.max(0, this.items().length - 1));
+				this.invalidate();
+				this.tui.requestRender();
+				if (this.reloadPending) {
+					const full = this.pendingFullReload;
+					this.reloadPending = false;
+					this.pendingFullReload = false;
+					this.reload({ showIndicator: false, components: full ? undefined : [...this.dirtyVersions.keys()] });
+				}
+			});
+	}
+	private currentSelectedKey(): string | null {
+		const item = this.items()[this.selected];
+		return item ? this.detailKey(item) : null;
+	}
+	private detailKey(detail: Detail): string { return `${detail.kind}:${detail.item.id}`; }
+	private findDetail(key: string | null): Detail | null {
+		if (!key) return null;
+		const [kind, id] = key.split(":", 2);
+		if (!kind || !id || !TABS.includes(kind as Tab)) return null;
+		return this.itemsFor(kind as Tab).find((detail) => this.detailKey(detail) === key) ?? null;
+	}
+	private restoreSelection(key: string | null): void {
+		const items = this.items();
+		if (key) {
+			const index = items.findIndex((item) => this.detailKey(item) === key);
+			if (index >= 0) {
+				this.selected = index;
+				return;
+			}
+		}
+		this.selected = Math.min(this.selected, Math.max(0, items.length - 1));
+	}
+	private restoreDetail(key: string | null): void {
+		if (!key) return;
+		const next = this.findDetail(key);
+		if (next) this.detail = next;
+		else {
+			this.detail = null;
+			this.detailScroll = 0;
+		}
 	}
 }
 
 async function showDashboard(ctx: ExtensionCommandContext): Promise<void> {
-	const initial = await loadDashboardData(ctx.cwd);
+	const changeDetector = await createDashboardChangeDetector(ctx.cwd);
+	let current = await loadDashboardData(ctx.cwd);
 	await ctx.ui.custom<void>(
-		(tui, theme, _keybindings, done) => new NervousDashboard(initial, tui, theme, done, () => loadDashboardData(ctx.cwd)),
+		(tui, theme, _keybindings, done) => new NervousDashboard(current, tui, theme, done, async (components) => {
+			current = await loadDashboardData(ctx.cwd, components ?? DASHBOARD_COMPONENTS, components ? current : undefined);
+			return current;
+		}, { changeDetector }),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "90%", minWidth: 72, maxHeight: "85%", margin: 1 } },
 	);
 }

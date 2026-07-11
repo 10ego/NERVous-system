@@ -22,7 +22,7 @@ export type WaveStatus = (typeof WAVE_STATUSES)[number];
 export const ORCHESTRATION_DECISIONS = ["dispatch", "wait", "continue", "complete", "replan", "escalate_to_amygdala", "cancelled"] as const;
 export type OrchestrationDecision = (typeof ORCHESTRATION_DECISIONS)[number];
 
-export const CEREBEL_ACTIONS = ["plan_wave", "dispatch", "record", "decide", "complete_wave", "cancel", "get", "list", "summary"] as const;
+export const CEREBEL_ACTIONS = ["plan_wave", "dispatch", "record", "decide", "complete_wave", "cancel", "run_wave", "get", "list", "summary"] as const;
 export type CerebelAction = (typeof CEREBEL_ACTIONS)[number];
 
 export interface AxonTaskBrief {
@@ -33,7 +33,7 @@ export interface AxonTaskBrief {
 	assigned_to?: string | null;
 }
 
-export interface Assignment {
+interface AssignmentFields {
 	id: string;
 	task_id: string | null;
 	agent_id: string;
@@ -44,7 +44,6 @@ export interface Assignment {
 	/** Optional GANGLION allocation lease that should be released when this assignment reaches a terminal outcome. */
 	ganglion_id?: string | null;
 	ganglion_allocation_id?: string | null;
-	lion_run_id?: string | null;
 	outcome_summary?: string | null;
 	changed_files: string[];
 	tests_run: string[];
@@ -53,6 +52,12 @@ export interface Assignment {
 	created_at: string;
 	updated_at: string;
 }
+
+/** An assignment is either unlinked or linked to one exact immutable LION execution. */
+export type Assignment = AssignmentFields & (
+	| { lion_run_id?: null; lion_run_incarnation_id?: null }
+	| { lion_run_id: string; lion_run_incarnation_id: string }
+);
 
 export interface Wave {
 	id: string;
@@ -119,25 +124,28 @@ const AssignmentInputSchema = Type.Object({
 const DispatchLinkSchema = Type.Object({
 	assignment_id: Type.String(),
 	lion_run_id: Type.Optional(Type.String()),
+	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable incarnation id returned by the linked LION run; required for every new lion_run_id link." })),
 	ganglion_id: Type.Optional(Type.String({ description: "GANGLION id that owns this capacity lease." })),
 	ganglion_allocation_id: Type.Optional(Type.String({ description: "GANGLION allocation id to record/release when this assignment reaches a terminal outcome." })),
 });
 
 export const CerebelToolParams = Type.Object({
-	action: StringEnum(CEREBEL_ACTIONS, { description: "What to do. plan_wave/dispatch/record/decide/complete_wave/cancel/get/list/summary." }),
+	action: StringEnum(CEREBEL_ACTIONS, { description: "What to do. plan_wave/dispatch/record/decide/complete_wave/cancel/run_wave/get/list/summary." }),
 	wave_id: Type.Optional(Type.String({ description: "Wave id. Use current/latest when omitted for most actions." })),
 	goal_id: Type.Optional(Type.String({ description: "Optional CORTEX goal id this wave serves." })),
-	max_parallel: Type.Optional(Type.Number({ description: "Max LION assignments to run concurrently. Default 3." })),
+	max_parallel: Type.Optional(Type.Number({ description: "Maximum concurrent assignments. plan_wave defaults to 3; run_wave defaults to the selected wave's stored max_parallel." })),
 	// plan_wave input: either AXON task briefs or direct assignments
 	tasks: Type.Optional(Type.Array(TaskBriefSchema, { description: "Ready AXON task briefs to turn into LION assignments." })),
 	assignments: Type.Optional(Type.Array(AssignmentInputSchema, { description: "Direct assignments to add to a wave." })),
 	context: Type.Optional(Type.String({ description: "Shared wave context / acceptance criteria." })),
+	reason: Type.Optional(Type.String({ description: "Explicit cancellation reason for the cancel action." })),
 	// dispatch
 	links: Type.Optional(Type.Array(DispatchLinkSchema, { description: "Assignment→LION run links after calling lion run." })),
 	// record
 	assignment_id: Type.Optional(Type.String({ description: "Assignment id to record." })),
 	task_id: Type.Optional(Type.String({ description: "AXON task id to record if assignment_id omitted." })),
 	lion_run_id: Type.Optional(Type.String({ description: "LION run id that handled the assignment." })),
+	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable incarnation id of the LION run that handled the assignment." })),
 	ganglion_id: Type.Optional(Type.String({ description: "GANGLION id for a linked capacity lease if not already stored on the assignment." })),
 	ganglion_allocation_id: Type.Optional(Type.String({ description: "GANGLION allocation id to record/release for this terminal assignment if not already stored on the assignment." })),
 	outcome: Type.Optional(ASSIGNMENT_STATUS_SCHEMA),
@@ -146,6 +154,12 @@ export const CerebelToolParams = Type.Object({
 	tests_run: Type.Optional(Type.Array(Type.String())),
 	blockers: Type.Optional(Type.Array(Type.String())),
 	next_steps: Type.Optional(Type.Array(Type.String())),
+	// run_wave optional LION subprocess controls
+	timeout_ms: Type.Optional(Type.Number({ description: "Per-LION subprocess timeout for run_wave in milliseconds." })),
+	model: Type.Optional(Type.String({ description: "Explicit model for LION subprocesses launched by run_wave." })),
+	model_role: Type.Optional(StringEnum(["implementation", "review", "default"] as const)),
+	runner_mode: Type.Optional(StringEnum(["json", "rpc"] as const, { description: "LION runner backend for run_wave. Explicit input wins, then LION_RUNNER; json is the fallback default and rpc enables live steering." })),
+	tools: Type.Optional(Type.Array(Type.String(), { description: "Optional pi tool allow-list for run_wave LION subprocesses." })),
 	// list/summary filters
 	status_filter: Type.Optional(WAVE_STATUS_SCHEMA),
 	limit: Type.Optional(Type.Number({ description: "Max records to return. Default 20." })),

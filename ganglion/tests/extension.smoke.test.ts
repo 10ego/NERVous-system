@@ -1,6 +1,7 @@
 import * as assert from "node:assert";
 import { describe, it } from "vitest";
 import factory from "../extension/index.ts";
+import { formatAllocationReleaseDisposition } from "../extension/disposition.ts";
 
 function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 	const tools: any[] = [];
@@ -9,6 +10,14 @@ function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 }
 
 describe("ganglion extension factory", () => {
+	it("formats every allocation release disposition centrally", () => {
+		assert.equal(formatAllocationReleaseDisposition("released"), "capacity released");
+		assert.equal(formatAllocationReleaseDisposition("already_free"), "capacity was already free");
+		assert.equal(formatAllocationReleaseDisposition("member_unavailable"), "member has no active lease but remains unavailable");
+		assert.equal(formatAllocationReleaseDisposition("retained_by_newer_allocation"), "capacity retained by a newer allocation");
+		assert.equal(formatAllocationReleaseDisposition("not_terminal"), "no terminal capacity release");
+	});
+
 	it("registers the ganglion tool and commands", () => {
 		const { pi, tools, commands } = stubPi();
 		assert.doesNotThrow(() => factory(pi));

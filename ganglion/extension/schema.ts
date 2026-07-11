@@ -95,6 +95,8 @@ export interface GanglionFile {
 	created_at?: string;
 	updated_at: string;
 	current_ganglion_id?: string;
+	/** Durable monotonic sequence preventing deleted ganglion/allocation identities from being reused. */
+	next_ganglion_sequence?: number;
 	ganglions: Record<string, Ganglion>;
 }
 

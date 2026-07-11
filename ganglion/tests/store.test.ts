@@ -76,6 +76,32 @@ describe("GanglionLedger", () => {
 		assert.equal(r.members[0]?.last_run_id, "run-001");
 	});
 
+	it("does not release a newer member lease when an old allocation is recorded again", () => {
+		const l = new GanglionLedger();
+		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+		l.allocate(g.id, { tasks: [{ id: "task-old", title: "Old" }] });
+		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "completed" });
+		l.allocate(g.id, { tasks: [{ id: "task-new", title: "New" }] });
+		const stale = l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "cancelled" });
+		assert.equal(stale.release_disposition, "retained_by_newer_allocation");
+		assert.equal(stale.ganglion.allocations[0]?.status, "cancelled");
+		assert.equal(stale.ganglion.allocations[1]?.status, "assigned");
+		assert.equal(stale.ganglion.members[0]?.status, "busy");
+		assert.equal(stale.ganglion.members[0]?.current_allocation_id, "alloc-002");
+	});
+
+	it("distinguishes an unavailable unowned member from a newer lease", () => {
+		const l = new GanglionLedger();
+		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+		l.allocate(g.id, { tasks: [{ id: "task-old", title: "Old" }] });
+		l.record(g.id, { allocation_id: "alloc-001", status: "completed" });
+		l.updateMember(g.id, "lion-api", { status: "offline" });
+		const replay = l.recordWithResult(g.id, { allocation_id: "alloc-001", status: "cancelled" });
+		assert.equal(replay.release_disposition, "member_unavailable");
+		assert.equal(replay.ganglion.members[0]?.current_allocation_id, null);
+		assert.equal(replay.ganglion.members[0]?.status, "offline");
+	});
+
 	it("reconciles busy members from terminal LION runs", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
@@ -128,6 +154,19 @@ describe("GanglionLedger", () => {
 		assert.equal(back.current_ganglion_id, "ganglion-002");
 		back.delete("ganglion-002");
 		assert.equal(back.all().length, 1);
+	});
+
+	it("never reuses a deleted ganglion and allocation identity pair", () => {
+		const ledger = new GanglionLedger();
+		const original = ledger.create({ members: [{ id: "lion-a" }] });
+		ledger.allocate(original.id, { tasks: [{ id: "task-a", title: "A" }] });
+		ledger.delete(original.id);
+		const restored = GanglionLedger.fromJSON(ledger.toJSON());
+		const replacement = restored.create({ members: [{ id: "lion-b" }] });
+		const allocatedReplacement = restored.allocate(replacement.id, { tasks: [{ id: "task-b", title: "B" }] });
+		assert.equal(original.id, "ganglion-001");
+		assert.equal(replacement.id, "ganglion-002");
+		assert.equal(allocatedReplacement.allocations[0]?.id, "alloc-001");
 	});
 
 	it("coerces bad JSON safely", () => {

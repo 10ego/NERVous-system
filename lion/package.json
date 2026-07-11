@@ -1,6 +1,6 @@
 {
   "name": "@nervous-system/lion",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "LION \u2014 Local Intelligence Operations Node: an isolated pi coding subagent worker for the NERVous System.",
   "keywords": [
     "pi-package",
@@ -39,6 +39,6 @@
     "vitest": "^2.1.0"
   },
   "dependencies": {
-    "@nervous-system/state": "0.1.0"
+    "@nervous-system/state": "1.0.0"
   }
 }

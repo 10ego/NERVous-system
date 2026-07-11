@@ -21,6 +21,17 @@ const VERSION = 1;
 const STATUS_SET = new Set<string>(WAVE_STATUSES);
 const ASSIGNMENT_STATUS_SET = new Set<string>(ASSIGNMENT_STATUSES);
 const PRIORITY_SET = new Set<string>(PRIORITIES);
+export const TERMINAL_ASSIGNMENT_STATUSES = ["completed", "partial", "blocked", "failed", "cancelled"] as const satisfies readonly AssignmentStatus[];
+const TERMINAL_ASSIGNMENT_STATUS_SET = new Set<AssignmentStatus>(TERMINAL_ASSIGNMENT_STATUSES);
+
+export function isTerminalAssignmentStatus(status: AssignmentStatus): boolean {
+	return TERMINAL_ASSIGNMENT_STATUS_SET.has(status);
+}
+
+export interface ExactLionRunRef {
+	run_id: string;
+	incarnation_id: string;
+}
 
 function now(): string {
 	return new Date().toISOString();
@@ -51,13 +62,14 @@ export interface PlanWaveInput {
 }
 
 export interface DispatchInput {
-	links?: Array<{ assignment_id: string; lion_run_id?: string; ganglion_id?: string | null; ganglion_allocation_id?: string | null }>;
+	links?: Array<{ assignment_id: string; lion_run_id?: string; lion_run_incarnation_id?: string; ganglion_id?: string | null; ganglion_allocation_id?: string | null }>;
 }
 
 export interface RecordInput {
 	assignment_id?: string;
 	task_id?: string;
 	lion_run_id?: string;
+	lion_run_incarnation_id?: string;
 	ganglion_id?: string | null;
 	ganglion_allocation_id?: string | null;
 	outcome: AssignmentStatus;
@@ -66,6 +78,12 @@ export interface RecordInput {
 	tests_run?: string[];
 	blockers?: string[];
 	next_steps?: string[];
+}
+
+export interface RecordIfOwnedResult {
+	committed: boolean;
+	wave: Wave;
+	assignment: Assignment;
 }
 
 export class CerebelLedger {
@@ -87,7 +105,7 @@ export class CerebelLedger {
 			id: this.nextWaveId(),
 			goal_id: input.goal_id ?? null,
 			status: "planned",
-			max_parallel: clampParallel(input.max_parallel),
+			max_parallel: normalizeParallelism(input.max_parallel),
 			assignments,
 			decision: null,
 			created_at: ts,
@@ -101,23 +119,35 @@ export class CerebelLedger {
 
 	dispatch(waveId: string, input: DispatchInput = {}): Wave {
 		const w = this.require(waveId);
-		if (w.status !== "planned" && w.status !== "needs_replan") throw new CerebelError("invalid_transition", `cannot dispatch ${w.id} from ${w.status}`);
+		if (!["planned", "needs_replan", "dispatched", "collecting"].includes(w.status)) throw new CerebelError("invalid_transition", `cannot dispatch ${w.id} from ${w.status}`);
 		const links = input.links ?? [];
 		for (const link of links) {
 			const a = requireAssignment(w, link.assignment_id);
+			if (isTerminalAssignmentStatus(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch terminal assignment ${a.id} from ${a.status}`);
+			if (!["planned", "dispatched"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot dispatch assignment ${a.id} from ${a.status}`);
+			const existingRef = assignmentRunRef(a);
+			const incomingRef = optionalRunRef(link.lion_run_id, link.lion_run_incarnation_id, `dispatch link for ${a.id}`);
+			if (existingRef && incomingRef && !sameRunRef(existingRef, incomingRef)) {
+				throw new CerebelError("invalid_transition", `cannot replace LION provenance for ${a.id} from ${formatRunRef(existingRef)} to ${formatRunRef(incomingRef)}`);
+			}
 			a.status = "dispatched";
-			if (link.lion_run_id) a.lion_run_id = link.lion_run_id;
+			if (incomingRef && !existingRef) {
+				a.lion_run_id = incomingRef.run_id;
+				a.lion_run_incarnation_id = incomingRef.incarnation_id;
+			}
 			if (link.ganglion_id) a.ganglion_id = link.ganglion_id;
 			if (link.ganglion_allocation_id) a.ganglion_allocation_id = link.ganglion_allocation_id;
 			a.updated_at = now();
 		}
 		if (!links.length) {
-			for (const a of w.assignments.filter((a) => a.status === "planned").slice(0, w.max_parallel)) {
+			const dispatched = w.assignments.filter((assignment) => assignment.status === "dispatched").length;
+			const remainingCapacity = Math.max(0, w.max_parallel - dispatched);
+			for (const a of w.assignments.filter((a) => a.status === "planned").slice(0, remainingCapacity)) {
 				a.status = "dispatched";
 				a.updated_at = now();
 			}
 		}
-		this.transition(w, "dispatched");
+		if (w.status === "planned" || w.status === "needs_replan") this.transition(w, "dispatched");
 		w.decision = this.computeDecision(w);
 		w.updated_at = now();
 		return clone(w);
@@ -129,8 +159,16 @@ export class CerebelLedger {
 		const a = input.assignment_id ? requireAssignment(w, input.assignment_id) : findAssignment(w, input.task_id, input.lion_run_id);
 		if (!a) throw new CerebelError("not_found", "assignment not found for record");
 		if (["cancelled"].includes(a.status)) throw new CerebelError("invalid_transition", `cannot record cancelled assignment ${a.id}`);
+		const existingRef = assignmentRunRef(a);
+		const incomingRef = optionalRunRef(input.lion_run_id, input.lion_run_incarnation_id, `record link for ${a.id}`);
+		if (existingRef && incomingRef && !sameRunRef(existingRef, incomingRef)) {
+			throw new CerebelError("invalid_transition", `cannot replace LION provenance for ${a.id} from ${formatRunRef(existingRef)} to ${formatRunRef(incomingRef)}`);
+		}
 		a.status = input.outcome;
-		if (input.lion_run_id) a.lion_run_id = input.lion_run_id;
+		if (incomingRef && !existingRef) {
+			a.lion_run_id = incomingRef.run_id;
+			a.lion_run_incarnation_id = incomingRef.incarnation_id;
+		}
 		if (input.ganglion_id) a.ganglion_id = input.ganglion_id;
 		if (input.ganglion_allocation_id) a.ganglion_allocation_id = input.ganglion_allocation_id;
 		a.outcome_summary = input.summary ?? null;
@@ -146,6 +184,27 @@ export class CerebelLedger {
 		w.updated_at = now();
 		if (w.status === "completed") w.completed_at = w.updated_at;
 		return clone(w);
+	}
+
+	/** Atomically records an outcome only while the assignment remains linked to the expected LION incarnation. */
+	recordIfOwned(waveId: string, expectedLionRunId: string, expectedLionIncarnationId: string, input: RecordInput & { assignment_id: string }): RecordIfOwnedResult {
+		if (!input.assignment_id) throw new CerebelError("invalid_arg", "guarded record requires assignment_id");
+		if (input.lion_run_id && input.lion_run_id !== expectedLionRunId) {
+			throw new CerebelError("invalid_arg", `guarded record for ${expectedLionRunId} cannot write LION link ${input.lion_run_id}`);
+		}
+		if (input.lion_run_incarnation_id !== undefined && input.lion_run_incarnation_id !== expectedLionIncarnationId) {
+			throw new CerebelError("invalid_arg", `guarded record for ${expectedLionRunId} cannot write a different LION incarnation`);
+		}
+		const wave = this.require(waveId);
+		const current = requireAssignment(wave, input.assignment_id);
+		const currentRef = assignmentRunRef(current);
+		if (isTerminalAssignmentStatus(current.status)
+			|| !currentRef
+			|| !sameRunRef(currentRef, { run_id: expectedLionRunId, incarnation_id: expectedLionIncarnationId })) {
+			return { committed: false, wave: clone(wave), assignment: clone(current) };
+		}
+		const recorded = this.record(waveId, { ...input, lion_run_incarnation_id: expectedLionIncarnationId });
+		return { committed: true, wave: recorded, assignment: recorded.assignments.find((a) => a.id === current.id) ?? clone(current) };
 	}
 
 	decide(waveId: string): DecisionReport {
@@ -175,6 +234,48 @@ export class CerebelLedger {
 		w.decision = { decision: "cancelled", reason: "wave cancelled", ready_assignment_ids: [], blocked_assignment_ids: [], failed_assignment_ids: [], completed_assignment_ids: [], created_at: now() };
 		w.updated_at = now();
 		return clone(w);
+	}
+
+	releaseReservations(waveId: string, assignmentIds: string[], reason = "released unlinked run_wave reservation"): Assignment[] {
+		const w = this.require(waveId);
+		const ids = new Set(assignmentIds);
+		const released: Assignment[] = [];
+		const ts = now();
+		for (const a of w.assignments) {
+			if (!ids.has(a.id) || a.status !== "dispatched" || a.lion_run_id) continue;
+			a.status = "planned";
+			a.outcome_summary = reason;
+			a.updated_at = ts;
+			released.push(clone(a));
+		}
+		if (released.length) {
+			w.decision = this.computeDecision(w);
+			w.updated_at = ts;
+			if (w.status === "dispatched" || w.status === "collecting") this.transitionLenient(w, statusFromAssignments(w));
+		}
+		return released;
+	}
+
+	recoverOrphanedReservations(waveId: string, options: { stale_after_ms?: number; now_ms?: number } = {}): Assignment[] {
+		const w = this.require(waveId);
+		const nowMs = options.now_ms ?? Date.now();
+		const staleAfterMs = options.stale_after_ms ?? 30_000;
+		const recovered: Assignment[] = [];
+		for (const a of w.assignments) {
+			if (a.status !== "dispatched" || a.lion_run_id) continue;
+			const updatedMs = Date.parse(a.updated_at);
+			if (Number.isFinite(updatedMs) && nowMs - updatedMs < staleAfterMs) continue;
+			a.status = "planned";
+			a.outcome_summary = "recovered stale run_wave reservation without LION run id";
+			a.updated_at = new Date(nowMs).toISOString();
+			recovered.push(clone(a));
+		}
+		if (recovered.length) {
+			w.decision = this.computeDecision(w);
+			w.updated_at = new Date(nowMs).toISOString();
+			if (w.status === "dispatched" || w.status === "collecting") this.transitionLenient(w, statusFromAssignments(w));
+		}
+		return recovered;
 	}
 
 	get(id: string): Wave | undefined {
@@ -267,6 +368,7 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			ganglion_id: null,
 			ganglion_allocation_id: null,
 			lion_run_id: null,
+			lion_run_incarnation_id: null,
 			outcome_summary: null,
 			changed_files: [], tests_run: [], blockers: [], next_steps: [],
 			created_at: ts, updated_at: ts,
@@ -284,12 +386,45 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			ganglion_id: a.ganglion_id ?? null,
 			ganglion_allocation_id: a.ganglion_allocation_id ?? null,
 			lion_run_id: null,
+			lion_run_incarnation_id: null,
 			outcome_summary: null,
 			changed_files: [], tests_run: [], blockers: [], next_steps: [],
 			created_at: ts, updated_at: ts,
 		});
 	}
 	return out;
+}
+
+function requireNonEmpty(value: unknown, field: string): string {
+	if (typeof value !== "string" || !value.trim()) throw new CerebelError("invalid_arg", `${field} must be a non-empty string`);
+	return value;
+}
+
+export function sameRunRef(left: ExactLionRunRef, right: ExactLionRunRef): boolean {
+	return left.run_id === right.run_id && left.incarnation_id === right.incarnation_id;
+}
+
+function formatRunRef(ref: ExactLionRunRef): string {
+	return `${ref.run_id}/${ref.incarnation_id}`;
+}
+
+export function assignmentRunRef(assignment: Pick<Assignment, "id" | "lion_run_id" | "lion_run_incarnation_id">): ExactLionRunRef | undefined {
+	const hasRunId = assignment.lion_run_id !== null && assignment.lion_run_id !== undefined;
+	const hasIncarnation = assignment.lion_run_incarnation_id !== null && assignment.lion_run_incarnation_id !== undefined;
+	if (!hasRunId && !hasIncarnation) return undefined;
+	if (!hasRunId || !hasIncarnation) {
+		throw new CerebelError("invalid_arg", `assignment ${assignment.id} has invalid LION provenance; delete/reset this clean-slate record because migration and incarnation backfill are unsupported`);
+	}
+	return {
+		run_id: requireNonEmpty(assignment.lion_run_id, `assignment ${assignment.id} lion_run_id`),
+		incarnation_id: requireNonEmpty(assignment.lion_run_incarnation_id, `assignment ${assignment.id} lion_run_incarnation_id`),
+	};
+}
+
+function optionalRunRef(runId: string | undefined, incarnationId: string | undefined, context: string): ExactLionRunRef | undefined {
+	if (runId === undefined && incarnationId === undefined) return undefined;
+	if (runId === undefined || incarnationId === undefined) throw new CerebelError("invalid_arg", `${context} requires both lion_run_id and lion_run_incarnation_id`);
+	return { run_id: requireNonEmpty(runId, `${context} lion_run_id`), incarnation_id: requireNonEmpty(incarnationId, `${context} lion_run_incarnation_id`) };
 }
 
 function requireAssignment(w: Wave, id: string): Assignment {
@@ -301,10 +436,12 @@ function findAssignment(w: Wave, task_id?: string, lion_run_id?: string): Assign
 	return w.assignments.find((a) => (task_id && a.task_id === task_id) || (lion_run_id && a.lion_run_id === lion_run_id));
 }
 function statusFromAssignments(w: Wave): WaveStatus {
+	if (w.status === "cancelled") return "cancelled";
 	const statuses = w.assignments.map((a) => a.status);
 	if (statuses.every((s) => s === "completed" || s === "partial")) return "completed";
 	if (statuses.some((s) => s === "failed")) return "needs_replan";
 	if (statuses.some((s) => s === "blocked")) return "blocked";
+	if (statuses.some((s) => s === "cancelled")) return "cancelled";
 	if (statuses.some((s) => s === "dispatched")) return "collecting";
 	return w.status;
 }
@@ -333,7 +470,7 @@ function computeDecision(w: Wave): DecisionReport {
 		created_at: now(),
 	};
 }
-function clampParallel(n: unknown): number {
+export function normalizeParallelism(n: unknown): number {
 	return typeof n === "number" && Number.isFinite(n) ? Math.max(1, Math.min(10, Math.floor(n))) : 3;
 }
 function normalizePriority(p: unknown): Priority {
@@ -346,7 +483,7 @@ function coerceWave(id: string, value: unknown): Wave | null {
 		id: typeof value.id === "string" ? value.id : id,
 		goal_id: typeof value.goal_id === "string" ? value.goal_id : null,
 		status: typeof value.status === "string" && STATUS_SET.has(value.status) ? (value.status as WaveStatus) : "needs_replan",
-		max_parallel: clampParallel(value.max_parallel),
+		max_parallel: normalizeParallelism(value.max_parallel),
 		assignments: Array.isArray(value.assignments) ? value.assignments.map(coerceAssignment).filter((x): x is Assignment => !!x) : [],
 		decision: isObject(value.decision) ? (value.decision as unknown as DecisionReport) : null,
 		created_at: created,
@@ -357,7 +494,7 @@ function coerceWave(id: string, value: unknown): Wave | null {
 function coerceAssignment(value: unknown): Assignment | null {
 	if (!isObject(value)) return null;
 	const created = typeof value.created_at === "string" ? value.created_at : now();
-	return {
+	const base: AssignmentFieldsForCoercion = {
 		id: typeof value.id === "string" ? value.id : "assign-unknown",
 		task_id: typeof value.task_id === "string" ? value.task_id : null,
 		agent_id: typeof value.agent_id === "string" ? value.agent_id : "lion-unknown",
@@ -367,7 +504,6 @@ function coerceAssignment(value: unknown): Assignment | null {
 		status: typeof value.status === "string" && ASSIGNMENT_STATUS_SET.has(value.status) ? (value.status as AssignmentStatus) : "failed",
 		ganglion_id: typeof value.ganglion_id === "string" ? value.ganglion_id : null,
 		ganglion_allocation_id: typeof value.ganglion_allocation_id === "string" ? value.ganglion_allocation_id : null,
-		lion_run_id: typeof value.lion_run_id === "string" ? value.lion_run_id : null,
 		outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null,
 		changed_files: strings(value.changed_files),
 		tests_run: strings(value.tests_run),
@@ -376,7 +512,20 @@ function coerceAssignment(value: unknown): Assignment | null {
 		created_at: created,
 		updated_at: typeof value.updated_at === "string" ? value.updated_at : created,
 	};
+	const hasRunId = value.lion_run_id !== null && value.lion_run_id !== undefined;
+	const hasIncarnation = value.lion_run_incarnation_id !== null && value.lion_run_incarnation_id !== undefined;
+	if (hasRunId !== hasIncarnation) {
+		throw new CerebelError("invalid_arg", `assignment ${base.id} has invalid LION provenance; delete/reset this clean-slate record because migration and incarnation backfill are unsupported`);
+	}
+	if (!hasRunId) return { ...base, lion_run_id: null, lion_run_incarnation_id: null };
+	return {
+		...base,
+		lion_run_id: requireNonEmpty(value.lion_run_id, `assignment ${base.id} lion_run_id`),
+		lion_run_incarnation_id: requireNonEmpty(value.lion_run_incarnation_id, `assignment ${base.id} lion_run_incarnation_id`),
+	};
 }
+
+type AssignmentFieldsForCoercion = Omit<Assignment, "lion_run_id" | "lion_run_incarnation_id">;
 function isObject(x: unknown): x is Record<string, unknown> {
 	return typeof x === "object" && x !== null;
 }

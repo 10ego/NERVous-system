@@ -49,17 +49,26 @@ export interface CreateGanglionInput {
 }
 export interface AllocateInput { tasks: WorkItemBrief[]; context?: string }
 export interface RecordInput { allocation_id?: string; task_id?: string; lion_run_id?: string; status: AllocationStatus; summary?: string }
+export type AllocationReleaseDisposition = "released" | "already_free" | "member_unavailable" | "retained_by_newer_allocation" | "not_terminal";
+export interface GanglionRecordResult { ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
 export interface LionRunBrief { id: string; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
 
 export class GanglionLedger {
 	readonly project?: string;
 	current_ganglion_id?: string;
 	private ganglionsById: Map<string, Ganglion>;
+	private nextGanglionSequence: number;
 
-	constructor(project?: string, ganglions: Ganglion[] = [], current_ganglion_id?: string) {
+	constructor(project?: string, ganglions: Ganglion[] = [], current_ganglion_id?: string, nextGanglionSequence?: number) {
 		this.project = project;
 		this.ganglionsById = new Map(ganglions.map((g) => [g.id, clone(g)]));
 		this.current_ganglion_id = current_ganglion_id;
+		let derived = 1;
+		for (const id of this.ganglionsById.keys()) {
+			const match = /^ganglion-(\d+)$/.exec(id);
+			if (match) derived = Math.max(derived, Number(match[1]) + 1);
+		}
+		this.nextGanglionSequence = Number.isSafeInteger(nextGanglionSequence) && nextGanglionSequence! > 0 ? Math.max(derived, nextGanglionSequence!) : derived;
 	}
 
 	create(input: CreateGanglionInput = {}): Ganglion {
@@ -151,6 +160,10 @@ export class GanglionLedger {
 	}
 
 	record(ganglionId: string, input: RecordInput): Ganglion {
+		return this.recordWithResult(ganglionId, input).ganglion;
+	}
+
+	recordWithResult(ganglionId: string, input: RecordInput): GanglionRecordResult {
 		const g = this.require(ganglionId);
 		if (!A_STATUS.has(input.status)) throw new GanglionError("invalid_arg", `invalid allocation status ${input.status}`);
 		const a = input.allocation_id ? requireAllocation(g, input.allocation_id) : findAllocation(g, input.task_id);
@@ -160,10 +173,22 @@ export class GanglionLedger {
 		a.outcome_summary = input.summary ?? null;
 		a.updated_at = now();
 		const m = requireMember(g, a.member_id);
-		if (["completed", "blocked", "failed", "cancelled"].includes(a.status)) releaseMember(m, input.lion_run_id);
-		else m.status = "busy";
+		let releaseDisposition: AllocationReleaseDisposition = "not_terminal";
+		if (["completed", "blocked", "failed", "cancelled"].includes(a.status)) {
+			if (m.current_allocation_id === a.id) {
+				releaseMember(m, input.lion_run_id);
+				releaseDisposition = "released";
+			} else if (!m.current_allocation_id) {
+				releaseDisposition = m.status === "available" ? "already_free" : "member_unavailable";
+			} else {
+				releaseDisposition = "retained_by_newer_allocation";
+			}
+		} else if (!m.current_allocation_id || m.current_allocation_id === a.id) {
+			m.status = "busy";
+			m.current_allocation_id = a.id;
+		}
 		g.updated_at = now();
-		return clone(g);
+		return { ganglion: clone(g), allocation: clone(a), release_disposition: releaseDisposition };
 	}
 
 	release(ganglionId: string, memberOrAllocationId: string): Ganglion {
@@ -238,7 +263,7 @@ export class GanglionLedger {
 	toJSON(): GanglionFile {
 		const ganglions: Record<string, Ganglion> = {};
 		for (const g of this.ganglionsById.values()) ganglions[g.id] = clone(g);
-		return { version: VERSION, project: this.project, updated_at: now(), current_ganglion_id: this.current_ganglion_id, ganglions };
+		return { version: VERSION, project: this.project, updated_at: now(), current_ganglion_id: this.current_ganglion_id, next_ganglion_sequence: this.nextGanglionSequence, ganglions };
 	}
 	static fromJSON(raw: unknown): GanglionLedger {
 		const obj = isObject(raw) ? raw : {};
@@ -248,10 +273,10 @@ export class GanglionLedger {
 			const g = coerceGanglion(id, value);
 			if (g) ganglions.push(g);
 		}
-		return new GanglionLedger(typeof obj.project === "string" ? obj.project : undefined, ganglions, typeof obj.current_ganglion_id === "string" ? obj.current_ganglion_id : undefined);
+		return new GanglionLedger(typeof obj.project === "string" ? obj.project : undefined, ganglions, typeof obj.current_ganglion_id === "string" ? obj.current_ganglion_id : undefined, typeof obj.next_ganglion_sequence === "number" ? obj.next_ganglion_sequence : undefined);
 	}
 	private require(id: string): Ganglion { const g = this.ganglionsById.get(id); if (!g) throw new GanglionError("not_found", `ganglion ${id} not found`); return g; }
-	private nextId(): string { let max = 0; for (const id of this.ganglionsById.keys()) { const m = /^ganglion-(\d+)$/.exec(id); if (m) max = Math.max(max, Number(m[1])); } return `ganglion-${String(max + 1).padStart(3, "0")}`; }
+	private nextId(): string { return `ganglion-${String(this.nextGanglionSequence++).padStart(3, "0")}`; }
 }
 
 function materializeMembers(ganglionId: string, members: CreateGanglionInput["members"], count: unknown, ts: string): Member[] {
