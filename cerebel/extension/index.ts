@@ -131,6 +131,7 @@ const MAX_CANCEL_SETTLE_TIMEOUT_MS = 120_000;
 /** Covers short reservation→exact-link races; exhaustion fails closed and retains capacity. */
 const CANCEL_STABILITY_MAX_ATTEMPTS = 10;
 const CANCEL_STABILITY_RETRY_MS = 50;
+const CANCEL_RESERVATION_STALE_MS = 30_000;
 
 function lionRunRefKey(runId: string, incarnationId: string | null | undefined): string {
 	return JSON.stringify([runId, incarnationId ?? null]);
@@ -151,7 +152,7 @@ export async function settleLinkedLionsBeforeCancel(
 	timeoutMs = resolveCancelSettlementTimeout(),
 	loadRuntime = () => Promise.all([import("@nervous-system/lion/extension/backend.ts"), import("@nervous-system/lion/extension/active-runs.ts")]),
 ): Promise<LinkedLionSettlement[]> {
-	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id && !isTerminalAssignmentStatus(assignment.status));
+	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id);
 	if (!assignments.length) return [];
 	const results = new Map<string, LinkedLionSettlement>();
 	const [{ LionStore }, controls] = await loadRuntime();
@@ -257,7 +258,11 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 						activeRuns.attachActiveRunProcess(activeOwner, info);
 						void lionStore.mutate((l) => activeRuns.isActiveRunOwner(activeOwner)
 							? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, process_identity: info.process_identity ?? null, started_at: new Date().toISOString() })
-							: l.get(run.id)).catch(() => undefined).finally(() => activeRuns.replayPendingCancellation(activeOwner, lionStore).catch(() => undefined));
+							: l.get(run.id))
+							.catch((error) => console.warn(`[nervous-system/cerebel] process metadata persistence failed for ${run.id}:`, error))
+							.finally(() => activeRuns.replayPendingCancellation(activeOwner, lionStore).catch((error) => {
+								console.warn(`[nervous-system/cerebel] pending cancellation replay failed for ${run.id}:`, error);
+							}));
 					},
 					onControlClosed: () => activeRuns.markActiveRunControlClosed(activeOwner),
 					onProcessExit: () => activeRuns.markActiveRunExited(activeOwner),
@@ -389,6 +394,7 @@ export default function (pi: ExtensionAPI) {
 								settledRunRefs.add(lionRunRefKey(settlement.assignment.lion_run_id, settlement.assignment.lion_run_incarnation_id));
 							}
 							const attempt = await store.mutate((l) => {
+								l.recoverOrphanedReservations(initial.id, { stale_after_ms: CANCEL_RESERVATION_STALE_MS });
 								const current = l.get(initial.id);
 								if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
 								const pending = current.assignments.some((assignment) => !isTerminalAssignmentStatus(assignment.status) && (

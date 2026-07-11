@@ -44,9 +44,9 @@ export interface RunWaveResult {
 	summary: string;
 }
 
-export class RunWaveBatchError extends Error {
+export class RunWaveBatchError extends AggregateError {
 	constructor(message: string, readonly result: RunWaveResult, readonly causes: unknown[]) {
-		super(message);
+		super(causes, message);
 		this.name = "RunWaveBatchError";
 	}
 }

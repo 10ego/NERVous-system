@@ -133,6 +133,48 @@ describe("cerebel extension factory", () => {
 		}
 	});
 
+	it("recovers a stale unlinked reservation before cancelling", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-stale-unlinked-cancel-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			const ctx = { cwd: dir };
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [{ agent_id: "lion-a", objective: "A" }] }, undefined, undefined, ctx);
+			await cerebel.execute("reserve", { action: "dispatch" }, undefined, undefined, ctx);
+			vi.useFakeTimers();
+			vi.setSystemTime(Date.now() + 31_000);
+			const cancelled = await cerebel.execute("cancel", { action: "cancel", reason: "stop" }, undefined, undefined, ctx);
+			assert.equal(cancelled.isError, undefined);
+			assert.equal(cancelled.details.wave?.status, "cancelled");
+		} finally {
+			vi.useRealTimers();
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
+	});
+
+	it("settles exact linked LIONs even after an assignment becomes terminal", async () => {
+		const ledger = new CerebelLedger();
+		const planned = ledger.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] });
+		const wave = ledger.dispatch(planned.id, { links: planned.assignments.map((assignment, index) => ({ assignment_id: assignment.id, lion_run_id: `run-${index}`, lion_run_incarnation_id: `inc-${index}` })) });
+		ledger.record(wave.id, { assignment_id: wave.assignments[0]!.id, lion_run_id: "run-0", lion_run_incarnation_id: "inc-0", outcome: "failed", summary: "recorded before worker exit" });
+		const current = ledger.get(wave.id)!;
+		let requestedIds: string[] = [];
+		const controls = {
+			async requestRunCancellations(_store: unknown, requests: Array<{ runId: string }>) {
+				requestedIds = requests.map(({ runId }) => runId);
+				return requests.map(({ runId }) => ({ run: { id: runId, status: "aborted" }, settled: true, superseded: false }));
+			},
+		};
+		const settlements = await settleLinkedLionsBeforeCancel(process.cwd(), current, "stop", 100, async () => [{ LionStore: { fromCwd: () => ({}) } }, controls] as never);
+		assert.deepEqual(requestedIds, ["run-0", "run-1"]);
+		assert.equal(settlements.length, 2);
+	});
+
 	it("admits whole-wave linked cancellation in one batch", async () => {
 		const ledger = new CerebelLedger();
 		const planned = ledger.planWave({ assignments: Array.from({ length: 4 }, (_, index) => ({ agent_id: `lion-${index}`, objective: `work ${index}` })) });
@@ -167,10 +209,13 @@ describe("cerebel extension factory", () => {
 		const ledger = new CerebelLedger();
 		const wave = ledger.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] });
 		const partial = { wave, assignment_results: [{ assignment_id: "assign-001", lion_run_id: "run-001", outcome: "completed" as const, summary: "done", blockers: [] }], summary: "partial" };
-		const result = runWaveBatchFailureResult(new RunWaveBatchError("finish failed", partial, [new Error("finish failed")]));
+		const batchError = new RunWaveBatchError("finish failed", partial, [new Error("finish failed")]);
+		const result = runWaveBatchFailureResult(batchError);
 		assert.equal(result.isError, true);
 		assert.equal(result.details.wave?.id, wave.id);
 		assert.equal(result.details.run_wave?.assignment_results[0]?.lion_run_id, "run-001");
+		assert.equal(batchError instanceof AggregateError, true);
+		assert.deepEqual(batchError.errors, batchError.causes);
 		const rendered = renderCerebelResult(result, { expanded: true }, { fg: (_color: string, text: string) => text, bold: (text: string) => text });
 		assert.equal(rendered.constructor.name, "Container");
 	});
