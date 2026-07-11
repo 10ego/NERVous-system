@@ -264,8 +264,8 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					onProcessStart: (info) => {
 						activeRuns.attachActiveRunProcess(activeOwner, info);
 						void lionStore.mutate((l) => activeRuns.isActiveRunOwner(activeOwner)
-							? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, process_identity: info.process_identity ?? null, started_at: new Date().toISOString() })
-							: l.get(run.id))
+							? l.updateControlIfCurrent(run.id, activeOwner.incarnationId, { pid: info.pid, pgid: info.pgid, process_identity: info.process_identity ?? null, started_at: new Date().toISOString() })
+							: { run: l.get(run.id), committed: false })
 							.catch((error) => console.warn(`[nervous-system/cerebel] process metadata persistence failed for ${run.id}:`, error))
 							.finally(() => activeRuns.replayPendingCancellation(activeOwner, lionStore).catch((error) => {
 								console.warn(`[nervous-system/cerebel] pending cancellation replay failed for ${run.id}:`, error);
@@ -280,14 +280,20 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				});
 			},
 			async finishRun(runId, result) {
+				const owner = activeOwners.get(runId);
+				if (!owner) throw new Error(`active LION ownership missing while finalizing ${runId}`);
 				try {
-					const finished = (await lionStore.mutate((l) => l.finish(runId, result))).result;
+					const outcome = (await lionStore.mutate((l) => l.finishIfCurrent(runId, owner.incarnationId, result))).result;
+					if (!outcome.committed) {
+						if (outcome.run && (outcome.run.incarnation_id ?? null) === (owner.incarnationId ?? null) && outcome.run.status !== "queued" && outcome.run.status !== "running") return outcome.run;
+						throw new Error(`LION finalization superseded for run_id=${runId} incarnation_id=${owner.incarnationId ?? "null"}`);
+					}
+					const finished = outcome.run!;
 					if (finished.status === "queued" || finished.status === "running") throw new Error(`LION ${runId} remained nonterminal after finish`);
 					lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(finished.status), finished);
 					return finished;
 				} finally {
-					const owner = activeOwners.get(runId);
-					if (owner) activeRuns.finishActiveRun(owner);
+					activeRuns.finishActiveRun(owner);
 					activeOwners.delete(runId);
 				}
 			},

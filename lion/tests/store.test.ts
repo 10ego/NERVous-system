@@ -179,6 +179,21 @@ describe("LionLedger", () => {
 		assert.equal(stale.run.control, null);
 	});
 
+	it("does not finalize or attach control metadata to a replacement incarnation", () => {
+		const ledger = new LionLedger();
+		const original = ledger.create({ objective: "original" });
+		ledger.finish(original.id, { output: "old", report: null, status: "failed" });
+		ledger.delete(original.id);
+		const replacement = ledger.create({ objective: "replacement" });
+		const finalization = ledger.finishIfCurrent(original.id, original.incarnation_id, { output: "stale", report: null });
+		const control = ledger.updateControlIfCurrent(original.id, original.incarnation_id, { pid: 123 });
+		assert.equal(finalization.committed, false);
+		assert.equal(control.committed, false);
+		assert.equal(ledger.get(replacement.id)?.status, "running");
+		assert.equal(ledger.get(replacement.id)?.output, null);
+		assert.equal(ledger.get(replacement.id)?.control, null);
+	});
+
 	it("supports queued pre-start steering and rejects json running steering", () => {
 		const l = new LionLedger();
 		const queued = l.create({ objective: "queued", start: false });

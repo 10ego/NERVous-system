@@ -134,6 +134,14 @@ export function isActiveRunAttached(scope: ActiveRunScope, runnerMode?: LionRunn
 	return entry.isAlive ? entry.isAlive() : true;
 }
 
+export function isExactActiveRunLive(scope: ActiveRunScope): boolean {
+	const entry = activeRuns.get(scopeKey(scope));
+	if (!entry || !Object.prototype.hasOwnProperty.call(scope, "incarnationId") || (entry.incarnationId ?? null) !== (scope.incarnationId ?? null) || entry.state === "exited") return false;
+	if (!entry.isAlive) return true;
+	try { return entry.isAlive(); }
+	catch { return true; }
+}
+
 export async function cancelActiveRun(scope: ActiveRunScope | ActiveRunOwner, signal: ActiveCancelSignal = "SIGTERM"): Promise<ActiveCancelResult> {
 	const entry = activeRuns.get(scopeKey(scope));
 	if (!entry) return { delivered: false, reason: "not_attached" };
@@ -227,7 +235,7 @@ export async function requestRunCancellations(store: LionControlStore, requests:
 		ledger.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), get_process_identity: getProcessIdentity });
 		return requests.map((request) => {
 			const current = ledger.get(request.runId);
-			if (!current) return { kind: "missing" as const };
+			if (!current) return { kind: "missing" as const, request };
 			if (request.expectIncarnation && (current.incarnation_id ?? null) !== (request.expectedIncarnationId ?? null)) {
 				return { kind: "superseded" as const, run: current };
 			}
@@ -258,7 +266,10 @@ export async function requestRunCancellations(store: LionControlStore, requests:
 	}
 
 	return admissions.map((admission, index): RunCancellationResult => {
-		if (admission.kind === "missing") return { run: undefined, settled: true, superseded: true };
+		if (admission.kind === "missing") {
+			const exactOwnerLive = Boolean(admission.request.expectIncarnation && isExactActiveRunLive({ namespaceId: store.namespaceId, runId: admission.request.runId, incarnationId: admission.request.expectedIncarnationId ?? null }));
+			return { run: undefined, settled: !exactOwnerLive, superseded: !exactOwnerLive };
+		}
 		if (admission.kind === "superseded") return { run: admission.run, settled: true, superseded: true };
 		const requested = admission.requested;
 		const delivery = deliveries[index];
@@ -304,7 +315,8 @@ export async function waitForRunSettlements(
 		const results = runs.map((run, index): RunCancellationResult => {
 			const current = currentRuns[index];
 			if (!current || (current.incarnation_id ?? null) !== (run.incarnation_id ?? null)) {
-				return { run: current, settled: true, superseded: true };
+				const exactOwnerLive = !current && isExactActiveRunLive({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null });
+				return { run: current, settled: !exactOwnerLive, superseded: !exactOwnerLive };
 			}
 			return {
 				run: current,

@@ -51,6 +51,7 @@ describe("lion extension factory", () => {
 			const ctx = { cwd: dir, isProjectTrusted: () => false };
 			const dry = await lion.execute("call-1", { action: "run", objective: "queued", dry_run: true }, undefined, undefined, ctx);
 			const id = dry.details.run.id;
+			assert.match(dry.content[0].text, new RegExp(`run_id=${id} incarnation_id=${dry.details.run.incarnation_id}`));
 			const steer = await lion.execute("call-2", { action: "steer", id, message: "Prefer tests first" }, undefined, undefined, ctx);
 			assert.equal(steer.details.run.steering_messages[0].status, "queued");
 			const cancel = await lion.execute("call-3", { action: "cancel", id, reason: "not needed" }, undefined, undefined, ctx);
@@ -85,6 +86,7 @@ describe("lion extension factory", () => {
 			const started = await lion.execute("start", { action: "start", id, timeout_ms: 5_000 }, undefined, undefined, ctx);
 			assert.equal(started.isError, undefined);
 			assert.equal(started.details.run.status, "completed");
+			assert.match(started.content[0].text, new RegExp(`run_id=${id} incarnation_id=${started.details.run.incarnation_id}`));
 			assert.equal(started.details.run.report?.summary, "started successfully");
 			assert.equal(started.details.run.steering_messages[0]?.status, "applied");
 			assert.equal(started.details.run.progress?.event, "message_end");

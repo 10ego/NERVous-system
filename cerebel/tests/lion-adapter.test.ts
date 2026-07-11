@@ -199,6 +199,31 @@ describe("createLionAdapter", () => {
 		activeRuns.clearActiveRunsForTests();
 	});
 
+	it("does not finalize a replacement LION incarnation", async () => {
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "finalization-fence",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const runner = () => async () => ({ text: "", report: null });
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns },
+		);
+		const original = await adapter.createRun(assignment());
+		ledger.finish(original.id, { output: "external", report: null, status: "failed" });
+		ledger.delete(original.id);
+		const replacement = ledger.create({ objective: "replacement" });
+		await assert.rejects(() => adapter.finishRun(original.id, { output: "stale", report }), /finalization superseded/);
+		assert.equal(ledger.get(replacement.id)?.status, "running");
+		assert.equal(ledger.get(replacement.id)?.output, null);
+		assert.equal(activeRuns.getActiveRunIds(lionStore.namespaceId).length, 0);
+	});
+
 	it("does not let delayed process metadata mutate a reused run id", async () => {
 		activeRuns.clearActiveRunsForTests();
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-lion-stale-metadata-"));

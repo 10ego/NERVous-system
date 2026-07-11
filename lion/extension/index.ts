@@ -35,8 +35,12 @@ export type { LionEventKind } from "./lifecycle.ts";
 function ok(action: string, text: string, details: Omit<LionDetails, "action"> = {}): ToolResult {
 	return { content: [{ type: "text", text }], details: { action, ...details } };
 }
-function fail(action: string, message: string): ToolResult {
-	return { content: [{ type: "text", text: message }], details: { action, error: message }, isError: true };
+function fail(action: string, message: string, details: Omit<LionDetails, "action" | "error"> = {}): ToolResult {
+	return { content: [{ type: "text", text: message }], details: { action, ...details, error: message }, isError: true };
+}
+
+function modelVisibleRunRef(run: Pick<LionRun, "id" | "incarnation_id">): string {
+	return `run_id=${run.id} incarnation_id=${run.incarnation_id}`;
 }
 
 async function runQuery(store: LionStore, action: string, op: (l: import("./store.ts").LionLedger) => ToolResult): Promise<ToolResult> {
@@ -83,9 +87,11 @@ async function executeRun(args: {
 	activeOwner: ActiveRunOwner;
 }): Promise<ToolResult> {
 	let run = args.run;
+	const runId = args.run.id;
+	const runIncarnationId = args.run.incarnation_id;
 	const activeOwner = args.activeOwner;
 	const progressUpdater = createProgressUpdater(async (progress) => {
-		const updated = await persistBatchedProgress(args.store, run, progress);
+		const updated = await persistBatchedProgress(args.store, { id: runId, incarnation_id: runIncarnationId }, progress);
 		if (!updated) return;
 		run = updated;
 		emitLionEvent(args.pi, "progress", run, progress);
@@ -117,8 +123,8 @@ async function executeRun(args: {
 			onProcessStart: (info) => {
 				attachActiveRunProcess(activeOwner, info);
 				void args.store.mutate((l) => isActiveRunOwner(activeOwner)
-					? l.updateControl(run.id, { pid: info.pid, pgid: info.pgid, process_identity: info.process_identity ?? null, started_at: new Date().toISOString() })
-					: l.get(run.id)).then((updated) => { if (updated.result) run = updated.result; }).catch((err) => {
+					? l.updateControlIfCurrent(runId, runIncarnationId, { pid: info.pid, pgid: info.pgid, process_identity: info.process_identity ?? null, started_at: new Date().toISOString() })
+					: { run: l.get(runId), committed: false }).then((updated) => { if (updated.result.committed && updated.result.run) run = updated.result.run; }).catch((err) => {
 					console.warn(`[nervous-system/lion] process metadata update failed for ${run.id}:`, err);
 				}).finally(() => replayPendingCancellation(activeOwner, args.store).catch((err) => {
 					console.warn(`[nervous-system/lion] pending cancellation replay failed for ${run.id}:`, err);
@@ -128,21 +134,28 @@ async function executeRun(args: {
 			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
 		await progressUpdater.drain();
-		const finished = await args.store.mutate((l) => l.finish(run.id, { output: out.text, report: out.report }));
-		run = finished.result;
+		const finished = await args.store.mutate((l) => l.finishIfCurrent(runId, runIncarnationId, { output: out.text, report: out.report }));
+		if (!finished.result.committed || !finished.result.run) {
+			return fail(args.action, `LION finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, finished.result.run ? { run: finished.result.run } : {});
+		}
+		run = finished.result.run;
 		if (isActiveLionStatus(run.status)) throw new Error(`LION ${run.id} remained nonterminal after finish`);
 		emitLionEvent(args.pi, terminalEventKind(run.status), run);
 		const reportHint = run.report ? `${run.report.outcome}: ${run.report.summary}` : "completed with unparsed report";
-		return ok(args.action, `LION ${run.id} ${run.status}: ${reportHint}`, { run });
+		return ok(args.action, `LION ${modelVisibleRunRef(run)} status=${run.status}: ${reportHint}`, { run });
 	} catch (err) {
 		await progressUpdater.drain();
 		const msg = err instanceof Error ? err.message : String(err);
-		const current = (await args.store.query((l) => l.get(run.id))).result;
-		const wasCancelled = Boolean(current?.control?.cancel_requested_at || args.signal?.aborted);
-		const failed = await args.store.mutate((l) => l.finish(run.id, { output: "", report: null, status: wasCancelled ? "aborted" : "failed", error: wasCancelled ? (current?.control?.cancel_reason ? `Cancelled: ${current.control.cancel_reason}` : "Cancelled") : msg }));
-		run = failed.result;
+		const current = (await args.store.query((l) => l.get(runId))).result;
+		const exactCurrent = current && (current.incarnation_id ?? null) === (runIncarnationId ?? null) ? current : undefined;
+		const wasCancelled = Boolean(exactCurrent?.control?.cancel_requested_at || args.signal?.aborted);
+		const failed = await args.store.mutate((l) => l.finishIfCurrent(runId, runIncarnationId, { output: "", report: null, status: wasCancelled ? "aborted" : "failed", error: wasCancelled ? (exactCurrent?.control?.cancel_reason ? `Cancelled: ${exactCurrent.control.cancel_reason}` : "Cancelled") : msg }));
+		if (!failed.result.committed || !failed.result.run) {
+			return fail(args.action, `LION failure finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, failed.result.run ? { run: failed.result.run } : {});
+		}
+		run = failed.result.run;
 		emitLionEvent(args.pi, "failed", run);
-		return fail(args.action, `LION ${run.id} ${run.status}: ${run.error ?? msg}`);
+		return fail(args.action, `LION ${modelVisibleRunRef(run)} status=${run.status}: ${run.error ?? msg}`, { run });
 	} finally {
 		finishActiveRun(activeOwner);
 	}
@@ -185,7 +198,7 @@ export default function (pi: ExtensionAPI) {
 					const runnerMode = resolveLionRunnerMode(p.runner_mode);
 					if (p.dry_run) {
 						const { result: run } = await store.mutate((l) => l.create({ agent_id: p.agent_id, task_id: p.task_id ?? null, objective: p.objective ?? "", context: p.context, model, model_role: modelRole, runner_mode: runnerMode, tools: p.tools, start: false }));
-						return ok(action, `Queued dry-run ${run.id}. Use lion start id=${run.id} to launch; queued steering may be added before start.`, { run });
+						return ok(action, `Queued dry-run ${modelVisibleRunRef(run)}. Use lion start id=${run.id} to launch; queued steering may be added before start.`, { run });
 					}
 					let activeOwner: ActiveRunOwner | undefined;
 					try {

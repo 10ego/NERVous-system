@@ -170,6 +170,21 @@ describe("namespace-scoped active LION ownership", () => {
 		assert.equal(mismatched.run?.control?.cancel_requested_at, undefined);
 	});
 
+	it("does not settle a missing ledger run while its exact owner remains live", async () => {
+		const store = await makeStore("missing-live-owner");
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: "run-001", incarnationId: "inc-live" }, "rpc");
+		attachActiveRunProcess(owner, { pid: 999, pgid: null, isAlive: () => true, cancel: () => true });
+		const missing = await requestRunCancellation(store, "run-001", "stale ledger", { expectedIncarnationId: "inc-live" });
+		assert.equal(missing.settled, false);
+		assert.equal(missing.superseded, false);
+		const waited = await waitForRunSettlements(store, [{ id: "run-001", incarnation_id: "inc-live" }], 0);
+		assert.equal(waited[0]?.settled, false);
+		finishActiveRun(owner);
+		const afterExit = await requestRunCancellation(store, "run-001", "retry", { expectedIncarnationId: "inc-live" });
+		assert.equal(afterExit.settled, true);
+		assert.equal(afterExit.superseded, true);
+	});
+
 	it("treats same-incarnation terminalization during delivery as settled", async () => {
 		const store = await makeStore("terminal-during-delivery");
 		const run = (await store.mutate((l) => l.create({ objective: "terminal during delivery" }))).result;

@@ -206,6 +206,14 @@ export class LionLedger {
 		return clone(r);
 	}
 
+	finishIfCurrent(id: string, incarnationId: string | null | undefined, input: FinishRunInput): { run: LionRun | undefined; committed: boolean } {
+		const current = this.runsById.get(id);
+		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null) || isTerminalLionStatus(current.status)) {
+			return { run: current ? clone(current) : undefined, committed: false };
+		}
+		return { run: this.finish(id, input), committed: true };
+	}
+
 	updateProgress(id: string, input: UpdateProgressInput): LionRun {
 		const r = this.require(id);
 		if (!isActiveLionStatus(r.status)) {
@@ -242,6 +250,14 @@ export class LionLedger {
 		r.control = { ...(r.control ?? {}), ...input, last_seen_at: input.last_seen_at ?? ts };
 		r.updated_at = ts;
 		return clone(r);
+	}
+
+	updateControlIfCurrent(id: string, incarnationId: string | null | undefined, input: UpdateControlInput): { run: LionRun | undefined; committed: boolean } {
+		const current = this.runsById.get(id);
+		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null) || !isActiveLionStatus(current.status)) {
+			return { run: current ? clone(current) : undefined, committed: false };
+		}
+		return { run: this.updateControl(id, input), committed: true };
 	}
 
 	requestCancel(id: string, reason?: string | null): CancelRunResult {
