@@ -57,11 +57,18 @@ export class GanglionLedger {
 	readonly project?: string;
 	current_ganglion_id?: string;
 	private ganglionsById: Map<string, Ganglion>;
+	private nextGanglionSequence: number;
 
-	constructor(project?: string, ganglions: Ganglion[] = [], current_ganglion_id?: string) {
+	constructor(project?: string, ganglions: Ganglion[] = [], current_ganglion_id?: string, nextGanglionSequence?: number) {
 		this.project = project;
 		this.ganglionsById = new Map(ganglions.map((g) => [g.id, clone(g)]));
 		this.current_ganglion_id = current_ganglion_id;
+		let derived = 1;
+		for (const id of this.ganglionsById.keys()) {
+			const match = /^ganglion-(\d+)$/.exec(id);
+			if (match) derived = Math.max(derived, Number(match[1]) + 1);
+		}
+		this.nextGanglionSequence = Number.isSafeInteger(nextGanglionSequence) && nextGanglionSequence! > 0 ? Math.max(derived, nextGanglionSequence!) : derived;
 	}
 
 	create(input: CreateGanglionInput = {}): Ganglion {
@@ -256,7 +263,7 @@ export class GanglionLedger {
 	toJSON(): GanglionFile {
 		const ganglions: Record<string, Ganglion> = {};
 		for (const g of this.ganglionsById.values()) ganglions[g.id] = clone(g);
-		return { version: VERSION, project: this.project, updated_at: now(), current_ganglion_id: this.current_ganglion_id, ganglions };
+		return { version: VERSION, project: this.project, updated_at: now(), current_ganglion_id: this.current_ganglion_id, next_ganglion_sequence: this.nextGanglionSequence, ganglions };
 	}
 	static fromJSON(raw: unknown): GanglionLedger {
 		const obj = isObject(raw) ? raw : {};
@@ -266,10 +273,10 @@ export class GanglionLedger {
 			const g = coerceGanglion(id, value);
 			if (g) ganglions.push(g);
 		}
-		return new GanglionLedger(typeof obj.project === "string" ? obj.project : undefined, ganglions, typeof obj.current_ganglion_id === "string" ? obj.current_ganglion_id : undefined);
+		return new GanglionLedger(typeof obj.project === "string" ? obj.project : undefined, ganglions, typeof obj.current_ganglion_id === "string" ? obj.current_ganglion_id : undefined, typeof obj.next_ganglion_sequence === "number" ? obj.next_ganglion_sequence : undefined);
 	}
 	private require(id: string): Ganglion { const g = this.ganglionsById.get(id); if (!g) throw new GanglionError("not_found", `ganglion ${id} not found`); return g; }
-	private nextId(): string { let max = 0; for (const id of this.ganglionsById.keys()) { const m = /^ganglion-(\d+)$/.exec(id); if (m) max = Math.max(max, Number(m[1])); } return `ganglion-${String(max + 1).padStart(3, "0")}`; }
+	private nextId(): string { return `ganglion-${String(this.nextGanglionSequence++).padStart(3, "0")}`; }
 }
 
 function materializeMembers(ganglionId: string, members: CreateGanglionInput["members"], count: unknown, ts: string): Member[] {

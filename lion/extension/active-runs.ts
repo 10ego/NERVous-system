@@ -221,6 +221,8 @@ export interface LionControlStore {
 
 export interface RunCancellationResult {
 	run: LionRun | undefined;
+	/** Exact target to poll when durable state is missing/replaced but its process-local owner remains live. */
+	run_ref?: Pick<LionRun, "id" | "incarnation_id">;
 	settled: boolean;
 	superseded: boolean;
 	delivery?: ActiveCancelResult;
@@ -240,15 +242,23 @@ export async function requestRunCancellations(store: LionControlStore, requests:
 		ledger.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), get_process_identity: getProcessIdentity });
 		return requests.map((request) => {
 			const current = ledger.get(request.runId);
-			if (!current) return { kind: "missing" as const, request };
+			const expectedScope: ActiveRunScope = { namespaceId: store.namespaceId, runId: request.runId, incarnationId: request.expectedIncarnationId ?? null };
+			if (!current) return request.expectIncarnation && isExactActiveRunLive(expectedScope)
+				? { kind: "owner_only" as const, request, run: undefined }
+				: { kind: "missing" as const, request };
 			if (request.expectIncarnation && (current.incarnation_id ?? null) !== (request.expectedIncarnationId ?? null)) {
-				return { kind: "superseded" as const, run: current };
+				return isExactActiveRunLive(expectedScope)
+					? { kind: "owner_only" as const, request, run: current }
+					: { kind: "superseded" as const, run: current };
 			}
 			return { kind: "requested" as const, requested: ledger.requestCancel(request.runId, request.reason) };
 		});
 	})).result;
 
 	const deliveries = await mapBounded(admissions, MAX_CONCURRENT_CANCELLATION_DELIVERIES, async (admission) => {
+		if (admission.kind === "owner_only") {
+			return cancelActiveRunWithEscalation({ namespaceId: store.namespaceId, runId: admission.request.runId, incarnationId: admission.request.expectedIncarnationId ?? null }, "SIGTERM");
+		}
 		if (admission.kind !== "requested" || admission.requested.already_terminal || !admission.requested.signal) return undefined;
 		const run = admission.requested.run;
 		const scope: ActiveRunScope = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null };
@@ -271,17 +281,24 @@ export async function requestRunCancellations(store: LionControlStore, requests:
 	}
 
 	return admissions.map((admission, index): RunCancellationResult => {
-		if (admission.kind === "missing") {
-			const exactOwnerLive = Boolean(admission.request.expectIncarnation && isExactActiveRunLive({ namespaceId: store.namespaceId, runId: admission.request.runId, incarnationId: admission.request.expectedIncarnationId ?? null }));
-			return { run: undefined, settled: !exactOwnerLive, superseded: !exactOwnerLive };
+		if (admission.kind === "missing") return { run: undefined, settled: true, superseded: true };
+		if (admission.kind === "owner_only") {
+			const runRef = { id: admission.request.runId, incarnation_id: admission.request.expectedIncarnationId ?? null };
+			const settled = !isExactActiveRunLive({ namespaceId: store.namespaceId, runId: runRef.id, incarnationId: runRef.incarnation_id });
+			return { run: admission.run, run_ref: runRef, settled, superseded: settled, delivery: deliveries[index] };
 		}
 		if (admission.kind === "superseded") return { run: admission.run, settled: true, superseded: true };
 		const requested = admission.requested;
 		const delivery = deliveries[index];
 		if (!delivery) return { run: requested.run, settled: true, superseded: false };
 		const persisted = persistedByIndex.get(index)!;
+		if (!persisted.committed) {
+			const runRef = { id: requested.run.id, incarnation_id: requested.run.incarnation_id ?? null };
+			const exactOwnerLive = isExactActiveRunLive({ namespaceId: store.namespaceId, runId: runRef.id, incarnationId: runRef.incarnation_id });
+			return { run: persisted.run, run_ref: exactOwnerLive ? runRef : undefined, settled: !exactOwnerLive, superseded: !exactOwnerLive, delivery };
+		}
 		const terminal = Boolean(persisted.run && isTerminalLionStatus(persisted.run.status));
-		return { run: persisted.run, settled: !persisted.committed || terminal, superseded: !persisted.committed, delivery };
+		return { run: persisted.run, settled: terminal, superseded: false, delivery };
 	});
 }
 
@@ -320,7 +337,7 @@ export async function waitForRunSettlements(
 		const results = runs.map((run, index): RunCancellationResult => {
 			const current = currentRuns[index];
 			if (!current || (current.incarnation_id ?? null) !== (run.incarnation_id ?? null)) {
-				const exactOwnerLive = !current && isExactActiveRunLive({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null });
+				const exactOwnerLive = isExactActiveRunLive({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null });
 				return { run: current, settled: !exactOwnerLive, superseded: !exactOwnerLive };
 			}
 			return {

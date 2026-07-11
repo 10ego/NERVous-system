@@ -177,6 +177,23 @@ describe("cerebel extension factory", () => {
 		assert.equal(hasPendingCancellationAssignments(current, new Set([JSON.stringify(["run-0", "inc-0"]), JSON.stringify(["run-1", "inc-1"])])), false);
 	});
 
+	it("polls owner-only exact references when the durable LION run is missing", async () => {
+		const ledger = new CerebelLedger();
+		const planned = ledger.planWave({ assignments: [{ agent_id: "lion-a", objective: "A" }] });
+		const wave = ledger.dispatch(planned.id, { links: [{ assignment_id: planned.assignments[0]!.id, lion_run_id: "run-1", lion_run_incarnation_id: "inc-1" }] });
+		let waited: Array<{ id: string; incarnation_id?: string | null }> = [];
+		const controls = {
+			async requestRunCancellations() { return [{ run: undefined, run_ref: { id: "run-1", incarnation_id: "inc-1" }, settled: false, superseded: false }]; },
+			async waitForRunSettlements(_store: unknown, runs: Array<{ id: string; incarnation_id?: string | null }>) {
+				waited = runs;
+				return [{ run: undefined, settled: true, superseded: true }];
+			},
+		};
+		const settlements = await settleLinkedLionsBeforeCancel(process.cwd(), wave, "stop", 100, async () => [{ LionStore: { fromCwd: () => ({}) } }, controls] as never);
+		assert.deepEqual(waited, [{ id: "run-1", incarnation_id: "inc-1" }]);
+		assert.equal(settlements[0]?.settled, true);
+	});
+
 	it("admits whole-wave linked cancellation in one batch", async () => {
 		const ledger = new CerebelLedger();
 		const planned = ledger.planWave({ assignments: Array.from({ length: 4 }, (_, index) => ({ agent_id: `lion-${index}`, objective: `work ${index}` })) });
@@ -322,6 +339,45 @@ describe("cerebel extension factory", () => {
 			const group = (await ganglionStore.query((ledger) => ledger.get("ganglion-001"))).result;
 			assert.equal(group?.members[0]?.status, "available");
 			assert.equal(group?.allocations[0]?.status, "completed");
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
+	});
+
+	it("does not release a recreated GANGLION identity from a stale terminal assignment", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-stale-ganglion-identity-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const ganglionStore = GanglionStore.fromCwd(dir);
+			await ganglionStore.mutate((ledger) => {
+				const group = ledger.create({ members: [{ id: "lion-old" }] });
+				ledger.allocate(group.id, { tasks: [{ id: "task-old", title: "Old" }] });
+			});
+			const cerebelStore = CerebelStore.fromCwd(dir);
+			await cerebelStore.mutate((ledger) => {
+				const wave = ledger.planWave({ assignments: [
+					{ task_id: "task-old", agent_id: "lion-old", objective: "Old", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" },
+					{ task_id: "task-pending", agent_id: "lion-pending", objective: "Pending" },
+				] });
+				ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001" }] });
+				ledger.record(wave.id, { assignment_id: "assign-001", outcome: "completed", summary: "done" });
+			});
+			await ganglionStore.mutate((ledger) => {
+				ledger.delete("ganglion-001");
+				const replacement = ledger.create({ members: [{ id: "lion-new" }] });
+				ledger.allocate(replacement.id, { tasks: [{ id: "task-new", title: "New" }] });
+			});
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			const cancelled = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, { cwd: dir });
+			assert.match(cancelled.content[0].text, /GANGLION release failed for ganglion-001\/alloc-001/);
+			const replacement = (await ganglionStore.query((ledger) => ledger.get("ganglion-002"))).result;
+			assert.equal(replacement?.members[0]?.status, "busy");
+			assert.equal(replacement?.members[0]?.current_allocation_id, "alloc-001");
 		} finally {
 			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
 			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;

@@ -181,16 +181,43 @@ describe("namespace-scoped active LION ownership", () => {
 	it("does not settle a missing ledger run while its exact owner remains live", async () => {
 		const store = await makeStore("missing-live-owner");
 		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: "run-001", incarnationId: "inc-live" }, "rpc");
-		attachActiveRunProcess(owner, { pid: 999, pgid: null, isAlive: () => true, cancel: () => true });
+		let signals = 0;
+		attachActiveRunProcess(owner, { pid: 999, pgid: null, isAlive: () => true, cancel: () => { signals++; return true; } });
 		const missing = await requestRunCancellation(store, "run-001", "stale ledger", { expectedIncarnationId: "inc-live" });
 		assert.equal(missing.settled, false);
 		assert.equal(missing.superseded, false);
+		assert.equal(missing.delivery?.delivered, true);
+		assert.equal(signals, 1);
 		const waited = await waitForRunSettlements(store, [{ id: "run-001", incarnation_id: "inc-live" }], 0);
 		assert.equal(waited[0]?.settled, false);
 		finishActiveRun(owner);
 		const afterExit = await requestRunCancellation(store, "run-001", "retry", { expectedIncarnationId: "inc-live" });
 		assert.equal(afterExit.settled, true);
 		assert.equal(afterExit.superseded, true);
+	});
+
+	it("keeps a replaced durable target unsettled while its old exact owner is live", async () => {
+		const store = await makeStore("replacement-live-owner");
+		const original = (await store.mutate((ledger) => ledger.create({ objective: "original" }))).result;
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: original.id, incarnationId: original.incarnation_id }, "rpc");
+		let signals = 0;
+		attachActiveRunProcess(owner, { pid: 1001, pgid: null, isAlive: () => true, cancel: () => { signals++; return true; } });
+		const replacement = (await store.mutate((ledger) => {
+			ledger.finish(original.id, { output: "replaced", report: null, status: "failed" });
+			ledger.delete(original.id);
+			return ledger.create({ objective: "replacement" });
+		})).result;
+		const result = await requestRunCancellation(store, original.id, "cancel old owner", { expectedIncarnationId: original.incarnation_id });
+		assert.equal(result.settled, false);
+		assert.equal(result.superseded, false);
+		assert.equal(result.run_ref?.incarnation_id, original.incarnation_id);
+		assert.equal(result.run?.incarnation_id, replacement.incarnation_id);
+		assert.equal(signals, 1);
+		assert.equal((await store.query((ledger) => ledger.get(replacement.id))).result?.control?.cancel_requested_at, undefined);
+		finishActiveRun(owner);
+		const settled = await waitForRunSettlements(store, [{ id: original.id, incarnation_id: original.incarnation_id }], 0);
+		assert.equal(settled[0]?.settled, true);
+		assert.equal(settled[0]?.superseded, true);
 	});
 
 	it("treats same-incarnation terminalization during delivery as settled", async () => {
@@ -224,8 +251,9 @@ describe("namespace-scoped active LION ownership", () => {
 			},
 		});
 		const result = await requestRunCancellation(store, original.id, "cancel", { expectedIncarnationId: original.incarnation_id });
-		assert.equal(result.superseded, true);
-		assert.equal(result.settled, true);
+		assert.equal(result.superseded, false);
+		assert.equal(result.settled, false);
+		assert.equal(result.run_ref?.incarnation_id, original.incarnation_id);
 		assert.notEqual(result.run?.incarnation_id, original.incarnation_id);
 		assert.equal(result.run?.control?.cancel_requested_at, undefined);
 		finishActiveRun(owner);

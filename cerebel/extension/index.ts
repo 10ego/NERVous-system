@@ -164,7 +164,7 @@ export async function settleLinkedLionsBeforeCancel(
 	const results = new Map<string, LinkedLionSettlement>();
 	const [{ LionStore }, controls] = await loadRuntime();
 	const lionStore = LionStore.fromCwd(cwd);
-	const pending: Array<{ assignment: Assignment; run: NonNullable<Awaited<ReturnType<typeof controls.requestRunCancellations>>[number]["run"]> }> = [];
+	const pending: Array<{ assignment: Assignment; run: Pick<LionRun, "id" | "incarnation_id"> }> = [];
 	let cancellations: Awaited<ReturnType<typeof controls.requestRunCancellations>>;
 	try {
 		cancellations = await controls.requestRunCancellations(lionStore, assignments.map((assignment) => ({
@@ -181,8 +181,8 @@ export async function settleLinkedLionsBeforeCancel(
 		const assignment = assignments[index]!;
 		if (cancellation.settled) {
 			results.set(assignment.id, { assignment, settled: true, run_status: cancellation.run?.status });
-		} else if (cancellation.run) {
-			pending.push({ assignment, run: cancellation.run });
+		} else if (cancellation.run_ref ?? cancellation.run) {
+			pending.push({ assignment, run: (cancellation.run_ref ?? cancellation.run)! });
 		} else {
 			results.set(assignment.id, { assignment, settled: cancellation.superseded, error: cancellation.superseded ? undefined : "LION run disappeared during cancellation" });
 		}

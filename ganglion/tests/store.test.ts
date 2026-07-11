@@ -156,6 +156,19 @@ describe("GanglionLedger", () => {
 		assert.equal(back.all().length, 1);
 	});
 
+	it("never reuses a deleted ganglion and allocation identity pair", () => {
+		const ledger = new GanglionLedger();
+		const original = ledger.create({ members: [{ id: "lion-a" }] });
+		ledger.allocate(original.id, { tasks: [{ id: "task-a", title: "A" }] });
+		ledger.delete(original.id);
+		const restored = GanglionLedger.fromJSON(ledger.toJSON());
+		const replacement = restored.create({ members: [{ id: "lion-b" }] });
+		const allocatedReplacement = restored.allocate(replacement.id, { tasks: [{ id: "task-b", title: "B" }] });
+		assert.equal(original.id, "ganglion-001");
+		assert.equal(replacement.id, "ganglion-002");
+		assert.equal(allocatedReplacement.allocations[0]?.id, "alloc-001");
+	});
+
 	it("coerces bad JSON safely", () => {
 		const l = GanglionLedger.fromJSON({ ganglions: { "ganglion-x": { status: "wat", max_parallel: 999, members: [{ status: "bad", capabilities: ["API"] }], allocations: [{ status: "no", priority: "x" }] } } });
 		const g = l.get("ganglion-x")!;
