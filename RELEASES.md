@@ -12,10 +12,9 @@ The 1.x compatibility commitment covers documented tool actions, extension entry
 
 Semver is selected from the merged commit (normally the squash-merged PR title):
 
-- `fix: ...` creates a patch release.
 - `feat: ...` creates a minor release.
 - `feat!: ...`, `fix!: ...`, or a `BREAKING CHANGE:` footer creates a major release.
-- `chore:`, `docs:`, `refactor:`, `style:`, and `test:` do not create a release by themselves.
+- Every other allowed type—`fix:`, `perf:`, `revert:`, `chore:`, `docs:`, `refactor:`, `style:`, and `test:`—creates a patch release.
 
 ### Merge policy
 
