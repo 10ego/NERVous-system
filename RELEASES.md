@@ -28,8 +28,9 @@ All changes to `main` must go through a pull request and use squash merging. The
    - repository: `NERVous-system`
    - workflow filename: `release-please.yml`
    - environment: leave blank
-2. To have the configured bot create release PRs and releases, add its fine-grained personal access token as the repository Actions secret `RELEASE_PLEASE_TOKEN`. Give the bot write access to the repository and grant the token **Contents: read and write** and **Pull requests: read and write**. If this secret is absent, the workflow falls back to the built-in `GITHUB_TOKEN`; GitHub Actions must then be allowed to create pull requests in the repository Actions settings.
-3. Use conventional titles for squash-merged PRs so Release Please can calculate the intended version.
+2. Install the private [`nerv-ops`](https://github.com/settings/apps/nerv-ops) GitHub App on this repository with **Contents: read and write** and **Pull requests: read and write** permissions.
+3. Add the App ID as the repository Actions variable `NERV_OPS_APP_ID`, and add a generated PEM private key as the repository Actions secret `NERV_OPS_PRIVATE_KEY`. Release Please exchanges these credentials for a short-lived, repository-scoped installation token; no personal access token is stored.
+4. Use conventional titles for squash-merged PRs so Release Please can calculate the intended version.
 
 No npm token is stored in GitHub. The publish job uses npm trusted publishing through GitHub's OIDC identity and only runs when Release Please creates a release.
 
