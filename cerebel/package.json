@@ -22,13 +22,20 @@
     ]
   },
   "peerDependencies": {
+    "@nervous-system/lion": "1.0.0",
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
   },
+  "peerDependenciesMeta": {
+    "@nervous-system/lion": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@nervous-system/lion": "1.0.0",
     "@earendil-works/pi-agent-core": "*",
     "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*",

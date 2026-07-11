@@ -71,18 +71,22 @@ const DASHBOARD_STATE_FILES = [
 	["magi", "history.json", "MAGI_HISTORY_PATH"],
 ] as const;
 
-async function dashboardStateFingerprint(cwd: string): Promise<string> {
-	return (await Promise.all(DASHBOARD_STATE_FILES.map(async ([component, file, env]) => {
-		const statePath = resolveNervousStateFile(cwd, component, file, env);
+function resolveDashboardStatePaths(cwd: string, resolveFile = resolveNervousStateFile): string[] {
+	return DASHBOARD_STATE_FILES.map(([component, file, env]) => resolveFile(cwd, component, file, env));
+}
+
+async function dashboardStateFingerprint(statePaths: string[]): Promise<string> {
+	return (await Promise.all(statePaths.map(async (statePath) => {
 		try { const stat = await fs.stat(statePath); return `${statePath}:${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`; }
 		catch (error) { return `${statePath}:${(error as NodeJS.ErrnoException).code ?? "missing"}`; }
 	}))).join("|");
 }
 
-export async function createDashboardChangeDetector(cwd: string): Promise<() => Promise<boolean>> {
-	let previous = await dashboardStateFingerprint(cwd);
+export async function createDashboardChangeDetector(cwd: string, resolveFile = resolveNervousStateFile): Promise<() => Promise<boolean>> {
+	const statePaths = resolveDashboardStatePaths(cwd, resolveFile);
+	let previous = await dashboardStateFingerprint(statePaths);
 	return async () => {
-		const current = await dashboardStateFingerprint(cwd);
+		const current = await dashboardStateFingerprint(statePaths);
 		const changed = current !== previous;
 		previous = current;
 		return changed;
@@ -355,6 +359,7 @@ export class NervousDashboard implements Component {
 	private readonly detailViewportRows = 20;
 	private refreshing = false;
 	private reloadPending = false;
+	private reloadFailed = false;
 	private showRefreshing = false;
 	private closed = false;
 	private error: string | null = null;
@@ -684,8 +689,8 @@ export class NervousDashboard implements Component {
 		this.refreshTimer = setTimeout(() => {
 			this.refreshTimer = null;
 			void (async () => {
-				let changed = true;
-				try { if (this.changeDetector) changed = await this.changeDetector(); }
+				let changed = this.reloadFailed || !this.changeDetector;
+				try { if (!changed && this.changeDetector) changed = await this.changeDetector(); }
 				catch { changed = true; }
 				if (this.closed) return;
 				if (changed) this.reload({ showIndicator: false });
@@ -721,11 +726,15 @@ export class NervousDashboard implements Component {
 				const selectedKey = this.currentSelectedKey();
 				const detailKey = this.detail ? this.detailKey(this.detail) : null;
 				this.data = data;
+				this.reloadFailed = false;
 				this.restoreSelection(selectedKey);
 				this.restoreDetail(detailKey);
 			})
 			.catch((err) => {
-				if (!this.closed) this.error = err instanceof Error ? err.message : String(err);
+				if (!this.closed) {
+					this.reloadFailed = true;
+					this.error = err instanceof Error ? err.message : String(err);
+				}
 			})
 			.finally(() => {
 				this.refreshing = false;

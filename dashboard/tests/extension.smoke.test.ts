@@ -65,6 +65,16 @@ describe("dashboard extension factory", () => {
 		assert.equal(refresh.mock.calls.length, 1);
 	});
 
+	it("resolves dashboard state paths only once for repeated fingerprint checks", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-path-cache-"));
+		const resolver = vi.fn((_cwd: string, component: string, file: string) => path.join(dir, component, file));
+		const changed = await createDashboardChangeDetector(dir, resolver as never);
+		assert.equal(resolver.mock.calls.length, 8);
+		await changed();
+		await changed();
+		assert.equal(resolver.mock.calls.length, 8);
+	});
+
 	it("backs off without ledger reloads until state fingerprints change", async () => {
 		vi.useFakeTimers();
 		const refresh = vi.fn().mockResolvedValue(emptyDashboardData());
@@ -96,6 +106,20 @@ describe("dashboard extension factory", () => {
 		} finally {
 			if (oldPath === undefined) delete process.env.LION_RUNS_PATH; else process.env.LION_RUNS_PATH = oldPath;
 		}
+	});
+
+	it("retries a detected change after a transient reload failure", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
+		const refresh = vi.fn().mockRejectedValueOnce(new Error("transient read failure")).mockResolvedValue(emptyDashboardData({ runs: [{ id: "latest" }] }));
+		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(refresh.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(refresh.mock.calls.length, 2);
+		assert.equal(changeDetector.mock.calls.length, 1, "dirty reload should retry without requiring another fingerprint change");
+		assert.equal((dashboard as any).data.runs[0]?.id, "latest");
+		dashboard.dispose();
 	});
 
 	it("stops pending change-detection work when disposed", async () => {

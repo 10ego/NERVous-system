@@ -1,6 +1,6 @@
 /** CEREBEL run_wave orchestration helper. */
 
-import type { LionProgressSnapshot, LionReport, LionRun } from "../../lion/extension/schema.ts";
+import type { LionProgressSnapshot, LionReport, LionRun } from "@nervous-system/lion/extension/schema.ts";
 import type { Assignment, AssignmentStatus, Wave } from "./schema.ts";
 import { CerebelStore } from "./backend.ts";
 import { isTerminalAssignmentStatus, type RecordInput } from "./store.ts";

@@ -18,6 +18,9 @@
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*"
   },
+  "dependencies": {
+    "@nervous-system/state": "1.0.0"
+  },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",

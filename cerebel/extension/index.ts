@@ -6,19 +6,19 @@ import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus
 import { isTerminalAssignmentStatus } from "./store.ts";
 import { renderCerebelCall, renderCerebelResult, RUN_WAVE_DASHBOARD_HINT, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
 import { RunWaveBatchError, runWave, type RunWaveLionAdapter, type RunWaveResult } from "./run-wave.ts";
-import type { LionModelRole, LionProgressSnapshot, LionRun } from "../../lion/extension/schema.ts";
+import type { LionModelRole, LionProgressSnapshot, LionRun } from "@nervous-system/lion/extension/schema.ts";
 
 interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; run_wave?: import("./run-wave.ts").RunWaveResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: CerebelDetails; isError?: boolean };
 
-type LionRunner = (req: import("../../lion/extension/subprocess.ts").LionRunRequest) => Promise<{ text: string; report: import("../../lion/extension/schema.ts").LionReport | null }>;
+type LionRunner = (req: import("@nervous-system/lion/extension/subprocess.ts").LionRunRequest) => Promise<{ text: string; report: import("@nervous-system/lion/extension/schema.ts").LionReport | null }>;
 interface LionAdapterDeps {
-	lionStore?: { namespaceId: string; mutate<T>(fn: (ledger: import("../../lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>; query<T>(fn: (ledger: import("../../lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }> };
+	lionStore?: { namespaceId: string; mutate<T>(fn: (ledger: import("@nervous-system/lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>; query<T>(fn: (ledger: import("@nervous-system/lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }> };
 	createLionRunner?: (opts: { cwd: string }) => LionRunner;
 	createLionRpcRunner?: (opts: { cwd: string; store: unknown }) => LionRunner;
-	activeRuns?: typeof import("../../lion/extension/active-runs.ts");
-	lifecycle?: typeof import("../../lion/extension/lifecycle.ts");
-	options?: typeof import("../../lion/extension/options.ts");
+	activeRuns?: typeof import("@nervous-system/lion/extension/active-runs.ts");
+	lifecycle?: typeof import("@nervous-system/lion/extension/lifecycle.ts");
+	options?: typeof import("@nervous-system/lion/extension/options.ts");
 }
 
 function ok(action: string, text: string, details: Omit<CerebelDetails, "action"> = {}): ToolResult {
@@ -145,7 +145,7 @@ export async function settleLinkedLionsBeforeCancel(
 	wave: Wave,
 	reason: string,
 	timeoutMs = resolveCancelSettlementTimeout(),
-	loadRuntime = () => Promise.all([import("../../lion/extension/backend.ts"), import("../../lion/extension/active-runs.ts")]),
+	loadRuntime = () => Promise.all([import("@nervous-system/lion/extension/backend.ts"), import("@nervous-system/lion/extension/active-runs.ts")]),
 ): Promise<LinkedLionSettlement[]> {
 	const assignments = wave.assignments.filter((assignment) => assignment.lion_run_id && !isTerminalAssignmentStatus(assignment.status));
 	if (!assignments.length) return [];
@@ -193,12 +193,12 @@ export async function settleLinkedLionsBeforeCancel(
 export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}, pi?: ExtensionAPI): Promise<RunWaveLionAdapter> {
 	try {
 		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod, optionsMod] = await Promise.all([
-			deps.lionStore ? Promise.resolve({ LionStore: { fromCwd: () => deps.lionStore! as never } }) : import("../../lion/extension/backend.ts"),
-			deps.createLionRunner ? Promise.resolve({ createLionRunner: deps.createLionRunner }) : import("../../lion/extension/subprocess.ts"),
-			deps.createLionRpcRunner ? Promise.resolve({ createLionRpcRunner: deps.createLionRpcRunner }) : import("../../lion/extension/rpc-runner.ts"),
-			deps.activeRuns ? Promise.resolve(deps.activeRuns) : import("../../lion/extension/active-runs.ts"),
-			deps.lifecycle ? Promise.resolve(deps.lifecycle) : import("../../lion/extension/lifecycle.ts"),
-			deps.options ? Promise.resolve(deps.options) : import("../../lion/extension/options.ts"),
+			deps.lionStore ? Promise.resolve({ LionStore: { fromCwd: () => deps.lionStore! as never } }) : import("@nervous-system/lion/extension/backend.ts"),
+			deps.createLionRunner ? Promise.resolve({ createLionRunner: deps.createLionRunner }) : import("@nervous-system/lion/extension/subprocess.ts"),
+			deps.createLionRpcRunner ? Promise.resolve({ createLionRpcRunner: deps.createLionRpcRunner }) : import("@nervous-system/lion/extension/rpc-runner.ts"),
+			deps.activeRuns ? Promise.resolve(deps.activeRuns) : import("@nervous-system/lion/extension/active-runs.ts"),
+			deps.lifecycle ? Promise.resolve(deps.lifecycle) : import("@nervous-system/lion/extension/lifecycle.ts"),
+			deps.options ? Promise.resolve(deps.options) : import("@nervous-system/lion/extension/options.ts"),
 		]);
 		const { createLionRunner } = jsonRunnerMod;
 		const { createLionRpcRunner } = rpcRunnerMod;
