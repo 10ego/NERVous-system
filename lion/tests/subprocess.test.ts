@@ -1,11 +1,28 @@
 import * as assert from "node:assert";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "vitest";
 import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, parseLionReport, progressFromEvent, signalOwnedProcessIfAlive, signalProcessTree } from "../extension/subprocess.ts";
 import type { Message } from "@earendil-works/pi-ai";
+
+const CHILD_EXIT_TIMEOUT_MS = 2_000;
+
+async function waitForChildClose(child: ChildProcess, timeoutMs = CHILD_EXIT_TIMEOUT_MS): Promise<void> {
+	if (child.exitCode !== null || child.signalCode !== null) return;
+	await new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			child.off("close", onClose);
+			reject(new Error(`child did not close within ${timeoutMs}ms`));
+		}, timeoutMs);
+		const onClose = () => {
+			clearTimeout(timer);
+			resolve();
+		};
+		child.once("close", onClose);
+	});
+}
 
 const run = {
 	id: "run-001",
@@ -128,11 +145,19 @@ describe("LION subprocess helpers", () => {
 
 	it("signals a spawned process", async () => {
 		const proc = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: process.platform !== "win32", stdio: "ignore" });
-		assert.ok(proc.pid);
-		assert.equal(isPidAlive(proc.pid!), true);
-		signalProcessTree(proc.pid!, "SIGTERM");
-		await new Promise<void>((resolve) => proc.on("close", () => resolve()));
-		assert.equal(isPidAlive(proc.pid!), false);
+		try {
+			assert.ok(proc.pid);
+			assert.equal(isPidAlive(proc.pid!), true);
+			signalProcessTree(proc.pid!, "SIGTERM");
+			await waitForChildClose(proc);
+			assert.equal(isPidAlive(proc.pid!), false);
+		} finally {
+			if (proc.pid && isPidAlive(proc.pid)) {
+				try { signalProcessTree(proc.pid, "SIGKILL"); }
+				catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
+			}
+			await waitForChildClose(proc);
+		}
 	});
 
 	it("rejects after owner-issued cancellation even when the child exits numerically", async () => {
