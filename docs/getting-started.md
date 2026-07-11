@@ -1,0 +1,69 @@
+# Getting started
+
+[Documentation index](README.md)
+
+## Install from npm
+
+Install the full NERVous System pi package from npm:
+
+```bash
+pi install npm:nervous-system
+```
+
+This installs the root pi package and enables all NERVous extensions, skills, and prompt templates: MAGI, AXON, SYNAPSE, CORTEX, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard.
+
+Verify that pi can see the package:
+
+```bash
+pi list
+```
+
+## Start a workflow
+
+NERVous components are opt-in. When loaded, their prompt guidance tells the agent to use or mention them only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests. The CORTEX package ships a `/nervous` prompt template for explicit activation:
+
+```text
+/nervous implement this feature with durable planning and worker delegation
+```
+
+For a read-only state browser, run:
+
+```text
+/nervous:dashboard
+```
+
+See [Operations](operations.md#dashboard) for dashboard controls and [Architecture](architecture.md) for how the components work together.
+
+## Update or remove
+
+Update the package with:
+
+```bash
+pi update npm:nervous-system
+```
+
+Remove it with:
+
+```bash
+pi remove npm:nervous-system
+```
+
+## Local development
+
+```bash
+git clone git@github.com:10ego/NERVous-system.git
+cd NERVous-system
+npm install
+npm test                       # run all component + demo tests
+npm run test:e2e               # run the deterministic final end-to-end flow
+npm run test:dashboard         # run dashboard tests
+npm run test:state             # run shared state resolver tests
+
+# Load the full suite from this checkout without installing globally:
+pi -e .
+
+# Or install this checkout as a local package:
+pi install .
+```
+
+For package-specific implementation and usage details, follow the component links in [Architecture](architecture.md#component-documentation).

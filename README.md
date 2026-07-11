@@ -1,188 +1,41 @@
 # NERVous System
 
-A durable multi-agent orchestration and coding-agent coordination framework for [pi](https://pi.dev), inspired by Evangelion naming but built as a practical system where multiple coding agents **plan, delegate, coordinate, execute, recover from interruptions, and review** work continuously.
+A durable multi-agent orchestration and coding-agent coordination framework for [pi](https://pi.dev). NERVous System helps coding agents **plan, delegate, coordinate, execute, recover from interruptions, and review** work continuously.
 
-Find NERVous System in the [pi package directory](https://pi.dev/packages) by searching for **multi-agent orchestration**, **coding-agent coordination**, **subagent delegation**, **durable task planning**, **workflow recovery**, or **risk triage**.
+**You can just give it a task description and walk away.**
 
-> **Status:** 🟢 Core component set and final deterministic end-to-end demo are complete and tested: **MAGI**, **AXON**, **SYNAPSE**, **CORTEX**, **LION**, **CEREBEL**, **GANGLION**, **AMYGDALA**, plus [`demo/`](./demo).
+Find it in the [pi package directory](https://pi.dev/packages) by searching for **multi-agent orchestration**, **coding-agent coordination**, **subagent delegation**, **durable task planning**, **workflow recovery**, or **risk triage**.
 
-## Components
-
-| Component | Role | Status |
-|-----------|------|--------|
-| **CORTEX** | Main reasoning core: intent, planning, verification | ✅ [`cortex/`](./cortex) |
-| **MAGI** | Configurable deliberation council (≤3 councillors) | ✅ [`magi/`](./magi) |
-| **AXON** | Persistent task ledger (survives compaction/restart) | ✅ [`axon/`](./axon) |
-| **CEREBEL** | Orchestration controller for LION worker waves | ✅ [`cerebel/`](./cerebel) |
-| **LION** | Local Intelligence Operations Node — an isolated coding subagent with durable live progress telemetry | ✅ [`lion/`](./lion) |
-| **GANGLION** | Working-group roster/capability allocator for LIONs | ✅ [`ganglion/`](./ganglion) |
-| **SYNAPSE** | Transient shared coordination scratchpad | ✅ [`synapse/`](./synapse) |
-| **AMYGDALA** | Risk escalation and safety triage | ✅ [`amygdala/`](./amygdala) |
-| **Dashboard** | Read-only TUI modal for all NERVous system state | ✅ [`dashboard/`](./dashboard) |
-| **State** | Shared global project/context state resolver | ✅ [`state/`](./state) |
-| **E2E demo** | Deterministic full-system todo API flow | ✅ [`demo/`](./demo) |
-
-### Execution flow (target)
-
-```
-User → CORTEX →(if hard)→ MAGI → CORTEX → AXON → CEREBEL → GANGLION{LION…}
-                                              │            ↕ SYNAPSE
-                                              └─→ AMYGDALA (on risk)
-LIONs complete → update AXON → CEREBEL assigns more → … → CORTEX checks → MAGI final review
-```
-
-**Key principle:** AXON is durable state; SYNAPSE is transient coordination. Interrupted work resumes from AXON without the original context window.
-
-### Live worker controls
-
-- **Telemetry:** LION persists bounded progress snapshots and emits `nervous:lion:*` lifecycle/progress events; the dashboard displays linked LION and CEREBEL progress.
-- **Orchestration:** CEREBEL can optionally `run_wave` planned assignments through LION and records grouped outcomes while preserving partial results.
-- **Exact provenance:** CEREBEL links and settles exact immutable LION incarnations before cancellation releases GANGLION capacity. Incomplete pre-release links require operator delete/reset; provenance is never backfilled.
-- **Control:** Cancellation is best-effort, pre-start steering is queued, and RPC live steering requires explicit `runner_mode="rpc"` opt-in. JSON remains the default and rejects running steering.
-
-The workspace is released as one version-aligned distribution; see [RELEASES.md](RELEASES.md) for the 1.0 compatibility and clean-slate state policy.
-
-## State isolation
-
-NERVous runtime state is global but isolated by project and work context. By default, component ledgers live under:
-
-```text
-~/.pi/nervous/<project-slug>-<path-hash>/<context>/<component>/...
-```
-
-- **Project namespace** prevents cross-repo contamination. It is derived from the git root path; set `NERVOUS_PROJECT=<name>` to override.
-- **Context namespace** prevents stale completed work from bleeding into a new effort. It defaults to the current git branch, or `default` outside git; set `NERVOUS_CONTEXT=<work-id>` to intentionally start/resume a workstream.
-- Set `NERVOUS_STATE_ROOT=/path/to/root` to move all NERVous state elsewhere.
-- Existing explicit component paths still win, e.g. `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, `MAGI_HISTORY_PATH`. LION resolves a direct-file symlink override to one canonical operational target so atomic writes do not split its lock and active-owner namespace.
-
-Examples:
-
-```bash
-# Start a clean, named work context in the current repo
-NERVOUS_CONTEXT=upload-api pi
-
-# Resume that same work context later
-NERVOUS_CONTEXT=upload-api pi --session <session-id>
-
-# Put all NERVous state under a custom global root
-NERVOUS_STATE_ROOT="$HOME/.pi/nervous" pi
-```
-
-NERVous does not auto-migrate or delete old repo-local `.pi/` state. If you have existing state you want to keep, copy it into the corresponding global namespace manually.
-
-## NERVous prompts vs. raw LLM baseline
-
-A small deterministic benchmark compares GPT 5.5 low-thinking output with and without the NERVous extension prompt/tool surfaces loaded. The tasks ask for concise coding-orchestration guidance for a risky authenticated file-upload API and a blocked data-loss migration handoff.
-
-| Setup | Quality / 1k output tokens | Raw quality score | Output tokens |
-|-------|----------------------------|-------------------|---------------|
-| Raw GPT 5.5 low, no NERVous extensions | 64.84 | 121 | 1,866 |
-| GPT 5.5 low + NERVous extensions | **79.72** | 127 | 1,593 |
-
-On this benchmark, the NERVous prompt/tool surfaces improved useful guidance density by about **23%** versus the raw model. The main observed gains were more reliable component routing, durable state/coordination coverage, and safer blocked-work triage.
-
-> Benchmark note: this is a focused regression benchmark, not a universal model leaderboard. It measures rubric-scored guidance density for representative NERVous coding workflows.
-
-## Repository layout
-
-Each component is an independent, installable pi package so they can be used and shipped separately:
-
-```
-nervous-system/
-├── magi/            # ✅ MAGI deliberation council (extension + skill + prompts + config + tests)
-├── axon/            # ✅ AXON durable task ledger (extension + skill + config + tests)
-├── synapse/         # ✅ SYNAPSE transient coordination scratchpad (extension + skill + tests)
-├── cortex/          # ✅ CORTEX main reasoning core: goals + workflow (extension + skill + prompt + tests)
-├── lion/            # ✅ LION isolated pi coding subagent worker (extension + skill + prompt + tests)
-├── cerebel/         # ✅ CEREBEL orchestration controller for LION waves (extension + skill + prompt + tests)
-├── ganglion/        # ✅ GANGLION LION roster + capability allocator (extension + skill + prompt + tests)
-├── amygdala/        # ✅ AMYGDALA risk escalation + safety triage (extension + skill + prompt + tests)
-├── dashboard/       # ✅ read-only TUI dashboard for all NERVous system state
-├── state/           # ✅ shared global project/context state resolver
-└── demo/            # ✅ deterministic final end-to-end flow
-```
-
-## Installation
-
-### Install from npm
-
-Install the full NERVous System pi package from npm:
+## Quick start
 
 ```bash
 pi install npm:nervous-system
 ```
 
-This installs the root pi package and enables all NERVous extensions, skills, and prompt templates: MAGI, AXON, SYNAPSE, CORTEX, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard.
-
-Verify that pi can see the package:
-
-```bash
-pi list
-```
-
-Update later with:
-
-```bash
-pi update npm:nervous-system
-```
-
-Remove with:
-
-```bash
-pi remove npm:nervous-system
-```
-
-### Local development install
-
-```bash
-git clone git@github.com:10ego/NERVous-system.git
-cd NERVous-system
-npm install
-npm test                       # run all component + demo tests
-npm run test:e2e               # run the deterministic final end-to-end flow
-npm run test:dashboard         # run dashboard tests
-npm run test:state             # run shared state resolver tests
-
-# Load the full suite from this checkout without installing globally:
-pi -e .
-
-# Or install this checkout as a local package:
-pi install .
-```
-
-See component READMEs for usage and architecture: [`magi/`](./magi), [`axon/`](./axon), [`synapse/`](./synapse), [`cortex/`](./cortex), [`lion/`](./lion), [`cerebel/`](./cerebel), [`ganglion/`](./ganglion), [`amygdala/`](./amygdala), [`dashboard/`](./dashboard).
-
-### Opt-in usage
-
-NERVous components are designed to be opt-in: when loaded, their prompt guidance tells the agent to use or mention them only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests. The CORTEX package also ships a `/nervous` prompt template for explicit activation:
+Then start a durable workflow:
 
 ```text
 /nervous implement this feature with durable planning and worker delegation
 ```
 
-For a read-only state browser, install/load the dashboard package and run:
+NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard.
 
-```text
-/nervous:dashboard
-```
+## Highlights
 
-The dashboard opens a modal overlay with tabs for CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, and AMYGDALA; use arrow keys/tab to navigate, enter for details, `r` to refresh, and `q`/escape to close.
+- Durable goals and task state that survive compaction, restarts, and interruptions
+- Deliberation, risk triage, and explicit verification for difficult work
+- Parallel coding subagents with orchestration, capacity allocation, and live progress
+- Project- and context-isolated state with a read-only dashboard
 
-### NERVous config: drain, risk gates, and model defaults
+## Documentation
 
-CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized, and optionally set default models for NERVous subprocess systems:
+| Guide | Contents |
+|-------|----------|
+| [Documentation index](docs/README.md) | Suggested reading paths and all guides |
+| [Getting started](docs/getting-started.md) | Installation, first use, updates, removal, and local development |
+| [Architecture](docs/architecture.md) | Components, execution flow, repository layout, and package design |
+| [Operations](docs/operations.md) | Worker controls, dashboard, state isolation, and configuration |
+| [Benchmark](docs/benchmark.md) | NERVous prompts compared with a raw LLM baseline |
+| [Release policy](RELEASES.md) | Version compatibility, state policy, and known limitations |
 
-```text
-/nervous:config                                                       # open TUI settings menu; selected values apply immediately
-/nervous:config show                                                  # show persistent defaults as markdown
-/nervous:config drain=always risk=auto_deliberate                     # set defaults used by /nervous
-/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong # set LION role model defaults
-/nervous:config lion_review_model=unset                                             # clear a model default back to pi default
-/nervous risk=user_accepted implement the migration                   # one invocation can ask the agent to apply drain/risk tokens first
-```
-
-`auto_deliberate` is the default and proceeds only with recorded MAGI/AMYGDALA approval evidence. `strict` always blocks hard-stop risk for review, `user_accepted` requires scoped user acceptance evidence, and `disabled` requires an explicit dangerous opt-in plus audit evidence. Model defaults are stored in `~/.pi/agent/nervous.json` with trusted project overlay `.pi/nervous.json`; unset model keys preserve the current behavior (NERVous passes no `--model`, so pi uses the session/default model). Failed work is recorded with retryability via `cortex record_failure`; skipped/blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.
-
-## Why pi packages?
-
-Each NERVous component is a pi package (TypeScript extension loaded via jiti, plus optional skills/prompts/themes). This gives every component: lifecycle hooks, custom tools/commands, session persistence, subagent subprocess capabilities, and distribution via `pi install`. Components compose by reading shared durable state (AXON) and transient notes (SYNAPSE).
+> **Status:** The complete core component set and deterministic end-to-end demo are implemented and tested.
