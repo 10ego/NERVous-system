@@ -2,9 +2,36 @@
 
 ## 1.0.0 — coordinated stable release
 
-Version 1.0.0 is the first coordinated stable release of the NERVous System workspace. The private root package is distributed through the Git repository/workspace and is not published to the npm registry. Publishable `@nervous-system/*` component packages are version-aligned as one compatible set, and internal workspace dependency pins intentionally use the same version.
+Version 1.0.0 is the first coordinated stable release of the NERVous System workspace. The root `nervous-system` package is the npm distribution installed by users; it bundles the component extensions and depends on the separately published `@nervous-system/state` package. The automated release workflow versions and publishes the root package.
 
 The 1.x compatibility commitment covers documented tool actions, extension entry points, and persisted state written by 1.x releases. Backward-compatible additions may ship in minor releases, fixes in patch releases, and incompatible public or durable-schema changes require a new major version.
+
+## Automated releases
+
+[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version changes, `CHANGELOG.md`, and release manifest. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `nervous-system` to npm with provenance.
+
+Semver is selected from the merged commit (normally the squash-merged PR title):
+
+- `fix: ...` creates a patch release.
+- `feat: ...` creates a minor release.
+- `feat!: ...`, `fix!: ...`, or a `BREAKING CHANGE:` footer creates a major release.
+- `chore:`, `docs:`, `refactor:`, `style:`, and `test:` do not create a release by themselves.
+
+### Merge policy
+
+All changes to `main` must go through a pull request and use squash merging. The required `Validate PR title` check enforces the conventional title that becomes the squash commit, and the required `Test` check runs the full test suite. Direct pushes, force pushes, branch deletion, and bypassing these requirements as an administrator are disabled.
+
+### One-time repository setup
+
+1. In the npm settings for [`nervous-system`](https://www.npmjs.com/package/nervous-system), add a GitHub Actions trusted publisher with:
+   - organization/user: `10ego`
+   - repository: `NERVous-system`
+   - workflow filename: `release-please.yml`
+   - environment: leave blank
+2. To have the configured bot create release PRs and releases, add its fine-grained personal access token as the repository Actions secret `RELEASE_PLEASE_TOKEN`. Give the bot write access to the repository and grant the token **Contents: read and write** and **Pull requests: read and write**. If this secret is absent, the workflow falls back to the built-in `GITHUB_TOKEN`; GitHub Actions must then be allowed to create pull requests in the repository Actions settings.
+3. Use conventional titles for squash-merged PRs so Release Please can calculate the intended version.
+
+No npm token is stored in GitHub. The publish job uses npm trusted publishing through GitHub's OIDC identity and only runs when Release Please creates a release.
 
 Pre-1.0 (`0.x`) state is not a supported migration source. In particular, CEREBEL does not infer or backfill missing LION incarnation provenance: an assignment is either unlinked or stores a complete run-id/incarnation-id pair. Invalid pre-release state fails closed with an operator-facing delete/reset diagnostic.
 
