@@ -272,6 +272,22 @@ describe("exact-incarnation progress sidecars", () => {
 		assert.equal(await exists(orphanPaths.primary), false, "canonically missing exact entry is proven stale");
 	});
 
+	it("never sweeps existing sidecars when canonical classification is uncertain", async () => {
+		const { backend, store } = await makeStore("uncertain-canonical");
+		const original = await createRunning(store, "original active run");
+		await store.flushProgress(original, snapshot("accepted"));
+		const originalPaths = backend.progress.paths({ id: original.id, incarnation_id: original.incarnation_id! });
+
+		await fs.writeFile(backend.location.runsPath, "{corrupt", "utf8");
+		const admitted = await store.mutate((ledger) => ledger.create({ objective: "new after corrupt canonical" }));
+		const replacementPaths = backend.progress.paths({ id: admitted.result.id, incarnation_id: admitted.result.incarnation_id! });
+
+		assert.match(admitted.warnings.join("\n"), /classification is uncertain/);
+		assert.equal(await exists(originalPaths.primary), true, "uncertain canonical state must not classify the original sidecar as stale");
+		assert.equal(await exists(replacementPaths.primary), true, "the newly admitted exact run still receives its own authority");
+		assert.notEqual(admitted.result.incarnation_id, original.incarnation_id);
+	});
+
 	it("serializes concurrent workers under one namespace lock without cross-writing", async () => {
 		const { store } = await makeStore("concurrent");
 		const runs = (await store.mutate((ledger) => Array.from({ length: 12 }, (_, index) => ledger.create({ objective: `worker-${index}` })))).result;
