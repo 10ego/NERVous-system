@@ -294,6 +294,26 @@ describe("LionLedger", () => {
 		assert.throws(() => l.updateProgress(r.id, { activity: "late" }), LionError);
 	});
 
+	it("bounds persisted steering before coercing message payloads", () => {
+		const skippedOldTerminal = { id: "terminal-skipped", status: "delivered", get message(): string { throw new Error("old terminal payload was coerced"); } };
+		const skippedExcessOpen = { id: "open-skipped", status: "queued", get message(): string { throw new Error("excess open payload was coerced"); } };
+		const steeringMessages = [
+			skippedOldTerminal,
+			...Array.from({ length: 100 }, (_, index) => ({ id: `terminal-${index}`, status: "delivered", message: `terminal-${index}-${"t".repeat(5_000)}` })),
+			...Array.from({ length: 100 }, (_, index) => ({ id: `open-${index}`, status: "queued", message: `open-${index}-${"o".repeat(5_000)}` })),
+			skippedExcessOpen,
+		];
+
+		const ledger = LionLedger.fromJSON({ runs: { "run-001": { status: "queued", steering_messages: steeringMessages } } });
+		const messages = ledger.get("run-001")?.steering_messages ?? [];
+		assert.equal(messages.length, 200);
+		assert.equal(messages.filter((message) => message.status === "queued").length, 100);
+		assert.equal(messages.filter((message) => message.status === "delivered").length, 100);
+		assert.equal(messages[0]?.id, "terminal-0");
+		assert.equal(messages.at(-1)?.id, "open-99");
+		assert.equal(messages.every((message) => message.message.length <= 4_000), true);
+	});
+
 	it("round-trips through JSON and coerces bad values", () => {
 		const l = new LionLedger("p");
 		const r = l.create({ objective: "x", tools: ["read", "bash"] });
