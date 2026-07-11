@@ -132,6 +132,7 @@ async function supervise(entry: SupervisorEntry): Promise<void> {
 		const finalized = await retry(entry, () => entry.finalize(entry.handoff.terminalIntent));
 		if (!entry.settlementEmitted) {
 			try { entry.emitTerminal?.(finalized); }
+			catch { /* terminal emitters are best-effort and must never duplicate */ }
 			finally { entry.settlementEmitted = true; }
 		}
 		await retry(entry, async () => { await entry.onSettled?.(finalized); });

@@ -583,7 +583,13 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 
 		const owner = req.cleanupOwner;
 		const processInfo = processLifecycle.childInfo;
-		if (owner && processInfo && processLifecycle.isAlive() && req.registerCleanupSupervisor) {
+		const exactCleanupOwner = owner
+			&& owner.namespaceId === opts.store.namespaceId
+			&& owner.runId === req.run.id
+			&& (owner.incarnationId ?? null) === runIncarnation
+			? owner
+			: undefined;
+		if (exactCleanupOwner && processInfo && processLifecycle.isAlive() && req.registerCleanupSupervisor) {
 			const terminalIntent: LionTerminalIntent = primaryError
 				? { kind: "error", error: sanitizeRpcError(primaryError) }
 				: stopError
@@ -591,10 +597,10 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 					: { kind: "result", output: operationOutput ?? { text: "", report: null } };
 			try {
 				cleanupPending = req.registerCleanupSupervisor({
-					namespaceId: owner.namespaceId,
-					runId: owner.runId,
-					incarnationId: owner.incarnationId ?? null,
-					ownerId: owner.ownerId,
+					namespaceId: exactCleanupOwner.namespaceId,
+					runId: exactCleanupOwner.runId,
+					incarnationId: exactCleanupOwner.incarnationId ?? null,
+					ownerId: exactCleanupOwner.ownerId,
 					process: processInfo,
 					isAlive: () => processLifecycle.isAlive(),
 					waitForExit: async () => {

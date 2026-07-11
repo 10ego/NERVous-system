@@ -325,6 +325,28 @@ describe("createLionRpcRunner", () => {
 		await handoff?.cleanup();
 	});
 
+	it("does not offer cleanup transfer to a mismatched namespace/run/incarnation owner", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		const run = (await store.mutate((l) => l.create({ objective: "mismatched owner", runner_mode: "rpc" }))).result;
+		let registrations = 0;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: { namespaceId: `${store.namespaceId}-replacement`, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-mismatch" },
+			registerCleanupSupervisor: () => { registrations++; return true; },
+		});
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await until(() => fake.stopCalls === 1);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(registrations, 0);
+		fake.exit();
+		await assert.rejects(() => promise, /stop boom/);
+	});
+
 	it("retains the foreground wait when cleanup supervisor registration fails", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();
