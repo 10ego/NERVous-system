@@ -815,6 +815,10 @@ export class NervousDashboard implements Component {
 				this.selected = index;
 				return;
 			}
+			if (key.startsWith("lion:")) {
+				this.selected = 0;
+				return;
+			}
 		}
 		this.selected = Math.min(this.selected, Math.max(0, items.length - 1));
 	}

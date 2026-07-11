@@ -236,8 +236,9 @@ describe("dashboard extension factory", () => {
 		const stableRun = { ...oldRun, id: "run-stable", incarnation_id: "inc-stable", objective: "stable" } as any;
 		const replacementRun = { ...oldRun, incarnation_id: "inc-replacement", objective: "replacement" } as any;
 		const refresh = vi.fn().mockResolvedValue(emptyDashboardData({ runs: [stableRun, replacementRun] }));
-		const dashboard = new NervousDashboard(emptyDashboardData({ runs: [oldRun, stableRun] }), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 0 });
+		const dashboard = new NervousDashboard(emptyDashboardData({ runs: [stableRun, oldRun] }), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 0 });
 		selectDashboardTab(dashboard, "lion");
+		(dashboard as any).selected = 1;
 		(dashboard as any).detail = { kind: "lion", item: oldRun };
 		dashboard.handleInput("r");
 		await new Promise<void>((resolve) => setImmediate(resolve));
