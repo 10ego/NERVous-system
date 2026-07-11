@@ -47,12 +47,23 @@ export interface LionRunRequest {
 	onControlClosed?: () => void;
 	/** Called once the subprocess exits; owning callers should keep finalization authority until they persist the final state. */
 	onProcessExit?: () => void;
+	/**
+	 * Atomically transfers an attached live RPC child and terminal intent to a
+	 * process-local supervisor. False/throw retains the foreground wait.
+	 */
+	registerCleanupSupervisor?: (handoff: import("./cleanup-supervisor.ts").LionCleanupHandoff) => boolean;
+	/** Exact existing process-local capability transferred with a cleanup handoff. */
+	cleanupOwner?: import("./active-runs.ts").ActiveRunOwner;
 }
 
 export interface LionRunOutput {
 	text: string;
 	report: LionReport | null;
 }
+
+export type LionRunnerOutcome =
+	| ({ settlement: "settled" } & LionRunOutput)
+	| { settlement: "cleanup_pending"; run_id: string; incarnation_id: string | null; owner_id: string };
 
 export function getPiInvocation(args: string[], opts?: { forceBinary?: boolean }): { command: string; args: string[] } {
 	if (!opts?.forceBinary) {
@@ -368,10 +379,10 @@ function isObject(x: unknown): x is Record<string, unknown> {
 }
 
 export function createLionRunner(opts: LionRunnerOptions) {
-	return async (req: LionRunRequest): Promise<LionRunOutput> => runPiOnce(req, opts);
+	return async (req: LionRunRequest): Promise<LionRunnerOutcome> => runPiOnce(req, opts);
 }
 
-async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<LionRunOutput> {
+async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<LionRunnerOutcome> {
 	const args: string[] = ["--mode", "json", "-p", "--no-session"];
 	if (req.run.model) args.push("--model", req.run.model);
 	if (req.run.tools && req.run.tools.length > 0) args.push("--tools", req.run.tools.join(","));
@@ -387,7 +398,7 @@ async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<
 
 		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress, req.onProcessStart, req.onProcessExit, req.include_progress_text ?? false);
 		const text = getFinalOutput(messages);
-		return { text, report: parseLionReport(text) };
+		return { settlement: "settled", text, report: parseLionReport(text) };
 	} finally {
 		if (tmpPath)
 			try {

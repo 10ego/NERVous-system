@@ -268,6 +268,51 @@ describe("createLionRpcRunner", () => {
 		assert.equal(exits, 1);
 	});
 
+	it("returns an explicit cleanup_pending outcome after an exact live-child handoff", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		const run = (await store.mutate((l) => l.create({ objective: "bounded cleanup", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-exact" };
+		let handoff: import("../extension/cleanup-supervisor.ts").LionCleanupHandoff | undefined;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: owner,
+			registerCleanupSupervisor: (candidate) => { handoff = candidate; return true; },
+		});
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		const outcome = await promise;
+		assert.equal(outcome.settlement, "cleanup_pending");
+		assert.equal(outcome.owner_id, owner.ownerId);
+		assert.equal(fake.alive, true);
+		assert.equal(handoff?.process.pid, process.pid);
+		fake.exit();
+		await handoff?.waitForExit();
+		await handoff?.cleanup();
+	});
+
+	it("retains the foreground wait when cleanup supervisor registration fails", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		const run = (await store.mutate((l) => l.create({ objective: "registration fallback", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-fallback" };
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, timeout_ms: 1000, cleanupOwner: owner, registerCleanupSupervisor: () => false });
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await until(() => fake.stopCalls === 1);
+		let settled = false;
+		void promise.finally(() => { settled = true; }).catch(() => undefined);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(settled, false);
+		fake.exit();
+		await assert.rejects(() => promise, /stop boom/);
+	});
+
 	it("bounds a prompt that never acknowledges by the session timeout", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();

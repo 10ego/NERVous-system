@@ -3,9 +3,10 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
-import factory from "../extension/index.ts";
-import { LionStore } from "../extension/backend.ts";
-import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun } from "../extension/active-runs.ts";
+import factory, { executeRun } from "../extension/index.ts";
+import { FileBackend, LionStore } from "../extension/backend.ts";
+import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun, getActiveRunIds } from "../extension/active-runs.ts";
+import { clearLionCleanupSupervisorsForTests } from "../extension/cleanup-supervisor.ts";
 
 function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 	const tools: any[] = [];
@@ -22,6 +23,7 @@ function stubPi(): { pi: any; tools: any[]; commands: any[] } {
 
 afterEach(() => {
 	vi.useRealTimers();
+	clearLionCleanupSupervisorsForTests();
 	clearActiveRunsForTests();
 });
 
@@ -38,6 +40,56 @@ describe("lion extension factory", () => {
 		const names = commands.map((c) => c.name);
 		assert.ok(names.includes("lion"));
 		assert.ok(names.includes("lion:runs"));
+	});
+
+	it("returns cleanup_pending while retaining ownership, then finalizes after observed exit", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-direct-cleanup-pending-"));
+		const store = new LionStore(new FileBackend({ runsPath: path.join(dir, "runs.json"), dir }));
+		let owner!: ReturnType<typeof beginActiveRun>;
+		const { result: run } = await store.mutate((ledger) => {
+			const queued = ledger.create({ objective: "late child", runner_mode: "rpc", start: false });
+			owner = beginActiveRun({ namespaceId: store.namespaceId, runId: queued.id, incarnationId: queued.incarnation_id }, "rpc");
+			return ledger.start(queued.id);
+		});
+		let alive = true;
+		let exit!: () => void;
+		const exited = new Promise<void>((resolve) => { exit = resolve; });
+		const report = { outcome: "completed" as const, summary: "late done", changed_files: [], tests_run: [], blockers: [], next_steps: [] };
+		const events: string[] = [];
+		const result = await executeRun({
+			pi: { events: { emit(name: string) { events.push(name); } } } as never,
+			ctx: { cwd: dir } as never,
+			store,
+			action: "run",
+			run,
+			activeOwner: owner,
+			runner: async (request) => {
+				const processInfo = { pid: 303, pgid: null, isAlive: () => alive, cancel: () => true };
+				request.onProcessStart?.(processInfo);
+				const accepted = request.registerCleanupSupervisor?.({
+					namespaceId: owner.namespaceId,
+					runId: owner.runId,
+					incarnationId: owner.incarnationId ?? null,
+					ownerId: owner.ownerId,
+					process: processInfo,
+					isAlive: () => alive,
+					waitForExit: () => exited,
+					cleanup: async () => undefined,
+					terminalIntent: { kind: "result", output: { text: "done", report } },
+				});
+				assert.equal(accepted, true);
+				return { settlement: "cleanup_pending", run_id: run.id, incarnation_id: run.incarnation_id, owner_id: owner.ownerId };
+			},
+		});
+		assert.match(result.content[0]!.text, /cleanup_pending/);
+		assert.equal(result.details.run?.status, "running");
+		assert.deepEqual(getActiveRunIds(store.namespaceId), [run.id]);
+		alive = false;
+		exit();
+		for (let index = 0; index < 100 && (await store.query((ledger) => ledger.get(run.id))).result?.status === "running"; index++) await new Promise((resolve) => setTimeout(resolve, 2));
+		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.status, "completed");
+		assert.deepEqual(getActiveRunIds(store.namespaceId), []);
+		assert.equal(events.filter((name) => name === "nervous:lion:completed").length, 1);
 	});
 
 	it("supports queued steering and queued cancellation through the tool", async () => {

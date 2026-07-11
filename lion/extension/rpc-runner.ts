@@ -12,7 +12,8 @@ import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { LionStore } from "./backend.ts";
 import type { LionProgressSnapshot, LionReport } from "./schema.ts";
-import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, getProcessIdentity, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree, type LionProcessInfo, type LionRunOutput, type LionRunRequest } from "./subprocess.ts";
+import type { LionTerminalIntent } from "./cleanup-supervisor.ts";
+import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, getProcessIdentity, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree, type LionProcessInfo, type LionRunOutput, type LionRunnerOutcome, type LionRunRequest } from "./subprocess.ts";
 
 export interface LionRpcClient {
 	start(): Promise<void>;
@@ -217,7 +218,7 @@ async function removeTempDirectory(dir: string): Promise<void> {
 }
 
 export function createLionRpcRunner(opts: LionRpcRunnerOptions) {
-	return async (req: LionRunRequest): Promise<LionRunOutput> => runRpcOnce(req, opts);
+	return async (req: LionRunRequest): Promise<LionRunnerOutcome> => runRpcOnce(req, opts);
 }
 
 async function raceSession<T>(
@@ -351,7 +352,7 @@ class RpcProcessLifecycle {
 	isAlive(): boolean { return this.isAliveFn(); }
 }
 
-async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Promise<LionRunOutput> {
+async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Promise<LionRunnerOutcome> {
 	if (req.signal?.aborted) throw new Error("LION RPC runner was aborted before prompt");
 	const deadline = createDeadline(req.timeout_ms ?? 10 * 60_000);
 	let tmpDir: string | null = null;
@@ -368,6 +369,10 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	let steeringClosedHook: Promise<void> = Promise.resolve();
 	let promptSetupAbandoned = false;
 	let stopFailure: unknown;
+	let operationOutput: LionRunOutput | undefined;
+	let cleanupPending = false;
+	let finalStopError: unknown;
+	let finalCleanupError: unknown;
 	const stopClient = async () => {
 		const activeClient = client;
 		if (!activeClient) return;
@@ -536,7 +541,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		);
 		const text = (await raceSession(() => activeClient.getLastAssistantText(), req.signal, deadline, cancelSession)) ?? "";
 		const report: LionReport | null = parseLionReport(text);
-		return { text, report };
+		operationOutput = { text, report };
 	} catch (err) {
 		const safeError = sanitizeRpcError(err);
 		primaryError = safeError;
@@ -547,7 +552,6 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 			opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS,
 			"RPC failure-state persistence timed out",
 		).catch(() => undefined);
-		throw safeError;
 	} finally {
 		deadline.dispose();
 		closeSteeringChannel();
@@ -557,21 +561,57 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		processLifecycle.attachIfAvailable();
 		let stopError: unknown;
 		try { await stopClientBounded(); } catch (err) { stopError = err; }
+		finalStopError = stopError;
 		processLifecycle.attachIfAvailable();
 		if (stopError && processLifecycle.interruptedStartPending && !processLifecycle.childAttached) await processLifecycle.waitForInterruptedStartDisposition();
 		processLifecycle.stopAdoption();
 		if (processLifecycle.childAttached && processLifecycle.isAlive() && stopError) {
 			try { await processLifecycle.childInfo?.cancel?.("SIGKILL"); } catch { /* retain ownership until actual exit */ }
 		}
-		if (processLifecycle.childAttached && processLifecycle.isAlive()) await processLifecycle.waitForConfirmedExit();
-		if (processLifecycle.childAttached && !processLifecycle.isAlive()) processLifecycle.notifyExit();
-		let cleanupError: unknown;
-		if (tmpDir) {
-			try { await removeTempDirectory(tmpDir); } catch (error) { cleanupError = error; }
+
+		const owner = req.cleanupOwner;
+		const processInfo = processLifecycle.childInfo;
+		if (owner && processInfo && processLifecycle.isAlive() && req.registerCleanupSupervisor) {
+			const terminalIntent: LionTerminalIntent = primaryError
+				? { kind: "error", error: sanitizeRpcError(primaryError) }
+				: stopError
+					? { kind: "error", error: sanitizeRpcError(stopError) }
+					: { kind: "result", output: operationOutput ?? { text: "", report: null } };
+			try {
+				cleanupPending = req.registerCleanupSupervisor({
+					namespaceId: owner.namespaceId,
+					runId: owner.runId,
+					incarnationId: owner.incarnationId ?? null,
+					ownerId: owner.ownerId,
+					process: processInfo,
+					isAlive: () => processLifecycle.isAlive(),
+					waitForExit: async () => {
+						await processLifecycle.waitForConfirmedExit();
+						processLifecycle.notifyExit();
+					},
+					cleanup: async () => { if (tmpDir) await removeTempDirectory(tmpDir); },
+					terminalIntent,
+				});
+			} catch { cleanupPending = false; }
 		}
-		if (stopError && !primaryError) throw sanitizeRpcError(stopError);
-		if (cleanupError && !primaryError && !stopError) throw sanitizeRpcError(cleanupError);
+
+		if (!cleanupPending) {
+			if (processLifecycle.childAttached && processLifecycle.isAlive()) await processLifecycle.waitForConfirmedExit();
+			if (processLifecycle.childAttached && !processLifecycle.isAlive()) processLifecycle.notifyExit();
+			if (tmpDir) {
+				try { await removeTempDirectory(tmpDir); } catch (error) { finalCleanupError = error; }
+			}
+		}
 	}
+
+	if (cleanupPending) {
+		return { settlement: "cleanup_pending", run_id: req.run.id, incarnation_id: runIncarnation, owner_id: req.cleanupOwner!.ownerId };
+	}
+	if (primaryError) throw sanitizeRpcError(primaryError);
+	if (finalStopError) throw sanitizeRpcError(finalStopError);
+	if (finalCleanupError) throw sanitizeRpcError(finalCleanupError);
+	if (!operationOutput) throw new Error("LION RPC runner completed without an outcome");
+	return { settlement: "settled", ...operationOutput };
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
