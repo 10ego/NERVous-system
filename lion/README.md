@@ -53,7 +53,7 @@ The worker receives a LION system prompt and must finish with a parseable `WORKE
 
 ### Live progress telemetry
 
-While a run is active, LION records a bounded `progress` snapshot in the run ledger and emits best-effort lifecycle events when `pi.events` is available:
+While a run is active, LION records a bounded `progress` snapshot in exact-incarnation durable storage, overlays it on canonical reads, and emits best-effort lifecycle events when `pi.events` is available:
 
 - `nervous:lion:started`
 - `nervous:lion:progress`
@@ -61,7 +61,9 @@ While a run is active, LION records a bounded `progress` snapshot in the run led
 - `nervous:lion:blocked`
 - `nervous:lion:failed`
 
-Progress is derived defensively from headless `pi --mode json`/RPC events such as tool start/end, text deltas, message end, and turn end. It is optional and backward-compatible: old ledgers without `progress` still load and malformed/missing subprocess events are ignored. Raw assistant text tails are redacted by default (`last_text=null`, generic responding activity); pass `include_progress_text=true` only when retaining partial assistant text is acceptable. Event payloads also redact the raw objective by default (`objective_redacted=true`); set `LION_EVENT_INCLUDE_OBJECTIVE=true` only for trusted local diagnostics. Durable progress writes are coalesced per worker and batched across workers in the same canonical namespace using exact run/incarnation fences; idle namespace batchers are evicted, UI updates remain immediate, and final drains complete before terminal writes. Active tool telemetry is bounded to 32 unique names of 128 characters each.
+Progress is derived defensively from headless `pi --mode json`/RPC events such as tool start/end, text deltas, message end, and turn end. It is optional and backward-compatible: old ledgers without `progress` still load and malformed/missing subprocess events are ignored. Raw assistant text tails are redacted by default (`last_text=null`, generic responding activity); pass `include_progress_text=true` only when retaining partial assistant text is acceptable. Event payloads also redact the raw objective by default (`objective_redacted=true`); set `LION_EVENT_INCLUDE_OBJECTIVE=true` only for trusted local diagnostics.
+
+For newly started runs with non-null incarnations, durable progress uses one bounded latest-snapshot sidecar per exact canonical namespace/run/incarnation. Per-worker updates remain latest-wins and coalesced; every flush shares the canonical namespace lock but reads, parses, backs up, serializes, and writes only the sidecar—not `runs.json`. UI/events remain immediate, and the mandatory final drain completes before one terminal fold into the canonical record. Legacy/null-incarnation runs retain readable inline progress without migration or backfill. Active tool telemetry is bounded to 32 unique names of 128 characters each.
 
 ### Cancellation and steering
 
@@ -147,12 +149,19 @@ Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed
 | Aspect | Behavior |
 |--------|----------|
 | Location | Active NERVous namespace `lion/runs.json` (override with `LION_RUNS_PATH`); direct file symlinks—including missing targets—resolve once to one canonical operational target used for data, lock, temp, backup, and active-owner identity |
-| Progress | Optional bounded `progress` snapshot is persisted while running and shown in summaries when present; raw text is redacted unless `include_progress_text=true` |
+| Progress | New exact incarnations use hashed files under `runs.json.progress/`; each mode-0600 envelope stores the full namespace/run/incarnation identity, open/closed write fence, monotonic sequence, and at most one bounded snapshot |
+| Authority | `runs.json` alone controls existence, identity, lifecycle, and terminal truth. Reads overlay the highest-sequence valid exact primary/backup only for a canonical active run |
 | Control | Optional process metadata/cancellation state, runner mode, pre-start steering, and RPC live steering delivery records are persisted with the run |
-| Atomicity | Write to `runs.json.tmp` then rename |
-| Backup | Previous file copied to `runs.json.bak` |
-| Concurrency | Advisory lock (`runs.json.lock`) with stale-lock detection |
-| Corruption | Corrupt file copied aside (`.corrupt-<ts>`) and fresh ledger started |
+| Atomicity | Canonical and sidecar files use fsynced mode-0600 temp files, atomic rename, and directory fsync under one canonical lock |
+| Backup | `runs.json.bak` retains the previous canonical file; each exact progress sidecar retains one bounded `.bak` envelope |
+| Concurrency | Advisory lock (`runs.json.lock`) with stale-lock detection serializes lifecycle, progress, terminal folds, and exact cleanup |
+| Corruption | Canonical corruption follows canonical recovery. Sidecar corruption is isolated, warned/quarantined within bounds, and can never reset or replace canonical provenance |
+
+### Terminal fold and crash recovery
+
+Terminal operations use the `LionStore` fold protocol: close the exact envelope under the namespace lock, reload and exact-check the canonical active run, fold the newest valid snapshot, durably commit terminal `runs.json`, then remove exact primary/backup artifacts. A crash before canonical commit leaves a closed snapshot that is visible on the still-active canonical run and retryable; late writers cannot reopen it. A crash after canonical commit leaves terminal canonical truth, which ignores any cleanup orphan. Classification cleanup removes only proven terminal, missing/replaced, or malformed artifacts. It never age-evicts an exact active or unclassifiable entry.
+
+Sidecar paths contain only a SHA-256 identity hash; envelopes retain the full versioned identity. Sidecar roots and artifacts reject symlink traversal. The dashboard fingerprints the sidecar directory and reloads LION through `LionStore`, so direct LION, CEREBEL, and dashboard readers observe the same overlay.
 
 ---
 
@@ -164,7 +173,8 @@ lion/
 │   ├── index.ts        # lion tool + /lion commands
 │   ├── schema.ts       # run/report/tool schemas
 │   ├── store.ts        # pure run ledger lifecycle
-│   ├── backend.ts      # durable file backend
+│   ├── backend.ts      # canonical authority + terminal transaction API
+│   ├── progress-sidecar.ts # exact-incarnation latest-snapshot persistence
 │   ├── subprocess.ts   # headless pi runner + WORKER_REPORT parsing
 │   └── render.ts       # markdown/TUI rendering
 ├── skills/lion/SKILL.md
@@ -191,6 +201,7 @@ LION deliberately does not require AXON/SYNAPSE at runtime. If those tools are a
 ```bash
 npm test
 npx vitest run lion
+npm run benchmark:lion-progress
 LION_LIVE=1 npx vitest run lion/tests/live.test.ts
 ```
 
