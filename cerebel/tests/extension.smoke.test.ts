@@ -7,7 +7,7 @@ import { afterEach, describe, it, vi } from "vitest";
 import { GanglionStore } from "../../ganglion/extension/backend.ts";
 import { LionStore } from "../../lion/extension/backend.ts";
 import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun } from "../../lion/extension/active-runs.ts";
-import factory, { hasPendingCancellationAssignments, recordRunWaveGanglion, resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel } from "../extension/index.ts";
+import factory, { hasPendingCancellationAssignments, MAX_RUN_WAVE_TIMEOUT_MS, recordRunWaveGanglion, resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel, validateRunWaveTimeoutMs } from "../extension/index.ts";
 import { CerebelStore } from "../extension/backend.ts";
 import { CerebelLedger } from "../extension/store.ts";
 import { RunWaveBatchError } from "../extension/run-wave.ts";
@@ -90,6 +90,34 @@ describe("cerebel extension factory", () => {
 			const runtime = require("../../lion/extension/store.ts");
 		`);
 		assert.equal(violations.length, 5);
+	});
+
+	it("validates run_wave timeout boundaries", () => {
+		assert.equal(validateRunWaveTimeoutMs(undefined), 600_000);
+		assert.equal(validateRunWaveTimeoutMs(1), 1);
+		assert.equal(validateRunWaveTimeoutMs(MAX_RUN_WAVE_TIMEOUT_MS), MAX_RUN_WAVE_TIMEOUT_MS);
+		for (const invalid of [0, -1, 1.5, MAX_RUN_WAVE_TIMEOUT_MS + 1, Number.NaN, Number.POSITIVE_INFINITY]) {
+			assert.throws(() => validateRunWaveTimeoutMs(invalid), /must be an integer from 1 through 2147483647/);
+		}
+	});
+
+	it("rejects invalid run_wave timeouts before creating a LION worker", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-invalid-timeout-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			const result = await cerebel.execute("run", { action: "run_wave", timeout_ms: 0 }, undefined, undefined, { cwd: dir });
+			assert.equal(result.isError, true);
+			assert.match(result.content[0].text, /failed \(invalid_arg\).*timeout_ms/);
+			assert.deepEqual((await LionStore.fromCwd(dir).query((ledger) => ledger.all())).result, []);
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
 	});
 
 	it("validates cancellation settlement timeouts and skips LION loading for unlinked waves", async () => {
