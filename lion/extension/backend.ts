@@ -91,18 +91,23 @@ async function fsyncDirectory(dir: string): Promise<void> {
 }
 async function atomicWrite(filePath: string, data: string): Promise<number> {
 	const tmp = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-	const handle = await fs.open(tmp, "wx", 0o600);
-	try { await handle.writeFile(data, "utf8"); await handle.sync(); } finally { await handle.close(); }
+	let renamed = false;
 	try {
+		const handle = await fs.open(tmp, "wx", 0o600);
+		try { await handle.writeFile(data, "utf8"); await handle.sync(); } finally { await handle.close(); }
 		await fs.rename(tmp, filePath);
+		renamed = true;
 		await fs.chmod(filePath, 0o600);
 		await fsyncDirectory(path.dirname(filePath));
-	} catch (error) { await fs.unlink(tmp).catch(() => undefined); throw error; }
+	} finally {
+		if (!renamed) await fs.unlink(tmp).catch(() => undefined);
+	}
 	return Buffer.byteLength(data);
 }
 
 export interface LoadResult { ledger: LionLedger; warnings: string[]; fresh: boolean; canonicalCertain?: boolean }
-interface LifecycleChange { ref: { id: string; incarnation_id: string }; kind: "open" | "terminal" | "remove" }
+interface LifecycleChange { ref: { id: string; incarnation_id: string }; kind: "open" | "terminal" | "remove"; wasActive?: boolean }
+function boundedWarnings(warnings: string[]): string[] { return warnings.slice(0, 20).map((warning) => warning.slice(0, 500)); }
 
 export class FileBackend {
 	readonly location: LionLocation;
@@ -131,29 +136,30 @@ export class FileBackend {
 	async mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T; warnings: string[] }> {
 		await fs.mkdir(this.location.dir, { recursive: true });
 		return withLock(this.lockPath, async () => {
-			const loaded = await this.loadUnlocked(true);
+			const loaded = await this.loadUnlocked(false);
 			const before = loaded.ledger.all();
 			const result = fn(loaded.ledger);
 			const lifecycleWarnings = await this.prepareLifecycleUnlocked(before, loaded.ledger);
 			await this.saveUnlocked(loaded.ledger);
-			await this.cleanupLifecycleUnlocked(before, loaded.ledger);
-			return { result, warnings: [...loaded.warnings, ...lifecycleWarnings] };
+			const cleanupWarnings = await this.cleanupLifecycleUnlocked(before, loaded.ledger);
+			return { result, warnings: boundedWarnings([...loaded.warnings, ...lifecycleWarnings, ...cleanupWarnings]) };
 		});
 	}
 
 	async mutateMaybe<T>(fn: (ledger: LionLedger) => { result: T; changed: boolean }): Promise<{ result: T; warnings: string[]; changed: boolean }> {
 		await fs.mkdir(this.location.dir, { recursive: true });
 		return withLock(this.lockPath, async () => {
-			const loaded = await this.loadUnlocked(true);
+			const loaded = await this.loadUnlocked(false);
 			const before = loaded.ledger.all();
 			const outcome = fn(loaded.ledger);
 			let lifecycleWarnings: string[] = [];
+			let cleanupWarnings: string[] = [];
 			if (outcome.changed) {
 				lifecycleWarnings = await this.prepareLifecycleUnlocked(before, loaded.ledger);
 				await this.saveUnlocked(loaded.ledger);
-				await this.cleanupLifecycleUnlocked(before, loaded.ledger);
+				cleanupWarnings = await this.cleanupLifecycleUnlocked(before, loaded.ledger);
 			}
-			return { result: outcome.result, warnings: [...loaded.warnings, ...lifecycleWarnings], changed: outcome.changed };
+			return { result: outcome.result, warnings: boundedWarnings([...loaded.warnings, ...lifecycleWarnings, ...cleanupWarnings]), changed: outcome.changed };
 		});
 	}
 
@@ -180,9 +186,12 @@ export class FileBackend {
 			if (closed.progress) reloaded.ledger.foldProgressIfCurrent(id, incarnationId, closed.progress);
 			const result = reloaded.ledger.finishIfCurrent(id, incarnationId, input);
 			await this.saveUnlocked(reloaded.ledger);
-			// A crash after save leaves canonical terminal truth; this cleanup orphan is ignorable.
-			await this.progress.removeExactUnlocked({ id, incarnation_id: incarnationId }).catch(() => undefined);
-			return { result, warnings: [...initial.warnings, ...closed.warnings, ...reloaded.warnings] };
+			// A crash/failure after save leaves canonical terminal truth; retain a bounded
+			// warning so later classification cleanup can recover the ignorable orphan.
+			const cleanupWarnings: string[] = [];
+			try { await this.progress.removeExactUnlocked({ id, incarnation_id: incarnationId }); }
+			catch (error) { cleanupWarnings.push(`terminal progress cleanup deferred for ${id}/${incarnationId}: ${error instanceof Error ? error.message : String(error)}`); }
+			return { result, warnings: boundedWarnings([...initial.warnings, ...closed.warnings, ...reloaded.warnings, ...cleanupWarnings]) };
 		});
 	}
 
@@ -194,7 +203,7 @@ export class FileBackend {
 		await fs.mkdir(this.location.dir, { recursive: true });
 		return withLock(this.lockPath, async () => {
 			const loaded = await this.loadUnlocked(false);
-			return [...loaded.warnings, ...await this.progress.cleanupUnlocked(loaded.ledger, loaded.canonicalCertain !== false)];
+			return boundedWarnings([...loaded.warnings, ...await this.progress.cleanupUnlocked(loaded.ledger, loaded.canonicalCertain !== false)]);
 		});
 	}
 
@@ -208,40 +217,52 @@ export class FileBackend {
 			const previous = before.get(run.id);
 			const replacement = previous && previous.incarnation_id !== run.incarnation_id;
 			if (run.status === "running" && (!previous || replacement || previous.status === "queued")) changes.push({ kind: "open", ref: { id: run.id, incarnation_id: run.incarnation_id } });
-			if (previous && previous.incarnation_id === run.incarnation_id && isActiveLionStatus(previous.status) && isTerminalLionStatus(run.status)) changes.push({ kind: "terminal", ref: { id: run.id, incarnation_id: run.incarnation_id } });
+			if (previous && previous.incarnation_id === run.incarnation_id && isActiveLionStatus(previous.status) && isTerminalLionStatus(run.status)) changes.push({ kind: "terminal", ref: { id: run.id, incarnation_id: run.incarnation_id }, wasActive: true });
 		}
 		for (const previous of before.values()) {
 			if (!previous.incarnation_id) continue;
 			const current = after.get(previous.id);
-			if (!current || current.incarnation_id !== previous.incarnation_id) changes.push({ kind: "remove", ref: { id: previous.id, incarnation_id: previous.incarnation_id } });
+			if (!current || current.incarnation_id !== previous.incarnation_id) changes.push({ kind: "remove", ref: { id: previous.id, incarnation_id: previous.incarnation_id }, wasActive: isActiveLionStatus(previous.status) });
 		}
-		for (const change of changes.filter((item) => item.kind === "open")) await this.progress.openUnlocked(change.ref);
-		for (const change of changes.filter((item) => item.kind === "terminal")) {
+
+		// Recovery cleanup is outside the flush path and classifies against the
+		// pre-mutation canonical snapshot, so it cannot evict a currently active run.
+		if (changes.some((item) => item.kind === "open")) warnings.push(...await this.progress.cleanupUnlocked(new LionLedger(undefined, beforeRuns), true));
+		for (const change of changes.filter((item) => item.kind === "terminal" || (item.kind === "remove" && item.wasActive))) {
 			const closed = await this.progress.closeUnlocked(change.ref);
 			warnings.push(...closed.warnings);
-			if (closed.progress) ledger.foldProgressIfCurrent(change.ref.id, change.ref.incarnation_id, closed.progress);
+			if (change.kind === "terminal" && closed.progress) ledger.foldProgressIfCurrent(change.ref.id, change.ref.incarnation_id, closed.progress);
 		}
-		if (changes.some((item) => item.kind === "terminal")) {
+		for (const change of changes.filter((item) => item.kind === "open")) await this.progress.openUnlocked(change.ref);
+
+		const exactChanges = changes.filter((item) => item.kind === "terminal" || (item.kind === "remove" && item.wasActive));
+		if (exactChanges.length) {
 			const exactCheck = await this.loadUnlocked(false);
 			warnings.push(...exactCheck.warnings);
-			for (const change of changes.filter((item) => item.kind === "terminal")) {
+			for (const change of exactChanges) {
 				const canonical = exactCheck.ledger.get(change.ref.id);
-				if (!canonical || canonical.incarnation_id !== change.ref.incarnation_id || !isActiveLionStatus(canonical.status)) throw new Error(`lion: terminal exact-check failed for ${change.ref.id}/${change.ref.incarnation_id}`);
+				if (!canonical || canonical.incarnation_id !== change.ref.incarnation_id || !isActiveLionStatus(canonical.status)) throw new Error(`lion: terminal/removal exact-check failed for ${change.ref.id}/${change.ref.incarnation_id}`);
 			}
 		}
-		return warnings;
+		return boundedWarnings(warnings);
 	}
 
-	private async cleanupLifecycleUnlocked(beforeRuns: LionRun[], ledger: LionLedger): Promise<void> {
+	private async cleanupLifecycleUnlocked(beforeRuns: LionRun[], ledger: LionLedger): Promise<string[]> {
 		const after = new Map(ledger.all().map((run) => [run.id, run]));
 		const refs = new Map<string, { id: string; incarnation_id: string }>();
 		for (const run of beforeRuns) {
 			if (!run.incarnation_id) continue;
 			const current = after.get(run.id);
-			if (!current || current.incarnation_id !== run.incarnation_id || isTerminalLionStatus(current.status)) refs.set(`${run.id}\0${run.incarnation_id}`, { id: run.id, incarnation_id: run.incarnation_id });
+			const becameTerminal = current?.incarnation_id === run.incarnation_id && isActiveLionStatus(run.status) && isTerminalLionStatus(current.status);
+			const removedOrReplaced = !current || current.incarnation_id !== run.incarnation_id;
+			if (becameTerminal || removedOrReplaced) refs.set(`${run.id}\0${run.incarnation_id}`, { id: run.id, incarnation_id: run.incarnation_id });
 		}
-		for (const run of after.values()) if (run.incarnation_id && isTerminalLionStatus(run.status)) refs.set(`${run.id}\0${run.incarnation_id}`, { id: run.id, incarnation_id: run.incarnation_id });
-		for (const ref of refs.values()) await this.progress.removeExactUnlocked(ref).catch(() => undefined);
+		const warnings: string[] = [];
+		for (const ref of refs.values()) {
+			try { await this.progress.removeExactUnlocked(ref); }
+			catch (error) { warnings.push(`progress cleanup deferred for ${ref.id}/${ref.incarnation_id}: ${error instanceof Error ? error.message : String(error)}`); }
+		}
+		return boundedWarnings(warnings);
 	}
 
 	private async loadUnlocked(overlay: boolean): Promise<LoadResult> {
@@ -278,8 +299,11 @@ export class FileBackend {
 		this.counters.canonical_serializations++;
 		const data = JSON.stringify(ledger.toJSON(), null, 2);
 		let previous: string | undefined;
-		try { previous = await fs.readFile(this.location.runsPath, "utf8"); }
-		catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		try {
+			previous = await fs.readFile(this.location.runsPath, "utf8");
+			this.counters.canonical_reads++;
+			this.counters.canonical_bytes_read += Buffer.byteLength(previous);
+		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		if (previous !== undefined) {
 			const bytes = await atomicWrite(this.bakPath, previous);
 			this.counters.canonical_backups++;

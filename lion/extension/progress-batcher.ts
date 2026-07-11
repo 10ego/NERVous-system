@@ -36,14 +36,17 @@ class NamespaceProgressBatcher {
 		const batch = Array.from(this.pending.values());
 		this.pending.clear();
 		try {
-			// Each exact incarnation owns a distinct bounded file. Keep writes independent
-			// while every write still serializes through the canonical namespace lock.
-			const outcomes = await Promise.all(batch.map((entry) => this.store.flushProgress(
-				{ id: entry.runId, incarnation_id: entry.incarnationId }, entry.progress,
-			)));
-			batch.forEach((entry, index) => { for (const waiter of entry.waiters) waiter.resolve(outcomes[index]); });
-		} catch (error) {
-			for (const entry of batch) for (const waiter of entry.waiters) waiter.reject(error);
+			// Serialize this process's batch instead of making every entry race for the
+			// same namespace lock. Settle each entry independently and await them all so
+			// one malformed sidecar cannot let another run's drain finish too early.
+			for (const entry of batch) {
+				try {
+					const outcome = await this.store.flushProgress({ id: entry.runId, incarnation_id: entry.incarnationId }, entry.progress);
+					for (const waiter of entry.waiters) waiter.resolve(outcome);
+				} catch (error) {
+					for (const waiter of entry.waiters) waiter.reject(error);
+				}
+			}
 		} finally {
 			this.flushing = false; this.schedule();
 			if (!this.pending.size && !this.timer) this.onIdle();
