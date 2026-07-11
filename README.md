@@ -102,18 +102,12 @@ nervous-system/
 
 ## Installation
 
-### Install from GitHub
+### Install from npm
 
-Install the full NERVous System pi package from GitHub with SSH:
-
-```bash
-pi install git:git@github.com:10ego/NERVous-system.git
-```
-
-Or with HTTPS:
+Install the full NERVous System pi package from npm:
 
 ```bash
-pi install git:https://github.com/10ego/NERVous-system.git
+pi install npm:nervous-system
 ```
 
 This installs the root pi package and enables all NERVous extensions, skills, and prompt templates: MAGI, AXON, SYNAPSE, CORTEX, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard.
@@ -127,13 +121,13 @@ pi list
 Update later with:
 
 ```bash
-pi update git:git@github.com:10ego/NERVous-system.git
+pi update npm:nervous-system
 ```
 
 Remove with:
 
 ```bash
-pi remove git:git@github.com:10ego/NERVous-system.git
+pi remove npm:nervous-system
 ```
 
 ### Local development install
