@@ -144,8 +144,8 @@ export const CerebelToolParams = Type.Object({
 	// record
 	assignment_id: Type.Optional(Type.String({ description: "Assignment id to record." })),
 	task_id: Type.Optional(Type.String({ description: "AXON task id to record if assignment_id omitted." })),
-	lion_run_id: Type.Optional(Type.String({ description: "LION run id that handled the assignment." })),
-	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable incarnation id of the LION run that handled the assignment." })),
+	lion_run_id: Type.Optional(Type.String({ description: "LION run id that handled the assignment. When used to select a record without assignment_id/task_id, the exact lion_run_incarnation_id is required." })),
+	lion_run_incarnation_id: Type.Optional(Type.String({ description: "Immutable incarnation id of the LION run that handled the assignment; required when lion_run_id selects a record." })),
 	ganglion_id: Type.Optional(Type.String({ description: "GANGLION id for a linked capacity lease if not already stored on the assignment." })),
 	ganglion_allocation_id: Type.Optional(Type.String({ description: "GANGLION allocation id to record/release for this terminal assignment if not already stored on the assignment." })),
 	outcome: Type.Optional(ASSIGNMENT_STATUS_SCHEMA),
@@ -155,7 +155,7 @@ export const CerebelToolParams = Type.Object({
 	blockers: Type.Optional(Type.Array(Type.String())),
 	next_steps: Type.Optional(Type.Array(Type.String())),
 	// run_wave optional LION subprocess controls
-	timeout_ms: Type.Optional(Type.Number({ description: "Per-LION subprocess timeout for run_wave in milliseconds." })),
+	timeout_ms: Type.Optional(Type.Number({ description: "Per-LION subprocess timeout for run_wave in milliseconds. Explicit values must be integers from 1 through 2147483647; invalid values fail before worker creation." })),
 	model: Type.Optional(Type.String({ description: "Explicit model for LION subprocesses launched by run_wave." })),
 	model_role: Type.Optional(StringEnum(["implementation", "review", "default"] as const)),
 	runner_mode: Type.Optional(StringEnum(["json", "rpc"] as const, { description: "LION runner backend for run_wave. Explicit input wins, then LION_RUNNER; json is the fallback default and rpc enables live steering." })),
