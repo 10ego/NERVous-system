@@ -85,6 +85,9 @@ describe("GanglionLedger", () => {
 		const replacement = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-replacement", { status: "completed" });
 		assert.equal(replacement.committed, false);
 		assert.equal(replacement.allocation.status, "assigned");
+		assert.throws(() => l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", status: "completed" }), /requires matching lion_run_id and lion_run_incarnation_id/);
+		assert.throws(() => l.release(g.id, "alloc-001", "run-001"), /requires matching lion_run_id and lion_run_incarnation_id/);
+		assert.equal(l.get(g.id)?.members[0]?.status, "busy");
 		const exact = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-original", { status: "completed", summary: "done" });
 		assert.equal(exact.committed, true);
 		assert.equal(exact.allocation.lion_run_incarnation_id, "inc-original");
@@ -133,13 +136,29 @@ describe("GanglionLedger", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
 		l.allocate(g.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
-		const report = l.reconcile(g.id, [{ id: "run-001", agent_id: "lion-api", task_id: "task-api", status: "completed", summary: "done", updated_at: "2026-01-01T00:00:00.000Z" }]);
+		const report = l.reconcile(g.id, [{ id: "run-001", incarnation_id: "inc-001", agent_id: "lion-api", task_id: "task-api", status: "completed", summary: "done", updated_at: "2026-01-01T00:00:00.000Z" }]);
 		assert.equal(report.released.length, 1);
 		assert.equal(report.released[0]?.allocation_id, "alloc-001");
 		assert.equal(report.ganglion.allocations[0]?.status, "completed");
 		assert.equal(report.ganglion.allocations[0]?.lion_run_id, "run-001");
+		assert.equal(report.ganglion.allocations[0]?.lion_run_incarnation_id, null);
 		assert.equal(report.ganglion.members[0]?.status, "available");
 		assert.equal(report.ganglion.members[0]?.last_run_id, "run-001");
+	});
+
+	it("does not reconcile an exactly linked allocation from a reused run id", () => {
+		const ledger = new GanglionLedger();
+		const group = ledger.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+		ledger.allocate(group.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
+		ledger.linkRunIfUnlinked(group.id, "alloc-001", "run-001", "inc-original");
+		const replacement = ledger.reconcile(group.id, [{ id: "run-001", incarnation_id: "inc-replacement", agent_id: "lion-api", task_id: "task-api", status: "completed" }]);
+		assert.equal(replacement.released.length, 0);
+		assert.equal(replacement.ganglion.allocations[0]?.status, "assigned");
+		assert.equal(replacement.ganglion.members[0]?.status, "busy");
+		const original = ledger.reconcile(group.id, [{ id: "run-001", incarnation_id: "inc-original", agent_id: "lion-api", task_id: "task-api", status: "completed" }]);
+		assert.equal(original.released.length, 1);
+		assert.equal(original.ganglion.allocations[0]?.lion_run_incarnation_id, "inc-original");
+		assert.equal(original.ganglion.members[0]?.status, "available");
 	});
 
 	it("release cancels active allocation", () => {

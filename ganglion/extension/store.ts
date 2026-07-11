@@ -52,7 +52,7 @@ export interface RecordInput { allocation_id?: string; task_id?: string; lion_ru
 export interface AllocationIfOwnedResult { committed: boolean; ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
 export type AllocationReleaseDisposition = "released" | "already_free" | "member_unavailable" | "retained_by_newer_allocation" | "not_terminal";
 export interface GanglionRecordResult { ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
-export interface LionRunBrief { id: string; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
+export interface LionRunBrief { id: string; incarnation_id?: string | null; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
 
 export class GanglionLedger {
 	readonly project?: string;
@@ -202,6 +202,7 @@ export class GanglionLedger {
 		const a = input.allocation_id ? requireAllocation(g, input.allocation_id) : findAllocation(g, input.task_id);
 		if (!a) throw new GanglionError("not_found", "allocation not found");
 		if (input.lion_run_incarnation_id && !input.lion_run_id) throw new GanglionError("invalid_arg", "lion_run_incarnation_id requires lion_run_id");
+		if (isTerminalAllocationStatus(input.status)) assertExactAllocationProvenance(a, input.lion_run_id, input.lion_run_incarnation_id, "terminal record");
 		if (input.lion_run_id && input.lion_run_incarnation_id) {
 			const existingRunId = a.lion_run_id;
 			const existingIncarnationId = a.lion_run_incarnation_id;
@@ -236,13 +237,15 @@ export class GanglionLedger {
 		return { ganglion: clone(g), allocation: clone(a), release_disposition: releaseDisposition };
 	}
 
-	release(ganglionId: string, memberOrAllocationId: string): Ganglion {
+	release(ganglionId: string, memberOrAllocationId: string, lionRunId?: string, lionRunIncarnationId?: string): Ganglion {
 		const g = this.require(ganglionId);
 		const a = g.allocations.find((x) => x.id === memberOrAllocationId);
 		const memberId = a?.member_id ?? memberOrAllocationId;
 		const m = requireMember(g, memberId);
-		releaseMember(m, a?.lion_run_id ?? undefined);
-		if (a && !["completed", "blocked", "failed", "cancelled"].includes(a.status)) {
+		const current = m.current_allocation_id ? g.allocations.find((candidate) => candidate.id === m.current_allocation_id) : undefined;
+		assertExactAllocationProvenance(a ?? current, lionRunId, lionRunIncarnationId, "release");
+		if (!a || m.current_allocation_id === a.id) releaseMember(m, a?.lion_run_id ?? lionRunId);
+		if (a && !isTerminalAllocationStatus(a.status)) {
 			a.status = "cancelled";
 			a.updated_at = now();
 		}
@@ -259,7 +262,8 @@ export class GanglionLedger {
 			if (!m.current_allocation_id) { inconsistencies.push(`${m.id} is busy without current_allocation_id`); continue; }
 			const a = g.allocations.find((x) => x.id === m.current_allocation_id);
 			if (!a) { inconsistencies.push(`${m.id} references missing allocation ${m.current_allocation_id}`); continue; }
-			if (["completed", "blocked", "failed", "cancelled"].includes(a.status)) {
+			if (isTerminalAllocationStatus(a.status)) {
+				if (a.lion_run_incarnation_id && !findTerminalRunForAllocation(a, m, runs)) continue;
 				releaseMember(m, a.lion_run_id ?? undefined);
 				released.push({ member_id: m.id, allocation_id: a.id, lion_run_id: a.lion_run_id ?? null, status: a.status });
 				continue;
@@ -346,8 +350,16 @@ function makeAllocation(g: Ganglion, task: WorkItemBrief, m: Member, context: st
 }
 function allocationReason(m: Member, required: string[]): string { return required.length ? `matched ${required.filter((r) => m.capabilities.includes(r)).join(", ") || "available member"}` : "no specific capability required"; }
 function releaseMember(m: Member, runId?: string): void { m.status = "available"; m.current_task_id = null; m.current_allocation_id = null; if (runId) m.last_run_id = runId; m.updated_at = now(); }
+function isTerminalAllocationStatus(status: AllocationStatus): boolean { return ["completed", "blocked", "failed", "cancelled"].includes(status); }
+function assertExactAllocationProvenance(a: Allocation | undefined, lionRunId: string | undefined, lionRunIncarnationId: string | undefined, operation: string): void {
+	if (!a?.lion_run_incarnation_id) return;
+	if (a.lion_run_id !== lionRunId || a.lion_run_incarnation_id !== lionRunIncarnationId) {
+		throw new GanglionError("invalid_transition", `${operation} for exactly linked allocation ${a.id} requires matching lion_run_id and lion_run_incarnation_id`);
+	}
+}
 function findTerminalRunForAllocation(a: Allocation, m: Member, runs: LionRunBrief[]): LionRunBrief | undefined {
 	const terminal = runs.filter((r) => ["completed", "blocked", "failed", "aborted"].includes(r.status));
+	if (a.lion_run_id && a.lion_run_incarnation_id) return terminal.find((r) => r.id === a.lion_run_id && r.incarnation_id === a.lion_run_incarnation_id);
 	if (a.lion_run_id) return terminal.find((r) => r.id === a.lion_run_id);
 	return terminal
 		.filter((r) => r.agent_id === m.id && r.task_id === a.task_id)
