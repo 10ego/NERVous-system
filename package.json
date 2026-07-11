@@ -1,11 +1,11 @@
 {
   "name": "nervous-system",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "NERVous System — durable multi-agent orchestration, coding-agent coordination, and workflow recovery for pi.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+ssh://git@github.com/10ego/NERVous-system.git"
+    "url": "https://github.com/10ego/NERVous-system.git"
   },
   "keywords": [
     "pi-package",
@@ -66,8 +66,7 @@
       "cerebel/prompts",
       "ganglion/prompts",
       "amygdala/prompts"
-    ],
-    "image": "https://raw.githubusercontent.com/10ego/NERVous-system/main/assets/nervous-system-gallery.png"
+    ]
   },
   "scripts": {
     "test": "vitest run",
@@ -102,7 +101,6 @@
     "README.md",
     "RELEASES.md",
     "docs/",
-    "assets/",
     "magi/README.md",
     "magi/config/",
     "magi/extension/",
