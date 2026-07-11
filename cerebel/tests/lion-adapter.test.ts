@@ -203,6 +203,60 @@ describe("createLionAdapter", () => {
 		assert.match(finished.error ?? "", /direct settlement commit race/);
 	});
 
+	it("persists exact LION cleanup evidence before a crash after the CEREBEL obligation write", async () => {
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "run-wave-cleanup-ordering",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const writes: string[] = [];
+		const processInfo = { pid: 405, pgid: 405, process_identity: "boot-a:cleanup-405", isAlive: () => true, cancel: () => true };
+		const rpcFactory = () => async (request: LionRunRequest) => {
+			request.onProcessStart?.(processInfo);
+			await request.registerCleanupSupervisor?.({
+				namespaceId: request.cleanupOwner!.namespaceId,
+				runId: request.run.id,
+				incarnationId: request.run.incarnation_id ?? null,
+				ownerId: request.cleanupOwner!.ownerId,
+				process: processInfo,
+				isAlive: () => true,
+				waitForExit: async () => undefined,
+				cleanup: async () => undefined,
+				terminalIntent: { kind: "result", output: { text: "done", report } },
+			});
+			return { settlement: "cleanup_pending" as const, run_id: request.run.id, incarnation_id: request.run.incarnation_id ?? null, owner_id: request.cleanupOwner!.ownerId };
+		};
+		const orderedCleanupSupervisor = {
+			...cleanupSupervisor,
+			async persistCleanupPendingObservation(...args: Parameters<typeof cleanupSupervisor.persistCleanupPendingObservation>) {
+				writes.push("lion-observation");
+				return cleanupSupervisor.persistCleanupPendingObservation(...args);
+			},
+			registerLionCleanupSupervisor() { return true; },
+		};
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave", runner_mode: "rpc" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: rpcFactory, createLionRpcRunner: rpcFactory, activeRuns, cleanupSupervisor: orderedCleanupSupervisor },
+		);
+		const run = await adapter.createRun(assignment());
+		await assert.rejects(() => adapter.run(run, assignment(), () => undefined, undefined, undefined, async () => {
+			writes.push("cerebel-obligation");
+			throw new Error("simulated crash after CEREBEL obligation commit");
+		}), /simulated crash/);
+		assert.deepEqual(writes, ["lion-observation", "cerebel-obligation"]);
+		assert.deepEqual(ledger.get(run.id)?.control?.cleanup_pending, {
+			observed_at: ledger.get(run.id)?.control?.cleanup_pending?.observed_at,
+			incarnation_id: run.incarnation_id,
+			pid: 405,
+			pgid: 405,
+			process_identity: "boot-a:cleanup-405",
+		});
+	});
+
 	it("honors durable run_wave cancellation requested after cleanup handoff", async () => {
 		const ledger = new LionLedger();
 		const lionStore = {

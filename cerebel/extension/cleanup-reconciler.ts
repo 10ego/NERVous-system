@@ -65,6 +65,20 @@ function ganglionStatus(status: AssignmentStatus): "completed" | "blocked" | "fa
 	return status === "blocked" ? "blocked" : status === "failed" ? "failed" : status === "cancelled" ? "cancelled" : "completed";
 }
 
+function hasMatchingCleanupEvidence(run: LionRun, expected: { lion_run_id: string; lion_run_incarnation_id: string }): boolean {
+	const control = run.control;
+	const observation = control?.cleanup_pending;
+	if (!observation) return false;
+	return run.id === expected.lion_run_id
+		&& run.incarnation_id === expected.lion_run_incarnation_id
+		&& observation.incarnation_id === expected.lion_run_incarnation_id
+		&& Number.isSafeInteger(observation.pid)
+		&& observation.pid > 0
+		&& control?.pid === observation.pid
+		&& (control?.pgid ?? null) === observation.pgid
+		&& (control?.process_identity ?? null) === observation.process_identity;
+}
+
 /**
  * Settles only exact terminal LION incarnations. Missing runs and replacement
  * incarnations are ignored without mutation. Repeated calls are idempotent.
@@ -112,11 +126,16 @@ export async function reconcileCleanupPendingSettlements(
 			continue;
 		}
 		const run = (await lionStore.query((ledger) => ledger.get(expected.lion_run_id))).result;
-		if (!run
-			|| run.incarnation_id !== expected.lion_run_incarnation_id
-			|| run.status === "queued"
-			|| run.status === "running") {
+		if (!run || run.incarnation_id !== expected.lion_run_incarnation_id) {
 			results.push({ wave_id: obligation.wave_id, assignment_id: obligation.assignment.id, lion_run_id: expected.lion_run_id, lion_run_incarnation_id: expected.lion_run_incarnation_id, settled: false, reason: run ? "exact LION incarnation is not terminal" : "exact LION run is unavailable" });
+			continue;
+		}
+		if (!hasMatchingCleanupEvidence(run, expected)) {
+			results.push({ wave_id: obligation.wave_id, assignment_id: obligation.assignment.id, lion_run_id: expected.lion_run_id, lion_run_incarnation_id: expected.lion_run_incarnation_id, settled: false, reason: "exact LION run lacks matching durable cleanup evidence; capacity retained without exit proof" });
+			continue;
+		}
+		if (run.status === "queued" || run.status === "running") {
+			results.push({ wave_id: obligation.wave_id, assignment_id: obligation.assignment.id, lion_run_id: expected.lion_run_id, lion_run_incarnation_id: expected.lion_run_incarnation_id, settled: false, reason: "exact LION incarnation is not terminal" });
 			continue;
 		}
 		const input = terminalAssignmentInput(obligation.assignment, run);

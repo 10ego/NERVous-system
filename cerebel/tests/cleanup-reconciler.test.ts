@@ -43,6 +43,18 @@ describe("cleanup-pending settlement reconciliation", () => {
 		await stores.first.mutate((ledger) => ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: run.id, lion_run_incarnation_id: run.incarnation_id! }] }));
 		await stores.first.mutate((ledger) => ledger.markCleanupPendingSettlementIfOwned(wave.id, "assign-001", run.id, run.incarnation_id!));
 		assert.equal(ganglion.ledger.linkRunIfUnlinked(ganglion.ganglionId, ganglion.allocationId, run.id, run.incarnation_id!).committed, true);
+		lionLedger.updateControl(run.id, {
+			pid: 8181,
+			pgid: 8181,
+			process_identity: "boot-a:settled-child",
+			cleanup_pending: {
+				observed_at: run.started_at,
+				incarnation_id: run.incarnation_id ?? null,
+				pid: 8181,
+				pgid: 8181,
+				process_identity: "boot-a:settled-child",
+			},
+		});
 
 		// Simulate process-local registry loss, then a separately reconciled exact LION terminal state.
 		lionLedger.finish(run.id, { output: "done", report });
@@ -112,6 +124,42 @@ describe("cleanup-pending settlement reconciliation", () => {
 		const waveAfter = (await stores.fresh().query((ledger) => ledger.get(wave.id))).result!;
 		assert.equal(waveAfter.assignments[0]?.status, "failed");
 		assert.equal(waveAfter.assignments[0]?.cleanup_pending_settlement, null);
+	});
+
+	it("retains capacity after a crash-between-writes left no exact LION cleanup evidence", async () => {
+		const stores = await cerebelStores();
+		const lionLedger = new LionLedger();
+		const run = lionLedger.create({ objective: "crash between stores", runner_mode: "rpc" });
+		lionLedger.updateControl(run.id, { last_seen_at: run.started_at });
+		const ganglion = setupGanglion();
+		const wave = (await stores.first.mutate((ledger) => ledger.planWave({
+			assignments: [{ task_id: "task-001", objective: "cleanup task", ganglion_id: ganglion.ganglionId, ganglion_allocation_id: ganglion.allocationId }],
+		}))).result;
+		await stores.first.mutate((ledger) => ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: run.id, lion_run_incarnation_id: run.incarnation_id! }] }));
+		// Reproduce the old write order: the CEREBEL obligation committed, then
+		// the process crashed before the exact LION observation could commit.
+		await stores.first.mutate((ledger) => ledger.markCleanupPendingSettlementIfOwned(wave.id, "assign-001", run.id, run.incarnation_id!));
+		let ganglionMutations = 0;
+		const result = await reconcileCleanupPendingSettlements(stores.dir, {
+			cerebelStore: stores.fresh(),
+			lionStore: memoryStore(lionLedger),
+			ganglionStore: {
+				...memoryStore(ganglion.ledger),
+				async mutate<R>(fn: (value: GanglionLedger) => R) { ganglionMutations++; return { result: fn(ganglion.ledger) }; },
+			},
+			isLionPidAlive: () => true,
+			lionReconcileNowMs: Date.parse(run.started_at) + 60_000,
+			lionReconcileStaleAfterMs: 1,
+			activeLionRunRefs: [],
+		});
+		assert.equal(lionLedger.get(run.id)?.status, "failed", "generic owner-loss reconciliation demonstrates why settlement needs its own evidence gate");
+		assert.equal(result[0]?.settled, false);
+		assert.match(result[0]?.reason ?? "", /matching durable cleanup evidence/);
+		assert.equal(ganglionMutations, 0);
+		const retainedWave = (await stores.fresh().query((ledger) => ledger.get(wave.id))).result!;
+		assert.equal(retainedWave.assignments[0]?.status, "dispatched");
+		assert.ok(retainedWave.assignments[0]?.cleanup_pending_settlement);
+		assert.equal(ganglion.ledger.get(ganglion.ganglionId)?.members[0]?.status, "busy");
 	});
 
 	it("never clears an obligation when current capacity provenance differs", async () => {

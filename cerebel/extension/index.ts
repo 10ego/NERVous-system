@@ -376,7 +376,11 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					run,
 					cleanupOwner: activeOwner,
 					registerCleanupSupervisor: async (handoff) => {
+						// The exact LION observation must commit before the cross-store
+						// CEREBEL obligation becomes actionable. A crash between these
+						// writes may retain capacity, but can never release it without proof.
 						await cleanupSupervisorMod.persistCleanupPendingObservation(lionStore, activeOwner, handoff);
+						await prepareCleanupHandoff?.();
 						return cleanupSupervisorMod.registerLionCleanupSupervisor({
 							owner: activeOwner,
 							handoff,
