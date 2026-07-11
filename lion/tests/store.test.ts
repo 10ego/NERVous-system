@@ -206,13 +206,25 @@ describe("LionLedger", () => {
 		assert.equal(stale.run.control, null);
 	});
 
+	it("atomically gives committed cancellation precedence over exact success finalization", () => {
+		const ledger = new LionLedger();
+		const run = ledger.create({ objective: "late cancellation" });
+		ledger.requestCancel(run.id, "cancel won the commit race");
+		const finalization = ledger.finalizeIfCurrent(run.id, run.incarnation_id, { output: "success", report: null });
+		assert.equal(finalization.committed, true);
+		assert.equal(finalization.run?.status, "aborted");
+		assert.equal(finalization.run?.output, "");
+		assert.equal(finalization.run?.report, null);
+		assert.match(finalization.run?.error ?? "", /cancel won the commit race/);
+	});
+
 	it("does not finalize or attach control metadata to a replacement incarnation", () => {
 		const ledger = new LionLedger();
 		const original = ledger.create({ objective: "original" });
 		ledger.finish(original.id, { output: "old", report: null, status: "failed" });
 		ledger.delete(original.id);
 		const replacement = ledger.create({ objective: "replacement" });
-		const finalization = ledger.finishIfCurrent(original.id, original.incarnation_id, { output: "stale", report: null });
+		const finalization = ledger.finalizeIfCurrent(original.id, original.incarnation_id, { output: "stale", report: null });
 		const control = ledger.updateControlIfCurrent(original.id, original.incarnation_id, { pid: 123 });
 		assert.equal(finalization.committed, false);
 		assert.equal(control.committed, false);

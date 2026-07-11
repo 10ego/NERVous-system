@@ -87,7 +87,7 @@ export async function finalizeExactLionRun(
 	input: FinishRunInput,
 ): Promise<LionCleanupFinalization> {
 	try {
-		const { result } = await store.mutate((ledger) => ledger.finishIfCurrent(owner.runId, owner.incarnationId, input));
+		const { result } = await store.mutate((ledger) => ledger.finalizeIfCurrent(owner.runId, owner.incarnationId, input));
 		return classifyFinalization(owner, result.run, result.committed);
 	} catch (writeError) {
 		let current: LionRun | undefined;

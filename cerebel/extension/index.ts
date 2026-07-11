@@ -300,23 +300,18 @@ export async function settleLinkedLionsBeforeCancel(
 	return assignments.map((assignment) => results.get(assignment.id)!);
 }
 
-async function lateTerminalFinishInput(
-	store: LionAdapterDeps["lionStore"] extends infer T ? NonNullable<T> : never,
-	owner: ReturnType<typeof import("@nervous-system/lion/extension/active-runs.ts").beginActiveRun>,
+function lateTerminalFinishInput(
 	intent: LionTerminalIntent,
 	cleanupError?: Error,
 	hostAborted = false,
-): Promise<import("@nervous-system/lion/extension/store.ts").FinishRunInput> {
-	const current = (await store.query((ledger) => ledger.get(owner.runId))).result;
-	const exact = current && (current.incarnation_id ?? null) === (owner.incarnationId ?? null) ? current : undefined;
-	const cancelled = Boolean(exact?.control?.cancel_requested_at || hostAborted);
-	if (intent.kind === "result" && !cleanupError && !cancelled) return { output: intent.output.text, report: intent.output.report };
+): import("@nervous-system/lion/extension/store.ts").FinishRunInput {
+	if (intent.kind === "result" && !cleanupError && !hostAborted) return { output: intent.output.text, report: intent.output.report };
 	const error = intent.kind === "error" ? intent.error : cleanupError ?? new Error("Host aborted run_wave during cleanup");
 	return {
 		output: "",
 		report: null,
-		status: cancelled ? "aborted" : "failed",
-		error: cancelled ? (exact?.control?.cancel_reason ? `Cancelled: ${exact.control.cancel_reason}` : "Cancelled") : error.message,
+		status: hostAborted ? "aborted" : "failed",
+		error: hostAborted ? "Cancelled" : error.message,
 	};
 }
 
@@ -388,7 +383,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 							finalize: async (intent, cleanupError) => cleanupSupervisorMod.finalizeExactLionRun(
 								lionStore,
 								activeOwner,
-								await lateTerminalFinishInput(lionStore, activeOwner, intent, cleanupError, Boolean((runSignal ?? signal)?.aborted)),
+								lateTerminalFinishInput(intent, cleanupError, Boolean((runSignal ?? signal)?.aborted)),
 							),
 							emitTerminal: (settlement) => {
 								if (settlement.disposition === "terminal") lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(settlement.run.status as import("@nervous-system/lion/extension/schema.ts").TerminalLionRunStatus), settlement.run);
@@ -424,12 +419,11 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				const owner = activeOwners.get(runId);
 				if (!owner) throw new Error(`active LION ownership missing while finalizing ${runId}`);
 				try {
-					const outcome = (await lionStore.mutate((l) => l.finishIfCurrent(runId, owner.incarnationId, result))).result;
-					if (!outcome.committed) {
-						if (outcome.run && (outcome.run.incarnation_id ?? null) === (owner.incarnationId ?? null) && outcome.run.status !== "queued" && outcome.run.status !== "running") return outcome.run;
+					const outcome = await cleanupSupervisorMod.finalizeExactLionRun(lionStore, owner, result);
+					if (outcome.disposition !== "terminal") {
 						throw new Error(`LION finalization superseded for run_id=${runId} incarnation_id=${owner.incarnationId ?? "null"}`);
 					}
-					const finished = outcome.run!;
+					const finished = outcome.run;
 					if (finished.status === "queued" || finished.status === "running") throw new Error(`LION ${runId} remained nonterminal after finish`);
 					lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(finished.status), finished);
 					return finished;

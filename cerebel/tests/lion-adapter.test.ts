@@ -171,6 +171,38 @@ describe("createLionAdapter", () => {
 		activeRuns.clearActiveRunsForTests();
 	});
 
+	it("uses cancellation-aware exact finalization for direct run_wave settlement", async () => {
+		const ledger = new LionLedger();
+		let injectCancellation = false;
+		const lionStore = {
+			namespaceId: "run-wave-direct-cancel-race",
+			async mutate<T>(fn: (l: LionLedger) => T) {
+				if (injectCancellation) {
+					injectCancellation = false;
+					const current = ledger.all().find((candidate) => candidate.status === "running");
+					if (current) ledger.requestCancel(current.id, "direct settlement commit race");
+				}
+				return { result: fn(ledger) };
+			},
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const runner = () => async () => ({ text: "success", report });
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns, cleanupSupervisor },
+		);
+		const run = await adapter.createRun(assignment());
+		await adapter.run(run, assignment(), () => undefined);
+		injectCancellation = true;
+		const finished = await adapter.finishRun(run.id, { output: "success", report });
+		assert.equal(finished.status, "aborted");
+		assert.equal(finished.output, "");
+		assert.match(finished.error ?? "", /direct settlement commit race/);
+	});
+
 	it("honors durable run_wave cancellation requested after cleanup handoff", async () => {
 		const ledger = new LionLedger();
 		const lionStore = {

@@ -96,6 +96,29 @@ describe("LION cleanup supervisor", () => {
 		assert.equal(hasLionCleanupSupervisor(owner), false);
 	});
 
+	it("closes the late-cancellation TOCTOU inside the exact finalization mutation", async () => {
+		const ledger = new LionLedger();
+		const run = ledger.create({ objective: "commit-race", runner_mode: "rpc" });
+		const owner = beginActiveRun({ namespaceId: "commit-race", runId: run.id, incarnationId: run.incarnation_id }, "rpc");
+		let injected = false;
+		const store = {
+			async mutate<T>(fn: (value: LionLedger) => T): Promise<{ result: T }> {
+				if (!injected) {
+					injected = true;
+					ledger.requestCancel(run.id, "injected immediately before terminal commit");
+				}
+				return { result: fn(ledger) };
+			},
+			async query<T>(fn: (value: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const result = await finalizeExactLionRun(store, owner, { output: "success", report: null });
+		if (result.disposition !== "terminal") assert.fail("exact finalization was unexpectedly superseded");
+		assert.equal(result.run.status, "aborted");
+		assert.equal(result.run.output, "");
+		assert.match(result.run.error ?? "", /injected immediately before terminal commit/);
+		finishActiveRun(owner);
+	});
+
 	it("treats an ambiguous committed persistence failure as authoritative terminal state", async () => {
 		const ledger = new LionLedger();
 		const run = ledger.create({ objective: "ambiguous", runner_mode: "rpc" });

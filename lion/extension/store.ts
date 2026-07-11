@@ -208,12 +208,24 @@ export class LionLedger {
 		return clone(r);
 	}
 
-	finishIfCurrent(id: string, incarnationId: string | null | undefined, input: FinishRunInput): { run: LionRun | undefined; committed: boolean } {
+	/**
+	 * The sole exact-incarnation terminal commit primitive. Cancellation is read
+	 * and applied inside the same ledger mutation as finalization, so a success
+	 * result can never overwrite a cancellation that committed first.
+	 */
+	finalizeIfCurrent(id: string, incarnationId: string | null | undefined, input: FinishRunInput): { run: LionRun | undefined; committed: boolean } {
 		const current = this.runsById.get(id);
 		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null) || isTerminalLionStatus(current.status)) {
 			return { run: current ? clone(current) : undefined, committed: false };
 		}
-		return { run: this.finish(id, input), committed: true };
+		const cancellation = current.control?.cancel_requested_at;
+		const finalInput = cancellation ? {
+			output: "",
+			report: null,
+			status: "aborted" as const,
+			error: current.control?.cancel_reason ? `Cancelled: ${current.control.cancel_reason}` : "Cancelled",
+		} : input;
+		return { run: this.finish(id, finalInput), committed: true };
 	}
 
 	updateProgress(id: string, input: UpdateProgressInput): LionRun {
