@@ -144,9 +144,9 @@ cerebel/
 - **SYNAPSE**: transient coordination notes.
 - **AMYGDALA**: future risk escalation target for blocked waves.
 
-CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. The `run_wave` action dynamically loads the LION runtime only when invoked; if LION is unavailable, it fails clearly without affecting the rest of CEREBEL.
+CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. LION is declared as an optional peer and loaded through its scoped package path only for `run_wave` or linked cancellation; if unavailable, those actions fail clearly without affecting standalone CEREBEL actions.
 
-CEREBEL provides whole-wave cancellation through `cerebel cancel reason="..."`. Every new CEREBEL→LION link stores both `lion_run_id` and immutable `lion_run_incarnation_id`; cancellation and settlement target that exact execution. CEREBEL waits for verifiable linked LIONs before terminalizing the wave or releasing capacity. Legacy links without an incarnation fail closed for operator resolution. Settlement uses one batched ledger snapshot with adaptive backoff. `CEREBEL_CANCEL_SETTLE_TIMEOUT_MS` defaults to 15,000 ms, accepts positive safe integers through 120,000 ms, and falls back to the default for invalid values. Steering remains per-run and RPC live steering remains explicit opt-in.
+CEREBEL provides whole-wave cancellation through `cerebel cancel reason="..."`. Every new CEREBEL→LION link stores both `lion_run_id` and immutable `lion_run_incarnation_id`; cancellation and settlement target that exact execution. CEREBEL waits for verifiable linked LIONs and fresh unlinked reservations before terminalizing the wave or releasing capacity. Incomplete pre-release links are unsupported and require operator delete/reset. Settlement uses one batched ledger snapshot with adaptive backoff. `CEREBEL_CANCEL_SETTLE_TIMEOUT_MS` defaults to 15,000 ms, accepts positive safe integers through 120,000 ms, and falls back to the default for invalid values. Steering remains per-run and RPC live steering remains explicit opt-in.
 
 ---
 

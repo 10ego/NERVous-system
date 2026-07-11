@@ -30,7 +30,7 @@ MAGI history is recorded for successful future `magi` tool calls and `/magi` com
 - `r` — manually reload state from disk
 - `q` / `esc` — close dashboard
 
-While open, the dashboard checks component file fingerprints after about one second and reloads ledgers only when state changed. Unchanged checks back off adaptively to eight seconds; a detected change resets the interval. Changes detected during an in-flight reload are latched for one follow-up reload. Manual `r` remains immediate, and tab, selection, and detail state are preserved across refreshes.
+While open, the dashboard resolves component state paths once, checks their file fingerprints after about one second, and reloads ledgers only when state changed. Unchanged checks back off adaptively to eight seconds; a detected change resets the interval. Failed reloads remain dirty and retry on the next interval, while changes detected during an in-flight reload are latched for one follow-up reload. Manual `r` remains immediate, and tab, selection, and detail state are preserved across refreshes.
 
 The dashboard reads component state through existing store APIs and does not mutate state. It can display empty tabs when a component has not yet produced persisted state. Set `NERVOUS_CONTEXT=<work-id>` before launching pi to view or resume a specific work context.
 
