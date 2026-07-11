@@ -40,6 +40,17 @@ describe("FileBackend", () => {
 		const { result } = await store.query((l) => l.current());
 		assert.equal(result?.name, "persist");
 	});
+	it("serializes complete concurrent mutations and preserves the monotonic sequence", async () => {
+		const { store } = await tmpStore();
+		await Promise.all(Array.from({ length: 10 }, (_, index) => store.mutate((ledger) => ledger.create({ name: `group-${index}` }))));
+		const groups = (await store.query((ledger) => ledger.all())).result;
+		assert.equal(groups.length, 10);
+		assert.equal(new Set(groups.map((group) => group.id)).size, 10);
+		await store.mutate((ledger) => { for (const group of ledger.all()) ledger.delete(group.id); });
+		const next = (await store.mutate((ledger) => ledger.create({ name: "next" }))).result;
+		assert.equal(next.id, "ganglion-011");
+	});
+
 	it("backup and no tmp after second save", async () => {
 		const { backend, store } = await tmpStore();
 		await store.mutate((l) => l.create({ name: "a" }));

@@ -197,6 +197,8 @@ describe("namespace-scoped active LION ownership", () => {
 	});
 
 	it("keeps a replaced durable target unsettled while its old exact owner is live", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
 		const store = await makeStore("replacement-live-owner");
 		const original = (await store.mutate((ledger) => ledger.create({ objective: "original" }))).result;
 		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: original.id, incarnationId: original.incarnation_id }, "rpc");
@@ -207,13 +209,18 @@ describe("namespace-scoped active LION ownership", () => {
 			ledger.delete(original.id);
 			return ledger.create({ objective: "replacement" });
 		})).result;
+		vi.setSystemTime(new Date("2026-01-01T00:01:00.000Z"));
 		const result = await requestRunCancellation(store, original.id, "cancel old owner", { expectedIncarnationId: original.incarnation_id });
 		assert.equal(result.settled, false);
 		assert.equal(result.superseded, false);
 		assert.equal(result.run_ref?.incarnation_id, original.incarnation_id);
 		assert.equal(result.run?.incarnation_id, replacement.incarnation_id);
 		assert.equal(signals, 1);
+		assert.equal((await store.query((ledger) => ledger.get(replacement.id))).result?.status, "running");
 		assert.equal((await store.query((ledger) => ledger.get(replacement.id))).result?.control?.cancel_requested_at, undefined);
+		const whileLive = await waitForRunSettlements(store, [{ id: original.id, incarnation_id: original.incarnation_id }], 0);
+		assert.equal(whileLive[0]?.settled, false);
+		assert.equal((await store.query((ledger) => ledger.get(replacement.id))).result?.status, "running");
 		finishActiveRun(owner);
 		const settled = await waitForRunSettlements(store, [{ id: original.id, incarnation_id: original.incarnation_id }], 0);
 		assert.equal(settled[0]?.settled, true);

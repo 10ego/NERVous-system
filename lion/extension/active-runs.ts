@@ -238,8 +238,9 @@ export interface RunCancellationRequest {
 /** Admit all requests in one ledger transaction, deliver controls outside the lock, then persist all delivery outcomes together. */
 export async function requestRunCancellations(store: LionControlStore, requests: RunCancellationRequest[]): Promise<RunCancellationResult[]> {
 	if (!requests.length) return [];
+	const protectedRunIds = requests.filter((request) => request.expectIncarnation && isExactActiveRunLive({ namespaceId: store.namespaceId, runId: request.runId, incarnationId: request.expectedIncarnationId ?? null })).map((request) => request.runId);
 	const admissions = (await store.mutate((ledger) => {
-		ledger.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), get_process_identity: getProcessIdentity });
+		ledger.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), protected_run_ids: protectedRunIds, get_process_identity: getProcessIdentity });
 		return requests.map((request) => {
 			const current = ledger.get(request.runId);
 			const expectedScope: ActiveRunScope = { namespaceId: store.namespaceId, runId: request.runId, incarnationId: request.expectedIncarnationId ?? null };
@@ -330,8 +331,9 @@ export async function waitForRunSettlements(
 	let nextPoll = boundedPoll;
 	const deadline = Date.now() + boundedTimeout;
 	for (;;) {
+		const protectedRunIds = runs.filter((run) => isExactActiveRunLive({ namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null })).map((run) => run.id);
 		const { result: currentRuns } = await store.mutateMaybe((ledger) => {
-			const changed = ledger.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), get_process_identity: getProcessIdentity });
+			const changed = ledger.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), protected_run_ids: protectedRunIds, get_process_identity: getProcessIdentity });
 			return { result: runs.map((run) => ledger.get(run.id)), changed: changed.length > 0 };
 		});
 		const results = runs.map((run, index): RunCancellationResult => {

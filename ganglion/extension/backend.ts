@@ -52,7 +52,21 @@ export class FileBackend {
 		this.tmpPath = `${location.ganglionPath}.tmp`;
 		this.bakPath = `${location.ganglionPath}.bak`;
 	}
-	async load(): Promise<LoadResult> {
+	async load(): Promise<LoadResult> { return this.loadUnlocked(); }
+	async save(ledger: GanglionLedger): Promise<void> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		await withLock(this.lockPath, () => this.saveUnlocked(ledger));
+	}
+	async mutate<T>(fn: (ledger: GanglionLedger) => T): Promise<{ result: T; warnings: string[] }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { ledger, warnings } = await this.loadUnlocked();
+			const result = fn(ledger);
+			await this.saveUnlocked(ledger);
+			return { result, warnings };
+		});
+	}
+	private async loadUnlocked(): Promise<LoadResult> {
 		let raw: string;
 		try { raw = await fs.readFile(this.location.ganglionPath, "utf8"); }
 		catch (err) { const code = (err as NodeJS.ErrnoException).code; if (code === "ENOENT") return { ledger: new GanglionLedger(), warnings: [], fresh: true }; throw err; }
@@ -63,14 +77,11 @@ export class FileBackend {
 			return { ledger: new GanglionLedger(), warnings: [`ganglion state at ${this.location.ganglionPath} was corrupt (${err instanceof Error ? err.message : String(err)}); backed up to .corrupt-${stamp} and started fresh.`], fresh: false };
 		}
 	}
-	async save(ledger: GanglionLedger): Promise<void> {
-		await fs.mkdir(this.location.dir, { recursive: true });
-		await withLock(this.lockPath, async () => {
-			const data = JSON.stringify(ledger.toJSON(), null, 2);
-			try { await fs.copyFile(this.location.ganglionPath, this.bakPath); } catch (err) { const code = (err as NodeJS.ErrnoException).code; if (code !== "ENOENT") throw err; }
-			await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
-			await fs.rename(this.tmpPath, this.location.ganglionPath);
-		});
+	private async saveUnlocked(ledger: GanglionLedger): Promise<void> {
+		const data = JSON.stringify(ledger.toJSON(), null, 2);
+		try { await fs.copyFile(this.location.ganglionPath, this.bakPath); } catch (err) { const code = (err as NodeJS.ErrnoException).code; if (code !== "ENOENT") throw err; }
+		await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
+		await fs.rename(this.tmpPath, this.location.ganglionPath);
 	}
 }
 
@@ -79,5 +90,5 @@ export class GanglionStore {
 	constructor(backend: FileBackend) { this.backend = backend; }
 	static fromCwd(cwd: string): GanglionStore { return new GanglionStore(new FileBackend(resolveGanglionLocation(cwd))); }
 	async query<T>(fn: (ledger: GanglionLedger) => T): Promise<{ result: T; warnings: string[] }> { const { ledger, warnings } = await this.backend.load(); return { result: fn(ledger), warnings }; }
-	async mutate<T>(fn: (ledger: GanglionLedger) => T): Promise<{ result: T; warnings: string[] }> { const { ledger, warnings } = await this.backend.load(); const result = fn(ledger); await this.backend.save(ledger); return { result, warnings }; }
+	async mutate<T>(fn: (ledger: GanglionLedger) => T): Promise<{ result: T; warnings: string[] }> { return this.backend.mutate(fn); }
 }
