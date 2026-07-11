@@ -11,6 +11,8 @@ import {
 	clearActiveRunsForTests,
 	finishActiveRun,
 	getActiveRunIds,
+	getActiveRunRefs,
+	isActiveRunAttached,
 	markActiveRunControlClosed,
 	replayPendingCancellation,
 	requestRunCancellation,
@@ -55,6 +57,16 @@ describe("namespace-scoped active LION ownership", () => {
 		assert.equal(cancelledB, 0);
 		finishActiveRun(ownerA);
 		finishActiveRun(ownerB);
+	});
+
+	it("fences attachment and reconciliation references by exact incarnation", async () => {
+		const store = await makeStore("exact-active-ref");
+		const owner = beginActiveRun({ namespaceId: store.namespaceId, runId: "run-001", incarnationId: "inc-old" }, "rpc");
+		attachActiveRunProcess(owner, { pid: process.pid, pgid: null, isAlive: () => true, cancel: () => true });
+		assert.equal(isActiveRunAttached({ namespaceId: store.namespaceId, runId: "run-001", incarnationId: "inc-old" }, "rpc"), true);
+		assert.equal(isActiveRunAttached({ namespaceId: store.namespaceId, runId: "run-001", incarnationId: "inc-new" }, "rpc"), false);
+		assert.deepEqual(getActiveRunRefs(store.namespaceId), [{ id: "run-001", incarnation_id: "inc-old" }]);
+		finishActiveRun(owner);
 	});
 
 	it("rejects reused run ids while an owner remains active in the same namespace", async () => {

@@ -13,7 +13,7 @@ import { createProgressUpdater, emitLionEvent, startedProgress, terminalEventKin
 import { resolveConfiguredLionModel, resolveLionRunnerMode } from "./options.ts";
 import { createLionRunner, getProcessIdentity, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
-import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunIds, isActiveRunAttached, isActiveRunOwner, markActiveRunControlClosed, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
+import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunRefs, isActiveRunAttached, isActiveRunOwner, markActiveRunControlClosed, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
 interface LionDetails {
 	action: string;
@@ -63,7 +63,7 @@ function activeRunScope(store: LionStore, run: Pick<LionRun, "id" | "incarnation
 async function reconcileStore(store: LionStore): Promise<void> {
 	try {
 		await store.mutateMaybe((l) => {
-			const changed = l.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId), get_process_identity: getProcessIdentity });
+			const changed = l.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), get_process_identity: getProcessIdentity });
 			return { result: changed, changed: changed.length > 0 };
 		});
 	} catch { /* best-effort read reconciliation */ }

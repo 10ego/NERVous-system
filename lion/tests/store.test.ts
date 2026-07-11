@@ -87,7 +87,7 @@ describe("LionLedger", () => {
 		const l = new LionLedger();
 		const active = l.create({ objective: "active" });
 		l.updateControl(active.id, { pid: 111, last_seen_at: "2026-01-01T00:00:00.000Z" });
-		assert.equal(l.reconcileControls(() => false, { active_run_ids: [active.id], now_ms: Date.now() + 600_000, stale_after_ms: 1 }).length, 0);
+		assert.equal(l.reconcileControls(() => false, { active_run_refs: [{ id: active.id, incarnation_id: active.incarnation_id }], now_ms: Date.now() + 600_000, stale_after_ms: 1 }).length, 0);
 		assert.equal(l.get(active.id)?.status, "running");
 
 		const fresh = l.create({ objective: "fresh" });
@@ -98,6 +98,18 @@ describe("LionLedger", () => {
 
 		const stale = l.reconcileControls(() => false, { now_ms: Date.now() + 60_000, stale_after_ms: 30_000 });
 		assert.equal(stale.some((r) => r.id === fresh.id && r.status === "failed"), true);
+	});
+
+	it("does not let an active reference for an old incarnation protect a replacement", () => {
+		const l = new LionLedger();
+		const replacement = l.create({ objective: "replacement" });
+		l.updateControl(replacement.id, { pid: 333, last_seen_at: "2026-01-01T00:00:00.000Z" });
+		const changed = l.reconcileControls(() => false, {
+			active_run_refs: [{ id: replacement.id, incarnation_id: "inc-old" }],
+			now_ms: Date.now() + 60_000,
+			stale_after_ms: 1,
+		});
+		assert.equal(changed[0]?.status, "failed");
 	});
 
 	it("reconciles PID reuse only when process-birth identity proves replacement", () => {
@@ -122,7 +134,7 @@ describe("LionLedger", () => {
 	it("reconciles a stale ownerless running run without process metadata", () => {
 		const l = new LionLedger();
 		const run = l.create({ objective: "lost before attach" });
-		const changed = l.reconcileControls(() => true, { now_ms: Date.now() + 60_000, stale_after_ms: 1, active_run_ids: [] });
+		const changed = l.reconcileControls(() => true, { now_ms: Date.now() + 60_000, stale_after_ms: 1, active_run_refs: [] });
 		assert.equal(changed[0]?.id, run.id);
 		assert.equal(changed[0]?.status, "failed");
 		assert.match(changed[0]?.error ?? "", /owner was lost/i);
@@ -137,7 +149,7 @@ describe("LionLedger", () => {
 		l.requestCancel(run.id, "first request");
 		l.markCancelDelivery(run.id, "not_attached");
 		l.requestCancel(run.id, "repeated request");
-		const changed = l.reconcileControls(() => false, { now_ms: started + 30_001, stale_after_ms: 30_000, active_run_ids: [] });
+		const changed = l.reconcileControls(() => false, { now_ms: started + 30_001, stale_after_ms: 30_000, active_run_refs: [] });
 		assert.equal(changed[0]?.status, "aborted");
 		assert.match(changed[0]?.error ?? "", /Cancelled/);
 	});

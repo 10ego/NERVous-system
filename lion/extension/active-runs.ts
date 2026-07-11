@@ -116,13 +116,19 @@ export function getActiveRunIds(namespaceId: string): string[] {
 	return Array.from(activeRuns.values()).filter((entry) => entry.namespaceId === namespaceId).map((entry) => entry.runId);
 }
 
+export function getActiveRunRefs(namespaceId: string): Array<{ id: string; incarnation_id: string | null }> {
+	return Array.from(activeRuns.values())
+		.filter((entry) => entry.namespaceId === namespaceId)
+		.map((entry) => ({ id: entry.runId, incarnation_id: entry.incarnationId ?? null }));
+}
+
 export function isActiveRunOwner(owner: ActiveRunOwner): boolean {
 	return activeRuns.get(scopeKey(owner))?.ownerId === owner.ownerId;
 }
 
 export function isActiveRunAttached(scope: ActiveRunScope, runnerMode?: LionRunnerMode): boolean {
 	const entry = activeRuns.get(scopeKey(scope));
-	if (!entry) return false;
+	if (!entry || !Object.prototype.hasOwnProperty.call(scope, "incarnationId") || (entry.incarnationId ?? null) !== (scope.incarnationId ?? null)) return false;
 	if (runnerMode && entry.runnerMode !== runnerMode) return false;
 	if (entry.state !== "running") return false;
 	return entry.isAlive ? entry.isAlive() : true;
@@ -218,7 +224,7 @@ export interface RunCancellationRequest {
 export async function requestRunCancellations(store: LionControlStore, requests: RunCancellationRequest[]): Promise<RunCancellationResult[]> {
 	if (!requests.length) return [];
 	const admissions = (await store.mutate((ledger) => {
-		ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId), get_process_identity: getProcessIdentity });
+		ledger.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), get_process_identity: getProcessIdentity });
 		return requests.map((request) => {
 			const current = ledger.get(request.runId);
 			if (!current) return { kind: "missing" as const };
@@ -292,7 +298,7 @@ export async function waitForRunSettlements(
 	const deadline = Date.now() + boundedTimeout;
 	for (;;) {
 		const { result: currentRuns } = await store.mutateMaybe((ledger) => {
-			const changed = ledger.reconcileControls(isPidAlive, { active_run_ids: getActiveRunIds(store.namespaceId), get_process_identity: getProcessIdentity });
+			const changed = ledger.reconcileControls(isPidAlive, { active_run_refs: getActiveRunRefs(store.namespaceId), get_process_identity: getProcessIdentity });
 			return { result: runs.map((run) => ledger.get(run.id)), changed: changed.length > 0 };
 		});
 		const results = runs.map((run, index): RunCancellationResult => {

@@ -93,7 +93,7 @@ export interface CancelRunResult {
 }
 
 export interface ReconcileControlsOptions {
-	active_run_ids?: Iterable<string>;
+	active_run_refs?: Iterable<Pick<LionRun, "id" | "incarnation_id">>;
 	now_ms?: number;
 	stale_after_ms?: number;
 	/** Observational lookup only; never signaling authority. Null means unverifiable. */
@@ -409,12 +409,12 @@ export class LionLedger {
 
 	reconcileControls(isAlive: (pid: number) => boolean, options: ReconcileControlsOptions = {}): LionRun[] {
 		const changed: LionRun[] = [];
-		const active = new Set(options.active_run_ids ?? []);
+		const active = new Set(Array.from(options.active_run_refs ?? [], (ref) => JSON.stringify([ref.id, ref.incarnation_id ?? null])));
 		const nowMs = options.now_ms ?? Date.now();
 		const staleAfterMs = options.stale_after_ms ?? DEFAULT_RECONCILE_GRACE_MS;
 		for (const r of this.runsById.values()) {
 			if (r.status !== "running") continue;
-			if (active.has(r.id)) continue;
+			if (active.has(JSON.stringify([r.id, r.incarnation_id ?? null]))) continue;
 			if (!isReconcileStale(r, nowMs, staleAfterMs)) continue;
 			const pid = r.control?.pid;
 			if (typeof pid === "number" && isAlive(pid)) {
@@ -507,8 +507,8 @@ export class LionLedger {
 
 	private compactSteeringHistory(run: LionRun): void {
 		const messages = run.steering_messages ?? [];
-		const open = messages.filter((message) => ["queued", "pending_delivery", "delivering"].includes(message.status));
-		const terminal = messages.filter((message) => !["queued", "pending_delivery", "delivering"].includes(message.status));
+		const open = messages.filter((message) => OPEN_STEERING_STATUSES.has(message.status));
+		const terminal = messages.filter((message) => !OPEN_STEERING_STATUSES.has(message.status));
 		run.steering_messages = [...terminal.slice(-MAX_TERMINAL_STEERING_HISTORY), ...open];
 	}
 
@@ -521,7 +521,7 @@ export class LionLedger {
 	private failOpenSteeringForRun(run: LionRun, reason: string, ts: string): boolean {
 		let changed = false;
 		for (const msg of run.steering_messages ?? []) {
-			if (msg.status !== "queued" && msg.status !== "pending_delivery" && msg.status !== "delivering") continue;
+			if (!OPEN_STEERING_STATUSES.has(msg.status)) continue;
 			msg.status = "delivery_failed";
 			msg.rejected_at = ts;
 			msg.reason = reason;
