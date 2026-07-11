@@ -38,4 +38,4 @@ Pre-1.0 (`0.x`) state is not a supported migration source. In particular, CEREBE
 ### Known architectural limitations
 
 - RPC cleanup currently retains the foreground call and exact active ownership until an attached child is confirmed exited. A safe bounded foreground return requires a nonterminal cleanup-pending supervisor; a timeout alone would falsely release ownership. The design contract is tracked in [issue #12](https://github.com/10ego/NERVous-system/issues/12).
-- Live progress updates are throttled and batched, but each accepted batch still rewrites the canonical LION ledger. Moving high-frequency progress to an exact-incarnation sidecar/journal requires coordinated read, recovery, backup, and final-fold semantics tracked in [issue #13](https://github.com/10ego/NERVous-system/issues/13).
+- Releases through 1.0.5 throttled and batched live progress but still rewrote the canonical LION ledger for each accepted batch. The issue #13 architecture moves new exact-incarnation progress to bounded sidecars with coherent read overlays and one mandatory terminal fold; legacy/null-incarnation records remain unchanged without migration or backfill.

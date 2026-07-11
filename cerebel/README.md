@@ -74,7 +74,7 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 - Reserves planned assignments under the CEREBEL lock before creating workers.
 - Creates exact LION run/incarnation links and executes up to the wave's stored `max_parallel` unless an explicit bounded override is supplied.
 - Emits the same `nervous:lion:started`, progress, and terminal telemetry as direct LION execution.
-- Time-throttles durable progress writes while sending UI progress immediately and forcing the final snapshot before terminalization.
+- Time-throttles bounded exact-incarnation LION sidecar writes while sending UI progress immediately, then drains and folds the final snapshot through LION's terminal API.
 - Joins every admitted batch with all-settled semantics before returning or propagating failure.
 - Records completed, partial, blocked, failed, and cancelled outcomes; terminal GANGLION updates are batched once per group.
 - Returns grouped results plus a `/nervous:dashboard` hint. Failed batches retain structured partial `wave` and `run_wave.assignment_results` details, and the TUI renders them with the error.
