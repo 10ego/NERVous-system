@@ -51,16 +51,6 @@ async function runQuery(store: LionStore, action: string, op: (l: import("./stor
 		return fail(action, `lion ${action} failed: ${e instanceof Error ? e.message : String(e)}`);
 	}
 }
-async function runOp(store: LionStore, action: string, op: (l: import("./store.ts").LionLedger) => ToolResult): Promise<ToolResult> {
-	try {
-		const { result } = await store.mutate(op);
-		return result;
-	} catch (e) {
-		if (e instanceof LionError) return fail(action, `lion ${action} failed (${e.code}): ${e.message}`);
-		return fail(action, `lion ${action} failed: ${e instanceof Error ? e.message : String(e)}`);
-	}
-}
-
 function activeRunScope(store: LionStore, run: Pick<LionRun, "id" | "incarnation_id">): ActiveRunScope {
 	return { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id ?? null };
 }
@@ -91,10 +81,10 @@ async function executeRun(args: {
 	const runIncarnationId = args.run.incarnation_id;
 	const activeOwner = args.activeOwner;
 	const progressUpdater = createProgressUpdater(async (progress) => {
-		const updated = await persistBatchedProgress(args.store, { id: runId, incarnation_id: runIncarnationId }, progress);
-		if (!updated) return;
-		run = updated;
-		emitLionEvent(args.pi, "progress", run, progress);
+		const accepted = await persistBatchedProgress(args.store, { id: runId, incarnation_id: runIncarnationId }, progress);
+		if (!accepted) return;
+		run = { ...run, progress: accepted, updated_at: accepted.last_event_at };
+		emitLionEvent(args.pi, "progress", run, accepted);
 	}, { onError: (error) => console.warn(`[nervous-system/lion] progress update failed for ${run.id}:`, error) });
 	const enqueueProgress = (progress: LionProgressSnapshot) => {
 		const preview = { ...run, progress, updated_at: progress.last_event_at } satisfies LionRun;
@@ -134,7 +124,7 @@ async function executeRun(args: {
 			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
 		await progressUpdater.drain();
-		const finished = await args.store.mutate((l) => l.finishIfCurrent(runId, runIncarnationId, { output: out.text, report: out.report }));
+		const finished = await args.store.finishRun(runId, runIncarnationId, { output: out.text, report: out.report });
 		if (!finished.result.committed || !finished.result.run) {
 			return fail(args.action, `LION finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, finished.result.run ? { run: finished.result.run } : {});
 		}
@@ -149,7 +139,7 @@ async function executeRun(args: {
 		const current = (await args.store.query((l) => l.get(runId))).result;
 		const exactCurrent = current && (current.incarnation_id ?? null) === (runIncarnationId ?? null) ? current : undefined;
 		const wasCancelled = Boolean(exactCurrent?.control?.cancel_requested_at || args.signal?.aborted);
-		const failed = await args.store.mutate((l) => l.finishIfCurrent(runId, runIncarnationId, { output: "", report: null, status: wasCancelled ? "aborted" : "failed", error: wasCancelled ? (exactCurrent?.control?.cancel_reason ? `Cancelled: ${exactCurrent.control.cancel_reason}` : "Cancelled") : msg }));
+		const failed = await args.store.finishRun(runId, runIncarnationId, { output: "", report: null, status: wasCancelled ? "aborted" : "failed", error: wasCancelled ? (exactCurrent?.control?.cancel_reason ? `Cancelled: ${exactCurrent.control.cancel_reason}` : "Cancelled") : msg });
 		if (!failed.result.committed || !failed.result.run) {
 			return fail(args.action, `LION failure finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, failed.result.run ? { run: failed.result.run } : {});
 		}
@@ -299,10 +289,12 @@ export default function (pi: ExtensionAPI) {
 
 				case "delete": {
 					if (!p.id) return fail(action, "delete requires `id`.");
-					return runOp(store, action, (l) => {
-						const run = l.delete(p.id!);
+					try {
+						const { result: run } = await store.deleteRun(p.id);
 						return ok(action, `Deleted ${run.id}.`, { run, deleted: true });
-					});
+					} catch (e) {
+						return e instanceof LionError ? fail(action, `lion delete failed (${e.code}): ${e.message}`) : fail(action, `lion delete failed: ${e instanceof Error ? e.message : String(e)}`);
+					}
 				}
 
 				default:
