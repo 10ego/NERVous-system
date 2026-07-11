@@ -1,7 +1,6 @@
 {
   "name": "nervous-system",
   "version": "1.0.0",
-  "private": true,
   "description": "NERVous System — a modular multi-agent coding-agent extension framework for pi.",
   "license": "MIT",
   "repository": {
@@ -83,5 +82,48 @@
     "typebox": "*",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "homepage": "https://github.com/10ego/NERVous-system#readme",
+  "bugs": {
+    "url": "https://github.com/10ego/NERVous-system/issues"
+  },
+  "files": [
+    "README.md",
+    "assets/",
+    "magi/config/",
+    "magi/extension/",
+    "magi/prompts/",
+    "magi/skills/",
+    "axon/config/",
+    "axon/extension/",
+    "axon/skills/",
+    "synapse/extension/",
+    "synapse/skills/",
+    "cortex/extension/",
+    "cortex/prompts/",
+    "cortex/skills/",
+    "lion/extension/",
+    "lion/prompts/",
+    "lion/skills/",
+    "cerebel/extension/",
+    "cerebel/prompts/",
+    "cerebel/skills/",
+    "ganglion/extension/",
+    "ganglion/prompts/",
+    "ganglion/skills/",
+    "amygdala/extension/",
+    "amygdala/prompts/",
+    "amygdala/skills/",
+    "dashboard/extension/"
+  ],
+  "dependencies": {
+    "@nervous-system/state": "1.0.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   }
 }

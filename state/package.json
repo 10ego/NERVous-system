@@ -11,5 +11,17 @@
     "@types/node": "^22.0.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
+  },
+  "files": [
+    "src/"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/10ego/NERVous-system.git",
+    "directory": "state"
+  },
+  "homepage": "https://github.com/10ego/NERVous-system#readme",
+  "bugs": {
+    "url": "https://github.com/10ego/NERVous-system/issues"
   }
 }
