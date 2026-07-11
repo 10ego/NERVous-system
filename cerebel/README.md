@@ -81,13 +81,14 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 - Joins every admitted batch with all-settled semantics before returning or propagating failure.
 - Records completed, partial, blocked, failed, and cancelled outcomes; terminal GANGLION updates are batched once per group.
 - Summarizes completed, partial, cancelled, blocked, failed, and still-planned assignment counts separately without changing their settlement semantics.
+- An RPC worker whose attached child survives bounded stop returns `cleanup_pending`. Its LION remains running, its assignment remains dispatched, and its GANGLION allocation remains reserved until the process-local LION supervisor confirms exit and completes exact-incarnation settlement.
 - Returns grouped results plus a `/nervous:dashboard` hint. Failed batches retain structured partial `wave` and `run_wave.assignment_results` details, and the TUI renders them with the error.
 
 ### Abort and failure behavior
 
 - The exact host `AbortSignal` is checked before and after reservation, creation, launch, adapter completion, and progress drain.
 - Unlinked reservations are released when abort wins admission; a custom adapter's late success after abort is classified as LION `aborted` / CEREBEL `cancelled`.
-- A CEREBEL terminal result is committed only after LION finalization succeeds. Finalization or unlinked cleanup failure surfaces and does not release linked capacity.
+- A CEREBEL terminal result is committed only after LION finalization succeeds. Finalization or unlinked cleanup failure surfaces and does not release linked capacity. A `cleanup_pending` result is explicitly nonterminal and skips foreground `finishRun`.
 - Host abort does not manufacture a separate durable `lion cancel` request.
 - Terminal assignments are not rerun, terminal links cannot be replaced, missing/unparseable `WORKER_REPORT` output fails, and later batches stop after blocked/failed/cancelled outcomes.
 - Stale reservations that never received a LION link are recovered. When release or recovery leaves all pending assignments planned, the wave returns to coherent `planned` / `dispatch` state. Active ownership remains registered until LION finalization.
