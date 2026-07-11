@@ -12,3 +12,19 @@ A small deterministic benchmark compares GPT 5.5 low-thinking output with and wi
 On this benchmark, the NERVous prompt and tool surfaces improved useful guidance density by about **23%** versus the raw model. The main observed gains were more reliable component routing, durable state and coordination coverage, and safer blocked-work triage.
 
 > This is a focused regression benchmark, not a universal model leaderboard. It measures rubric-scored guidance density for representative NERVous coding workflows.
+
+## LION progress persistence scaling gate
+
+The deterministic LION storage benchmark builds a small and a 600-run historical canonical ledger, starts one exact-incarnation worker in each, resets operation counters, and flushes one bounded progress snapshot:
+
+```bash
+npm run benchmark:lion-progress
+```
+
+The merge gate asserts for both ledger sizes:
+
+- `canonical_reads`, `canonical_parses`, `canonical_backups`, `canonical_serializations`, and `canonical_writes` are all zero during the flush;
+- canonical bytes read/written are zero;
+- sidecar bytes written remain at most two bounded envelopes (primary plus one backup), independent of `runs.json` size.
+
+This instrumentation is the stable complexity proof; wall-clock timing is intentionally not used as the primary assertion because filesystem scheduling is noisy.
