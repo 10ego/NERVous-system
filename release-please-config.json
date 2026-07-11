@@ -1,0 +1,12 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "bootstrap-sha": "3375522866eb352ec804f66b7535a5f07a7db70c",
+  "packages": {
+    ".": {
+      "release-type": "node",
+      "package-name": "nervous-system",
+      "changelog-path": "CHANGELOG.md",
+      "include-component-in-tag": false
+    }
+  }
+}
