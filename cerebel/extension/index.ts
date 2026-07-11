@@ -15,7 +15,13 @@ type ToolResult = { content: Array<{ type: "text"; text: string }>; details: Cer
 
 type LionRunner = (req: import("@nervous-system/lion/extension/subprocess.ts").LionRunRequest) => Promise<LionRunnerOutcome | { text: string; report: import("@nervous-system/lion/extension/schema.ts").LionReport | null }>;
 interface LionAdapterDeps {
-	lionStore?: { namespaceId: string; mutate<T>(fn: (ledger: import("@nervous-system/lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>; query<T>(fn: (ledger: import("@nervous-system/lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }> };
+	lionStore?: {
+		namespaceId: string;
+		mutate<T>(fn: (ledger: import("@nervous-system/lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>;
+		query<T>(fn: (ledger: import("@nervous-system/lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>;
+		flushProgress?(run: Pick<LionRun, "id" | "incarnation_id">, progress: LionProgressSnapshot): Promise<LionProgressSnapshot | undefined>;
+		finishRun?(id: string, incarnationId: string | null | undefined, input: import("@nervous-system/lion/extension/store.ts").FinishRunInput): Promise<{ result: { run: LionRun | undefined; committed: boolean } }>;
+	};
 	createLionRunner?: (opts: { cwd: string }) => LionRunner;
 	createLionRpcRunner?: (opts: { cwd: string; store: unknown }) => LionRunner;
 	activeRuns?: typeof import("@nervous-system/lion/extension/active-runs.ts");
@@ -342,13 +348,14 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 		const runnerMode = optionsMod.resolveLionRunnerMode(p.runner_mode);
 		const runner = runnerMode === "rpc" ? createLionRpcRunner({ cwd: ctx.cwd, store: lionStore }) : createLionRunner({ cwd: ctx.cwd });
 		const activeOwners = new Map<string, ReturnType<typeof activeRuns.beginActiveRun>>();
+		const activeRunViews = new Map<string, LionRun>();
 		return {
 			createProgressUpdater: lifecycle.createProgressUpdater,
 			async createRun(assignment) {
 				let activeOwner: ReturnType<typeof activeRuns.beginActiveRun> | undefined;
 				try {
 					const initialProgress = lifecycle.startedProgress();
-					const { result } = await lionStore.mutate((l) => {
+					const { result: started } = await lionStore.mutate((l) => {
 						const queued = l.create({
 							agent_id: assignment.agent_id,
 							task_id: assignment.task_id,
@@ -361,10 +368,12 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 							start: false,
 						});
 						activeOwner = activeRuns.beginActiveRun({ namespaceId: lionStore.namespaceId, runId: queued.id, incarnationId: queued.incarnation_id ?? null }, runnerMode);
-						const started = l.start(queued.id);
-						return l.updateProgress(started.id, initialProgress);
+						return l.start(queued.id);
 					});
+					if ("flushProgress" in lionStore && typeof lionStore.flushProgress === "function") await lionStore.flushProgress(started, initialProgress);
+					const result = { ...started, progress: initialProgress, updated_at: initialProgress.last_event_at };
 					activeOwners.set(result.id, activeOwner!);
+					activeRunViews.set(result.id, result);
 					lifecycle.emitLionEvent(pi, "started", result, initialProgress);
 					try { onUpdate?.({ content: [{ type: "text", text: `${result.id}/${result.agent_id}: ${initialProgress.activity}` }], details: { action: "run_wave", run: result } }); } catch { /* progress display is best-effort */ }
 					return result;
@@ -441,6 +450,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				} finally {
 					activeRuns.finishActiveRun(owner);
 					activeOwners.delete(runId);
+					activeRunViews.delete(runId);
 				}
 			},
 			async getRun(runId) {
@@ -449,8 +459,17 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 			async updateProgress(runId, progress) {
 				const owner = activeOwners.get(runId);
 				if (!owner) return;
-				const updated = await progressBatcherMod.persistBatchedProgress(lionStore, { id: runId, incarnation_id: owner.incarnationId ?? null }, progress);
-				if (updated) lifecycle.emitLionEvent(pi, "progress", updated, progress);
+				const accepted = ("flushProgress" in lionStore && typeof lionStore.flushProgress === "function")
+					? await progressBatcherMod.persistBatchedProgress(lionStore as never, { id: runId, incarnation_id: owner.incarnationId ?? null }, progress)
+					: (await lionStore.mutate((ledger) => ledger.updateProgressIfCurrent(runId, owner.incarnationId, progress))).result.committed ? progress : undefined;
+				if (accepted) {
+					const current = activeRunViews.get(runId);
+					if (current) {
+						const updated = { ...current, progress: accepted, updated_at: accepted.last_event_at };
+						activeRunViews.set(runId, updated);
+						lifecycle.emitLionEvent(pi, "progress", updated, accepted);
+					}
+				}
 			},
 		};
 	} catch (e) {

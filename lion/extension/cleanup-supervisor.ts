@@ -33,6 +33,8 @@ export type LionCleanupFinalization =
 export interface LionFinalizationStore {
 	query<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
 	mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T }>;
+	/** Sidecar-aware stores close and fold the exact progress authority here. */
+	finishRun?(id: string, incarnationId: string | null | undefined, input: FinishRunInput): Promise<{ result: { run: LionRun | undefined; committed: boolean } }>;
 }
 
 /**
@@ -87,7 +89,9 @@ export async function finalizeExactLionRun(
 	input: FinishRunInput,
 ): Promise<LionCleanupFinalization> {
 	try {
-		const { result } = await store.mutate((ledger) => ledger.finalizeIfCurrent(owner.runId, owner.incarnationId, input));
+		const { result } = typeof store.finishRun === "function"
+			? await store.finishRun(owner.runId, owner.incarnationId, input)
+			: await store.mutate((ledger) => ledger.finalizeIfCurrent(owner.runId, owner.incarnationId, input));
 		return classifyFinalization(owner, result.run, result.committed);
 	} catch (writeError) {
 		let current: LionRun | undefined;

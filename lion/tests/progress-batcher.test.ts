@@ -19,14 +19,14 @@ function progress(activity: string): LionProgressSnapshot {
 afterEach(() => clearProgressBatchersForTests());
 
 describe("namespace progress batching", () => {
-	it("persists concurrent worker snapshots in one ledger mutation", async () => {
+	it("persists concurrent exact-worker snapshots without canonical ledger I/O", async () => {
 		const store = await makeStore();
 		const runs = (await store.mutate((ledger) => [ledger.create({ objective: "A" }), ledger.create({ objective: "B" }), ledger.create({ objective: "C" })])).result;
-		const originalMutate = store.mutate.bind(store);
-		let mutations = 0;
-		(store as any).mutate = async (fn: never) => { mutations++; return originalMutate(fn); };
+		store.resetIoCounters();
 		await Promise.all(runs.map((run, index) => persistBatchedProgress(store, run, progress(`step-${index}`), 5)));
-		assert.equal(mutations, 1);
+		const counters = store.ioCounters();
+		assert.deepEqual({ reads: counters.canonical_reads, parses: counters.canonical_parses, backups: counters.canonical_backups, serializations: counters.canonical_serializations, writes: counters.canonical_writes }, { reads: 0, parses: 0, backups: 0, serializations: 0, writes: 0 });
+		assert.equal(counters.sidecar_writes, 3);
 		const current = (await store.query((ledger) => runs.map((run) => ledger.get(run.id)))).result;
 		assert.deepEqual(current.map((run) => run?.progress?.activity), ["step-0", "step-1", "step-2"]);
 		assert.equal(progressBatcherCountForTests(), 0);
@@ -40,7 +40,7 @@ describe("namespace progress batching", () => {
 		await store.mutate((ledger) => ledger.finish(terminal!.id, { output: "done", report: null, status: "completed" }));
 		const [terminalResult, runningResult] = await Promise.all([terminalWrite, runningWrite]);
 		assert.equal(terminalResult, undefined);
-		assert.equal(runningResult?.progress?.activity, "still working");
+		assert.equal(runningResult?.activity, "still working");
 		const current = (await store.query((ledger) => [ledger.get(terminal!.id), ledger.get(running!.id)])).result;
 		assert.equal(current[0]?.progress, null);
 		assert.equal(current[1]?.progress?.activity, "still working");
