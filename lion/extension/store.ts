@@ -211,6 +211,12 @@ export class LionLedger {
 		return clone(r);
 	}
 
+	updateProgressIfCurrent(id: string, incarnationId: string | null | undefined, input: UpdateProgressInput): { run: LionRun | undefined; committed: boolean } {
+		const current = this.runsById.get(id);
+		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null)) return { run: current ? clone(current) : undefined, committed: false };
+		return { run: this.updateProgress(id, input), committed: true };
+	}
+
 	updateControl(id: string, input: UpdateControlInput): LionRun {
 		const r = this.require(id);
 		if (r.status !== "running" && r.status !== "queued") throw new LionError("invalid_transition", `cannot update control for ${r.id} while ${r.status}`);

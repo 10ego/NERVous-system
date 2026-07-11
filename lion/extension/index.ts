@@ -13,6 +13,7 @@ import { createProgressUpdater, emitLionEvent, startedProgress, terminalEventKin
 import { resolveConfiguredLionModel, resolveLionRunnerMode } from "./options.ts";
 import { createLionRunner, getProcessIdentity, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
+import { persistBatchedProgress } from "./progress-batcher.ts";
 import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunRefs, isActiveRunAttached, isActiveRunOwner, markActiveRunControlClosed, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
 interface LionDetails {
@@ -84,8 +85,9 @@ async function executeRun(args: {
 	let run = args.run;
 	const activeOwner = args.activeOwner;
 	const progressUpdater = createProgressUpdater(async (progress) => {
-		const updated = await args.store.mutate((l) => l.updateProgress(run.id, progress));
-		run = updated.result;
+		const updated = await persistBatchedProgress(args.store, run, progress);
+		if (!updated) return;
+		run = updated;
 		emitLionEvent(args.pi, "progress", run, progress);
 	}, { onError: (error) => console.warn(`[nervous-system/lion] progress update failed for ${run.id}:`, error) });
 	const enqueueProgress = (progress: LionProgressSnapshot) => {
@@ -128,6 +130,7 @@ async function executeRun(args: {
 		await progressUpdater.drain();
 		const finished = await args.store.mutate((l) => l.finish(run.id, { output: out.text, report: out.report }));
 		run = finished.result;
+		if (run.status === "queued" || run.status === "running") throw new Error(`LION ${run.id} remained nonterminal after finish`);
 		emitLionEvent(args.pi, terminalEventKind(run.status), run);
 		const reportHint = run.report ? `${run.report.outcome}: ${run.report.summary}` : "completed with unparsed report";
 		return ok(args.action, `LION ${run.id} ${run.status}: ${reportHint}`, { run });
@@ -191,7 +194,7 @@ export default function (pi: ExtensionAPI) {
 							activeOwner = beginActiveRun(activeRunScope(store, queued), runnerMode);
 							return l.start(queued.id);
 						});
-						return executeRun({ pi, ctx, store, action, run, activeOwner: activeOwner!, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
+						return await executeRun({ pi, ctx, store, action, run, activeOwner: activeOwner!, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
 					} catch (e) {
 						if (activeOwner) finishActiveRun(activeOwner);
 						return e instanceof LionError ? fail(action, `lion run failed (${e.code}): ${e.message}`) : fail(action, `lion run failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -208,7 +211,7 @@ export default function (pi: ExtensionAPI) {
 							activeOwner = beginActiveRun(activeRunScope(store, current), current.runner_mode);
 							return l.start(current.id);
 						});
-						return executeRun({ pi, ctx, store, action, run, activeOwner: activeOwner!, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
+						return await executeRun({ pi, ctx, store, action, run, activeOwner: activeOwner!, signal, onUpdate, timeout_ms: p.timeout_ms, include_progress_text: p.include_progress_text });
 					} catch (e) {
 						if (activeOwner) finishActiveRun(activeOwner);
 						return e instanceof LionError ? fail(action, `lion start failed (${e.code}): ${e.message}`) : fail(action, `lion start failed: ${e instanceof Error ? e.message : String(e)}`);

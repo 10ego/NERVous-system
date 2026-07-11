@@ -1,6 +1,7 @@
 import * as assert from "node:assert";
 import { describe, it } from "vitest";
 import { lionEventPayload } from "../extension/index.ts";
+import { terminalEventKind } from "../extension/lifecycle.ts";
 import { summarizeSummary } from "../extension/render.ts";
 import type { LionRun, LionSummary } from "../extension/schema.ts";
 
@@ -27,6 +28,13 @@ function run(overrides: Partial<LionRun> = {}): LionRun {
 }
 
 describe("LION event and summary rendering", () => {
+	it("maps every terminal status exhaustively", () => {
+		assert.equal(terminalEventKind("completed"), "completed");
+		assert.equal(terminalEventKind("blocked"), "blocked");
+		assert.equal(terminalEventKind("failed"), "failed");
+		assert.equal(terminalEventKind("aborted"), "failed");
+	});
+
 	it("redacts objectives from event payloads by default", () => {
 		const old = process.env.LION_EVENT_INCLUDE_OBJECTIVE;
 		delete process.env.LION_EVENT_INCLUDE_OBJECTIVE;

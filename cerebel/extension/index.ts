@@ -19,6 +19,7 @@ interface LionAdapterDeps {
 	activeRuns?: typeof import("@nervous-system/lion/extension/active-runs.ts");
 	lifecycle?: typeof import("@nervous-system/lion/extension/lifecycle.ts");
 	options?: typeof import("@nervous-system/lion/extension/options.ts");
+	progressBatcher?: typeof import("@nervous-system/lion/extension/progress-batcher.ts");
 }
 
 function ok(action: string, text: string, details: Omit<CerebelDetails, "action"> = {}): ToolResult {
@@ -195,13 +196,14 @@ export async function settleLinkedLionsBeforeCancel(
 
 export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}, pi?: ExtensionAPI): Promise<RunWaveLionAdapter> {
 	try {
-		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod, optionsMod] = await Promise.all([
+		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod, optionsMod, progressBatcherMod] = await Promise.all([
 			deps.lionStore ? Promise.resolve({ LionStore: { fromCwd: () => deps.lionStore! as never } }) : import("@nervous-system/lion/extension/backend.ts"),
 			deps.createLionRunner ? Promise.resolve({ createLionRunner: deps.createLionRunner }) : import("@nervous-system/lion/extension/subprocess.ts"),
 			deps.createLionRpcRunner ? Promise.resolve({ createLionRpcRunner: deps.createLionRpcRunner }) : import("@nervous-system/lion/extension/rpc-runner.ts"),
 			deps.activeRuns ? Promise.resolve(deps.activeRuns) : import("@nervous-system/lion/extension/active-runs.ts"),
 			deps.lifecycle ? Promise.resolve(deps.lifecycle) : import("@nervous-system/lion/extension/lifecycle.ts"),
 			deps.options ? Promise.resolve(deps.options) : import("@nervous-system/lion/extension/options.ts"),
+			deps.progressBatcher ? Promise.resolve(deps.progressBatcher) : import("@nervous-system/lion/extension/progress-batcher.ts"),
 		]);
 		const { createLionRunner } = jsonRunnerMod;
 		const { createLionRpcRunner } = rpcRunnerMod;
@@ -268,6 +270,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 			async finishRun(runId, result) {
 				try {
 					const finished = (await lionStore.mutate((l) => l.finish(runId, result))).result;
+					if (finished.status === "queued" || finished.status === "running") throw new Error(`LION ${runId} remained nonterminal after finish`);
 					lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(finished.status), finished);
 					return finished;
 				} finally {
@@ -280,8 +283,10 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				return (await lionStore.query((l) => l.get(runId))).result;
 			},
 			async updateProgress(runId, progress) {
-				const updated = (await lionStore.mutate((l) => l.updateProgress(runId, progress))).result;
-				lifecycle.emitLionEvent(pi, "progress", updated, progress);
+				const owner = activeOwners.get(runId);
+				if (!owner) return;
+				const updated = await progressBatcherMod.persistBatchedProgress(lionStore, { id: runId, incarnation_id: owner.incarnationId ?? null }, progress);
+				if (updated) lifecycle.emitLionEvent(pi, "progress", updated, progress);
 			},
 		};
 	} catch (e) {

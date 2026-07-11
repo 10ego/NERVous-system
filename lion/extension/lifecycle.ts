@@ -91,8 +91,18 @@ export function startedProgress(): LionProgressSnapshot {
 	return { event: "started", activity: "starting LION subprocess…", active_tools: [], tool_uses: 0, turn_count: 0, token_total: null, last_text: null, last_event_at: ts };
 }
 
-export function terminalEventKind(status: LionRunStatus): LionEventKind {
-	if (status === "blocked") return "blocked";
-	if (status === "failed" || status === "aborted") return "failed";
-	return "completed";
+export type TerminalLionRunStatus = Exclude<LionRunStatus, "queued" | "running">;
+
+export function terminalEventKind(status: TerminalLionRunStatus): LionEventKind {
+	switch (status) {
+		case "completed": return "completed";
+		case "blocked": return "blocked";
+		case "failed":
+		case "aborted": return "failed";
+		default: return assertNever(status);
+	}
+}
+
+function assertNever(value: never): never {
+	throw new Error(`nonterminal LION status cannot produce a terminal event: ${String(value)}`);
 }
