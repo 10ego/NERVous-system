@@ -1,6 +1,6 @@
 {
   "name": "nervous-system",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "NERVous System — durable multi-agent orchestration, coding-agent coordination, and workflow recovery for pi.",
   "license": "MIT",
   "repository": {
