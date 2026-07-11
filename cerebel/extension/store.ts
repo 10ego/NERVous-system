@@ -162,6 +162,10 @@ export class CerebelLedger {
 	}
 
 	record(waveId: string, input: RecordInput): Wave {
+		return this.recordInternal(waveId, input, false);
+	}
+
+	private recordInternal(waveId: string, input: RecordInput, allowCleanupPendingSettlement: boolean): Wave {
 		const w = this.require(waveId);
 		if (!ASSIGNMENT_STATUS_SET.has(input.outcome)) throw new CerebelError("invalid_arg", `invalid outcome ${input.outcome}`);
 		const a = selectAssignmentForRecord(w, input);
@@ -173,6 +177,9 @@ export class CerebelLedger {
 			throw new CerebelError("invalid_transition", `cannot replace LION provenance for ${a.id} from ${formatRunRef(existingRef)} to ${formatRunRef(incomingRef)}`);
 		}
 		assertFrozenGanglionProvenance(a, input.ganglion_id, input.ganglion_allocation_id, "record");
+		if (!allowCleanupPendingSettlement && a.cleanup_pending_settlement && isTerminalAssignmentStatus(input.outcome)) {
+			throw new CerebelError("invalid_transition", `cannot record terminal outcome for cleanup-pending assignment ${a.id}; exact supervisor or reconciler settlement must confirm process exit`);
+		}
 		a.status = input.outcome;
 		if (incomingRef && !existingRef) {
 			a.lion_run_id = incomingRef.run_id;
@@ -264,7 +271,7 @@ export class CerebelLedger {
 			|| !sameRunRef(currentRef, { run_id: expectedLionRunId, incarnation_id: expectedLionIncarnationId })) {
 			return { committed: false, wave: clone(wave), assignment: clone(current) };
 		}
-		const recorded = this.record(waveId, { ...input, lion_run_incarnation_id: expectedLionIncarnationId });
+		const recorded = this.recordInternal(waveId, { ...input, lion_run_incarnation_id: expectedLionIncarnationId }, true);
 		return { committed: true, wave: recorded, assignment: recorded.assignments.find((a) => a.id === current.id) ?? clone(current) };
 	}
 

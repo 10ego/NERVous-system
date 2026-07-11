@@ -105,6 +105,31 @@ describe("CerebelLedger", () => {
 		assert.equal(current?.status, "dispatched");
 	});
 
+	it("reserves cleanup-pending terminal records for exact settlement", () => {
+		const ledger = new CerebelLedger();
+		const wave = ledger.planWave({ tasks: [{ id: "task-001", title: "A" }] });
+		ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] });
+		assert.equal(ledger.markCleanupPendingSettlementIfOwned(wave.id, "assign-001", "run-001", "inc-001").committed, true);
+		assert.throws(() => ledger.record(wave.id, {
+			assignment_id: "assign-001",
+			lion_run_id: "run-001",
+			lion_run_incarnation_id: "inc-001",
+			outcome: "completed",
+			summary: "ordinary record",
+		}), /exact supervisor or reconciler settlement must confirm process exit/);
+		assert.equal(ledger.get(wave.id)?.assignments[0]?.status, "dispatched");
+		const settled = ledger.recordIfOwned(wave.id, "run-001", "inc-001", {
+			assignment_id: "assign-001",
+			lion_run_id: "run-001",
+			lion_run_incarnation_id: "inc-001",
+			outcome: "completed",
+			summary: "confirmed exit",
+		});
+		assert.equal(settled.committed, true);
+		assert.ok(settled.assignment.cleanup_pending_settlement);
+		assert.equal(ledger.completeCleanupPendingSettlementIfOwned(wave.id, "assign-001", "run-001", "inc-001"), true);
+	});
+
 	it("persists immutable LION incarnations and rejects same-id replacement links", () => {
 		const l = new CerebelLedger();
 		const w = l.planWave({ tasks: [{ id: "task-001", title: "A" }] });
