@@ -39,6 +39,18 @@ const theme = {
 	italic: (text: string) => text,
 } as any;
 
+function selectDashboardTab(dashboard: NervousDashboard, tabName: string): void {
+	const header = dashboard.render(240)[1] ?? "";
+	const productionTabNames = [...header.matchAll(/[●○] ([A-Z]+) \d+/g)].map((match) => match[1]!);
+	const target = tabName.toUpperCase();
+	assert.ok(productionTabNames.includes(target), `dashboard tab ${target} exists in production header`);
+	for (let offset = 0; offset < productionTabNames.length; offset++) {
+		if ((dashboard.render(240)[1] ?? "").includes(`● ${target} `)) return;
+		dashboard.handleInput("\t");
+	}
+	assert.fail(`could not select dashboard tab ${target}`);
+}
+
 afterEach(() => {
 	vi.useRealTimers();
 	vi.restoreAllMocks();
@@ -204,12 +216,12 @@ describe("dashboard extension factory", () => {
 	});
 
 	it("preserves an open detail view across reloads", async () => {
-		const oldRun = { id: "run-001", agent_id: "lion-a", status: "running", task_id: null, objective: "old", context: "", started_at: "2026-07-08T12:00:00.000Z", updated_at: "2026-07-08T12:00:00.000Z" } as any;
+		const oldRun = { id: "run-001", incarnation_id: "inc-001", agent_id: "lion-a", status: "running", task_id: null, objective: "old", context: "", started_at: "2026-07-08T12:00:00.000Z", updated_at: "2026-07-08T12:00:00.000Z" } as any;
 		const newRun = { ...oldRun, status: "completed", objective: "new", report: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } } as any;
 		const refresh = vi.fn().mockResolvedValue(emptyDashboardData({ runs: [newRun] }));
 		const tui = { requestRender: vi.fn() } as any;
 		const dashboard = new NervousDashboard(emptyDashboardData({ runs: [oldRun] }), tui, theme, vi.fn(), refresh, { autoRefreshMs: 0 });
-		(dashboard as any).tabIndex = 5; // LION tab
+		selectDashboardTab(dashboard, "lion");
 		(dashboard as any).selected = 0;
 		(dashboard as any).detail = { kind: "lion", item: oldRun };
 		dashboard.handleInput("r");
@@ -219,13 +231,29 @@ describe("dashboard extension factory", () => {
 		assert.equal((dashboard as any).selected, 0);
 	});
 
+	it("does not restore a deleted LION selection or detail to a replacement incarnation with the same run id", async () => {
+		const oldRun = { id: "run-001", incarnation_id: "inc-original", agent_id: "lion-a", status: "running", task_id: null, objective: "original", context: "", started_at: "2026-07-08T12:00:00.000Z", updated_at: "2026-07-08T12:00:00.000Z" } as any;
+		const stableRun = { ...oldRun, id: "run-stable", incarnation_id: "inc-stable", objective: "stable" } as any;
+		const replacementRun = { ...oldRun, incarnation_id: "inc-replacement", objective: "replacement" } as any;
+		const refresh = vi.fn().mockResolvedValue(emptyDashboardData({ runs: [stableRun, replacementRun] }));
+		const dashboard = new NervousDashboard(emptyDashboardData({ runs: [oldRun, stableRun] }), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 0 });
+		selectDashboardTab(dashboard, "lion");
+		(dashboard as any).detail = { kind: "lion", item: oldRun };
+		dashboard.handleInput("r");
+		await new Promise<void>((resolve) => setImmediate(resolve));
+		assert.equal((dashboard as any).detail, null);
+		assert.equal((dashboard as any).selected, 0, "replacement incarnation must not capture the prior selection key");
+		assert.equal((dashboard as any).items()[(dashboard as any).selected]?.item.incarnation_id, "inc-stable");
+		assert.doesNotMatch(dashboard.render(120).join("\n"), /LION lion-a: run-001/);
+	});
+
 	it("does not reopen a detail view the user closed during refresh", async () => {
-		const oldRun = { id: "run-001", agent_id: "lion-a", status: "running", task_id: null, objective: "old", context: "", started_at: "2026-07-08T12:00:00.000Z", updated_at: "2026-07-08T12:00:00.000Z" } as any;
+		const oldRun = { id: "run-001", incarnation_id: "inc-001", agent_id: "lion-a", status: "running", task_id: null, objective: "old", context: "", started_at: "2026-07-08T12:00:00.000Z", updated_at: "2026-07-08T12:00:00.000Z" } as any;
 		const newRun = { ...oldRun, status: "completed" } as any;
 		let resolveRefresh: ((value: any) => void) | undefined;
 		const refresh = vi.fn((): Promise<any> => new Promise((resolve) => { resolveRefresh = resolve; }));
 		const dashboard = new NervousDashboard(emptyDashboardData({ runs: [oldRun] }), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 0 });
-		(dashboard as any).tabIndex = 5; // LION tab
+		selectDashboardTab(dashboard, "lion");
 		(dashboard as any).selected = 0;
 		(dashboard as any).detail = { kind: "lion", item: oldRun };
 		dashboard.handleInput("r");

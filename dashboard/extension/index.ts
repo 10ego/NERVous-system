@@ -796,11 +796,15 @@ export class NervousDashboard implements Component {
 		const item = this.items()[this.selected];
 		return item ? this.detailKey(item) : null;
 	}
-	private detailKey(detail: Detail): string { return `${detail.kind}:${detail.item.id}`; }
+	private detailKey(detail: Detail): string {
+		if (detail.kind === "lion") return `lion:${JSON.stringify([detail.item.id, detail.item.incarnation_id ?? null])}`;
+		return `${detail.kind}:${detail.item.id}`;
+	}
 	private findDetail(key: string | null): Detail | null {
 		if (!key) return null;
-		const [kind, id] = key.split(":", 2);
-		if (!kind || !id || !TABS.includes(kind as Tab)) return null;
+		const separator = key.indexOf(":");
+		const kind = separator >= 0 ? key.slice(0, separator) : "";
+		if (!kind || !TABS.includes(kind as Tab)) return null;
 		return this.itemsFor(kind as Tab).find((detail) => this.detailKey(detail) === key) ?? null;
 	}
 	private restoreSelection(key: string | null): void {
