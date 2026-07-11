@@ -1,7 +1,7 @@
 {
   "name": "nervous-system",
   "version": "1.0.1",
-  "description": "NERVous System — a modular multi-agent coding-agent extension framework for pi.",
+  "description": "NERVous System — durable multi-agent orchestration, coding-agent coordination, and workflow recovery for pi.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -9,10 +9,21 @@
   },
   "keywords": [
     "pi-package",
+    "pi-extension",
     "nervous-system",
     "multi-agent",
+    "multi-agent-system",
+    "agent-orchestration",
+    "agent-coordination",
+    "ai-agents",
     "coding-agent",
-    "pi-extension"
+    "coding-agents",
+    "subagent",
+    "subagent-delegation",
+    "task-planning",
+    "durable-workflows",
+    "workflow-automation",
+    "risk-triage"
   ],
   "workspaces": [
     "magi",

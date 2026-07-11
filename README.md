@@ -1,6 +1,8 @@
 # NERVous System
 
-A modular multi-agent coding-agent extension framework for [pi](https://pi.dev), inspired by Evangelion naming but built as a practical system where multiple coding agents **plan, coordinate, execute, recover from interruptions, and review** work continuously.
+A durable multi-agent orchestration and coding-agent coordination framework for [pi](https://pi.dev), inspired by Evangelion naming but built as a practical system where multiple coding agents **plan, delegate, coordinate, execute, recover from interruptions, and review** work continuously.
+
+Find NERVous System in the [pi package directory](https://pi.dev/packages) by searching for **multi-agent orchestration**, **coding-agent coordination**, **subagent delegation**, **durable task planning**, **workflow recovery**, or **risk triage**.
 
 > **Status:** 🟢 Core component set and final deterministic end-to-end demo are complete and tested: **MAGI**, **AXON**, **SYNAPSE**, **CORTEX**, **LION**, **CEREBEL**, **GANGLION**, **AMYGDALA**, plus [`demo/`](./demo).
 
