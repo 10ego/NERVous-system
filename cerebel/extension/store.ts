@@ -639,23 +639,28 @@ function malformedCleanupSettlement(assignmentId: string, reason: string): Cereb
 }
 
 function coerceCleanupPendingSettlement(value: unknown, assignmentId: string): CleanupPendingSettlement {
-	if (!isObject(value)
-		|| typeof value.lion_run_id !== "string"
-		|| !value.lion_run_id.trim()
-		|| typeof value.lion_run_incarnation_id !== "string"
-		|| !value.lion_run_incarnation_id.trim()
-		|| typeof value.observed_at !== "string"
-		|| !value.observed_at
-		|| !(typeof value.ganglion_id === "string" || value.ganglion_id === null)
-		|| !(typeof value.ganglion_allocation_id === "string" || value.ganglion_allocation_id === null)) {
+	if (!isObject(value)) throw malformedCleanupSettlement(assignmentId, "required fields are invalid or missing");
+	const lionRunId = value.lion_run_id;
+	const lionRunIncarnationId = value.lion_run_incarnation_id;
+	const observedAt = value.observed_at;
+	const ganglionId = value.ganglion_id;
+	const ganglionAllocationId = value.ganglion_allocation_id;
+	if (typeof lionRunId !== "string"
+		|| !lionRunId.trim()
+		|| typeof lionRunIncarnationId !== "string"
+		|| !lionRunIncarnationId.trim()
+		|| typeof observedAt !== "string"
+		|| !observedAt
+		|| !(typeof ganglionId === "string" || ganglionId === null)
+		|| !(typeof ganglionAllocationId === "string" || ganglionAllocationId === null)) {
 		throw malformedCleanupSettlement(assignmentId, "required fields are invalid or missing");
 	}
 	return {
-		lion_run_id: value.lion_run_id,
-		lion_run_incarnation_id: value.lion_run_incarnation_id,
-		observed_at: value.observed_at,
-		ganglion_id: value.ganglion_id,
-		ganglion_allocation_id: value.ganglion_allocation_id,
+		lion_run_id: lionRunId,
+		lion_run_incarnation_id: lionRunIncarnationId,
+		observed_at: observedAt,
+		ganglion_id: typeof ganglionId === "string" ? ganglionId : null,
+		ganglion_allocation_id: typeof ganglionAllocationId === "string" ? ganglionAllocationId : null,
 	};
 }
 
