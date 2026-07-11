@@ -81,7 +81,7 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 - Joins every admitted batch with all-settled semantics before returning or propagating failure.
 - Records completed, partial, blocked, failed, and cancelled outcomes; terminal GANGLION updates are batched once per group.
 - Summarizes completed, partial, cancelled, blocked, failed, and still-planned assignment counts separately without changing their settlement semantics.
-- An RPC worker whose attached child survives bounded stop returns `cleanup_pending`. Its LION remains running, its assignment remains dispatched, and its GANGLION allocation remains reserved until the process-local LION supervisor confirms exit and completes exact-incarnation settlement.
+- An RPC worker whose attached child survives bounded stop returns `cleanup_pending`. Before handoff, CEREBEL persists an exact run/incarnation settlement obligation and immutable GANGLION allocation provenance when present. Its LION remains running, its assignment remains dispatched, and its GANGLION allocation remains reserved. The process-local LION supervisor later performs exact-incarnation finalization, then idempotently records the CEREBEL result and GANGLION release; after registry/process loss, a fresh CEREBEL action reconciles only a proven terminal exact incarnation and ignores replacements.
 - Returns grouped results plus a `/nervous:dashboard` hint. Failed batches retain structured partial `wave` and `run_wave.assignment_results` details, and the TUI renders them with the error.
 
 ### Abort and failure behavior

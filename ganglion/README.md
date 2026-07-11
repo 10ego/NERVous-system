@@ -64,6 +64,8 @@ The returned allocations can be passed to CEREBEL/LION:
 - allocation `objective`/`context` → LION objective/context
 - allocation `task_id` → AXON/LION task id
 
+When CEREBEL hands off an RPC `cleanup_pending` worker, GANGLION stores the immutable LION run and incarnation on the allocation before foreground authority is released. Late and restart reconciliation use that exact provenance; legacy run-only allocations are not backfilled by inference, replacement incarnations are ignored, and repeated exact terminal settlement does not release capacity twice.
+
 ---
 
 ## Allocation logic
