@@ -12,7 +12,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import type { LionProgressSnapshot, LionReport, LionRun } from "./schema.ts";
+import { MAX_ACTIVE_TOOL_NAME_CHARS, MAX_ACTIVE_TOOL_NAMES, type LionProgressSnapshot, type LionReport, type LionRun } from "./schema.ts";
 import { MAX_PROGRESS_TEXT } from "./lifecycle.ts";
 
 const TEXT_PROGRESS_THROTTLE_MS = 1000;
@@ -146,19 +146,19 @@ export interface LionProgressState {
 }
 
 export function createLionProgressState(options: { includeText?: boolean } = {}): LionProgressState {
-	return { activeTools: [], activeToolCounts: {}, toolUses: 0, turnCount: 0, tokenTotal: null, currentText: "", lastTextEmitAt: 0, includeText: options.includeText ?? false };
+	return { activeTools: [], activeToolCounts: Object.create(null) as Record<string, number>, toolUses: 0, turnCount: 0, tokenTotal: null, currentText: "", lastTextEmitAt: 0, includeText: options.includeText ?? false };
 }
 
 export function progressFromEvent(raw: unknown, state: LionProgressState = createLionProgressState(), nowMs = Date.now()): LionProgressSnapshot | null {
 	if (!isObject(raw) || typeof raw.type !== "string") return null;
 	const eventType = raw.type;
 	if (eventType === "tool_execution_start") {
-		const tool = stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? "tool";
+		const tool = normalizeToolName(stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? "tool");
 		incrementTool(state, tool);
 		return snapshot(state, "tool_start", `running ${tool}…`, nowMs);
 	}
 	if (eventType === "tool_execution_end") {
-		const tool = stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? state.activeTools[0] ?? "tool";
+		const tool = normalizeToolName(stringProp(raw, "toolName") ?? stringProp(raw, "tool_name") ?? stringProp(raw, "name") ?? state.activeTools[0] ?? "tool");
 		decrementTool(state, tool);
 		state.toolUses++;
 		return snapshot(state, "tool_end", state.activeTools.length ? activityFromTools(state.activeTools) : `finished ${tool}`, nowMs);
@@ -172,8 +172,10 @@ export function progressFromEvent(raw: unknown, state: LionProgressState = creat
 	}
 	if (eventType === "message_end") {
 		addUsage(state, raw.message);
-		const text = isObject(raw.message) ? extractMessageText(raw.message) : "";
-		if (text && state.includeText) state.currentText = tail(text);
+		if (state.includeText && isObject(raw.message)) {
+			const text = extractMessageText(raw.message);
+			if (text) state.currentText = tail(text);
+		}
 		return snapshot(state, "message_end", state.activeTools.length ? activityFromTools(state.activeTools) : "message complete", nowMs);
 	}
 	if (eventType === "turn_end") {
@@ -200,9 +202,14 @@ function activityFromTools(tools: string[]): string {
 	return tools.length === 1 ? `running ${tools[0]}…` : `running ${tools.length} tools…`;
 }
 
+function normalizeToolName(tool: string): string {
+	return tool.trim().slice(0, MAX_ACTIVE_TOOL_NAME_CHARS) || "tool";
+}
+
 function incrementTool(state: LionProgressState, tool: string): void {
+	if (!(tool in state.activeToolCounts) && state.activeTools.length >= MAX_ACTIVE_TOOL_NAMES) return;
 	state.activeToolCounts[tool] = (state.activeToolCounts[tool] ?? 0) + 1;
-	state.activeTools = Object.entries(state.activeToolCounts).filter(([, count]) => count > 0).map(([name]) => name);
+	state.activeTools = Object.entries(state.activeToolCounts).filter(([, count]) => count > 0).map(([name]) => name).slice(0, MAX_ACTIVE_TOOL_NAMES);
 }
 
 function decrementTool(state: LionProgressState, tool: string): void {

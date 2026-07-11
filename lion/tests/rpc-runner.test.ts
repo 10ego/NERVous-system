@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
-import { AdaptivePoller, createLionRpcRunner, type LionRpcClient } from "../extension/rpc-runner.ts";
+import { AdaptivePoller, createLionRpcRunner, MAX_PERSISTED_RPC_ERROR_CHARS, sanitizeRpcError, type LionRpcClient } from "../extension/rpc-runner.ts";
 
 class FakeRpcClient implements LionRpcClient {
 	started = false;
@@ -142,6 +142,17 @@ describe("AdaptivePoller", () => {
 });
 
 describe("createLionRpcRunner", () => {
+	it("redacts and bounds RPC stderr diagnostics while retaining an in-memory cause", () => {
+		const original = new Error(`Agent process error: EPIPE. Stderr: token=secret-${"x".repeat(5_000)}`);
+		const safe = sanitizeRpcError(original);
+		assert.equal(safe.message.includes("secret"), false);
+		assert.match(safe.message, /Stderr: \[redacted\]$/);
+		assert.ok(safe.message.length <= MAX_PERSISTED_RPC_ERROR_CHARS);
+		assert.equal(safe.cause, original);
+		const bounded = sanitizeRpcError(new Error("y".repeat(5_000)));
+		assert.equal(bounded.message.length, MAX_PERSISTED_RPC_ERROR_CHARS);
+	});
+
 	it("delivers pending live steering through RpcClient.steer exactly once", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();

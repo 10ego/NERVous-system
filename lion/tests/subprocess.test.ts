@@ -83,6 +83,25 @@ describe("LION subprocess helpers", () => {
 		assert.equal(done.last_text, null);
 	});
 
+	it("does not inspect assistant content when progress text is redacted", () => {
+		const state = createLionProgressState();
+		const message = { role: "assistant", usage: { input: 1, output: 1 } } as Record<string, unknown>;
+		Object.defineProperty(message, "content", { get() { throw new Error("content should remain unread"); } });
+		const snapshot = progressFromEvent({ type: "message_end", message }, state)!;
+		assert.equal(snapshot.last_text, null);
+		assert.equal(snapshot.token_total, 2);
+	});
+
+	it("bounds unique active tool names and their length", () => {
+		const state = createLionProgressState();
+		let snapshot;
+		for (let index = 0; index < 100; index++) {
+			snapshot = progressFromEvent({ type: "tool_execution_start", toolName: `tool-${index}-${"x".repeat(200)}` }, state)!;
+		}
+		assert.equal(snapshot!.active_tools.length, 32);
+		assert.equal(snapshot!.active_tools.every((name) => name.length <= 128), true);
+	});
+
 	it("can opt in to raw progress text tails", () => {
 		const state = createLionProgressState({ includeText: true });
 		const msg = progressFromEvent({ type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Working on it" } }, state, 2000)!;

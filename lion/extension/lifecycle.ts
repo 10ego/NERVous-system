@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import type { LionProgressSnapshot, LionRun, LionRunStatus } from "./schema.ts";
+import type { LionProgressSnapshot, LionRun, TerminalLionRunStatus } from "./schema.ts";
 
 export type LionEventKind = "started" | "progress" | "completed" | "blocked" | "failed";
 export const MAX_PROGRESS_TEXT = 1_000;
@@ -90,8 +90,6 @@ export function startedProgress(): LionProgressSnapshot {
 	const ts = new Date().toISOString();
 	return { event: "started", activity: "starting LION subprocess…", active_tools: [], tool_uses: 0, turn_count: 0, token_total: null, last_text: null, last_event_at: ts };
 }
-
-export type TerminalLionRunStatus = Exclude<LionRunStatus, "queued" | "running">;
 
 export function terminalEventKind(status: TerminalLionRunStatus): LionEventKind {
 	switch (status) {

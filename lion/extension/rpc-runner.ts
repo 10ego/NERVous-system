@@ -61,6 +61,18 @@ const DEFAULT_MAX_POLL_INTERVAL_MS = 2000;
 const DEFAULT_ABORT_GRACE_MS = 1000;
 const DEFAULT_STOP_GRACE_MS = 1500;
 const DEFAULT_START_OBSERVATION_GRACE_MS = 1000;
+export const MAX_PERSISTED_RPC_ERROR_CHARS = 2_000;
+
+export function sanitizeRpcError(error: unknown): Error {
+	const original = error instanceof Error ? error : new Error(String(error));
+	const redacted = original.message.replace(/(\.?\s*Stderr:)\s*[\s\S]*$/i, "$1 [redacted]");
+	const message = redacted.length > MAX_PERSISTED_RPC_ERROR_CHARS
+		? `${redacted.slice(0, MAX_PERSISTED_RPC_ERROR_CHARS - 1)}…`
+		: redacted;
+	const safe = new Error(message, { cause: original });
+	safe.name = original.name;
+	return safe;
+}
 
 interface DisposableWaiter<T> {
 	promise: Promise<T>;
@@ -426,7 +438,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 					await steering;
 					outcomes.push({ steering_id: msg.id, delivered: true });
 				} catch (err) {
-					outcomes.push({ steering_id: msg.id, delivered: false, reason: `RPC steer failed: ${err instanceof Error ? err.message : String(err)}` });
+					outcomes.push({ steering_id: msg.id, delivered: false, reason: `RPC steer failed: ${sanitizeRpcError(err).message}` });
 				}
 			}
 			await settleReserved(outcomes);
@@ -518,15 +530,16 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		const report: LionReport | null = parseLionReport(text);
 		return { text, report };
 	} catch (err) {
-		primaryError = err;
+		const safeError = sanitizeRpcError(err);
+		primaryError = safeError;
 		closeSteeringChannel();
 		void steeringClosedHook.catch(() => undefined);
 		await withTimeout(
-			opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, `RPC runner stopped before delivery: ${err instanceof Error ? err.message : String(err)}`)),
+			opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, `RPC runner stopped before delivery: ${safeError.message}`)),
 			opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS,
 			"RPC failure-state persistence timed out",
 		).catch(() => undefined);
-		throw err;
+		throw safeError;
 	} finally {
 		deadline.dispose();
 		closeSteeringChannel();
@@ -548,8 +561,8 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		if (tmpDir) {
 			try { await removeTempDirectory(tmpDir); } catch (error) { cleanupError = error; }
 		}
-		if (stopError && !primaryError) throw stopError;
-		if (cleanupError && !primaryError && !stopError) throw cleanupError;
+		if (stopError && !primaryError) throw sanitizeRpcError(stopError);
+		if (cleanupError && !primaryError && !stopError) throw sanitizeRpcError(cleanupError);
 	}
 }
 

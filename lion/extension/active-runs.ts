@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { LionLedger } from "./store.ts";
-import type { LionRun, LionRunnerMode } from "./schema.ts";
+import { isTerminalLionStatus, type LionRun, type LionRunnerMode } from "./schema.ts";
 import { getProcessIdentity, isPidAlive, type LionProcessInfo } from "./subprocess.ts";
 
 export type ActiveCancelSignal = "SIGTERM" | "SIGKILL";
@@ -264,7 +264,7 @@ export async function requestRunCancellations(store: LionControlStore, requests:
 		const delivery = deliveries[index];
 		if (!delivery) return { run: requested.run, settled: true, superseded: false };
 		const persisted = persistedByIndex.get(index)!;
-		const terminal = Boolean(persisted.run && ["completed", "blocked", "failed", "aborted"].includes(persisted.run.status));
+		const terminal = Boolean(persisted.run && isTerminalLionStatus(persisted.run.status));
 		return { run: persisted.run, settled: !persisted.committed || terminal, superseded: !persisted.committed, delivery };
 	});
 }
@@ -308,7 +308,7 @@ export async function waitForRunSettlements(
 			}
 			return {
 				run: current,
-				settled: ["completed", "blocked", "failed", "aborted"].includes(current.status),
+				settled: isTerminalLionStatus(current.status),
 				superseded: false,
 			};
 		});

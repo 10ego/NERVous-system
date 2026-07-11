@@ -7,7 +7,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { LionStore } from "./backend.ts";
-import { LionError, LionToolParams, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
+import { LionError, LionToolParams, isActiveLionStatus, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createProgressUpdater, emitLionEvent, startedProgress, terminalEventKind } from "./lifecycle.ts";
 import { resolveConfiguredLionModel, resolveLionRunnerMode } from "./options.ts";
@@ -130,7 +130,7 @@ async function executeRun(args: {
 		await progressUpdater.drain();
 		const finished = await args.store.mutate((l) => l.finish(run.id, { output: out.text, report: out.report }));
 		run = finished.result;
-		if (run.status === "queued" || run.status === "running") throw new Error(`LION ${run.id} remained nonterminal after finish`);
+		if (isActiveLionStatus(run.status)) throw new Error(`LION ${run.id} remained nonterminal after finish`);
 		emitLionEvent(args.pi, terminalEventKind(run.status), run);
 		const reportHint = run.report ? `${run.report.outcome}: ${run.report.summary}` : "completed with unparsed report";
 		return ok(args.action, `LION ${run.id} ${run.status}: ${reportHint}`, { run });
@@ -223,7 +223,7 @@ export default function (pi: ExtensionAPI) {
 					try {
 						const cancellation = await requestRunCancellation(store, p.id, p.reason ?? p.context);
 						const run = cancellation.run;
-						if (!run) return ok(action, `Cancellation result for ${p.id} was superseded by a removed run.`);
+						if (!run) return fail(action, `LION ${p.id} not found.`);
 						if (cancellation.superseded) return ok(action, `Cancellation result for ${p.id} was superseded by a replacement run.`, { run });
 						if (cancellation.settled) {
 							return ok(action, run.status === "aborted" ? `Cancelled LION ${p.id}.` : `LION ${p.id} is already terminal (${run.status}).`, { run });

@@ -22,9 +22,22 @@ export const LION_RUN_STATUSES = [
 	"aborted",
 ] as const;
 export type LionRunStatus = (typeof LION_RUN_STATUSES)[number];
+export type ActiveLionRunStatus = Extract<LionRunStatus, "queued" | "running">;
+export type TerminalLionRunStatus = Exclude<LionRunStatus, ActiveLionRunStatus>;
+
+export function isActiveLionStatus(status: LionRunStatus): status is ActiveLionRunStatus {
+	return status === "queued" || status === "running";
+}
+
+export function isTerminalLionStatus(status: LionRunStatus): status is TerminalLionRunStatus {
+	return !isActiveLionStatus(status);
+}
 
 export const LION_OUTCOMES = ["completed", "blocked", "failed", "partial"] as const;
 export type LionOutcome = (typeof LION_OUTCOMES)[number];
+
+export const MAX_ACTIVE_TOOL_NAMES = 32;
+export const MAX_ACTIVE_TOOL_NAME_CHARS = 128;
 
 export const LION_PROGRESS_EVENTS = [
 	"started",
@@ -207,7 +220,7 @@ export const LionToolParams = Type.Object({
 	// start/cancel/steer/query/list
 	id: Type.Optional(Type.String({ description: "LION run id (start/cancel/steer/get/delete)." })),
 	message: Type.Optional(Type.String({ description: "Steering message for action=steer. Accepted pre-start for queued runs and live only for running rpc-backed runs." })),
-	reason: Type.Optional(Type.String({ description: "Reason for cancellation or rejection/audit note." })),
+	reason: Type.Optional(Type.String({ description: "Cancellation reason for action=cancel." })),
 	status_filter: Type.Optional(LION_RUN_STATUS_SCHEMA),
 	agent_filter: Type.Optional(Type.String({ description: "Filter list by agent_id." })),
 	limit: Type.Optional(Type.Number({ description: "Max runs to return for list/summary. Default 20." })),

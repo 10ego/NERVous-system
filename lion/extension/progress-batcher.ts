@@ -13,7 +13,7 @@ class NamespaceProgressBatcher {
 	private timer: ReturnType<typeof setTimeout> | null = null;
 	private flushing = false;
 
-	constructor(private readonly store: LionStore, private readonly delayMs: number) {}
+	constructor(private readonly store: LionStore, private readonly delayMs: number, private readonly onIdle: () => void) {}
 
 	enqueue(run: Pick<LionRun, "id" | "incarnation_id">, progress: LionProgressSnapshot): Promise<LionRun | undefined> {
 		const incarnationId = run.incarnation_id ?? null;
@@ -53,7 +53,16 @@ class NamespaceProgressBatcher {
 		} finally {
 			this.flushing = false;
 			this.schedule();
+			if (!this.pending.size && !this.timer) this.onIdle();
 		}
+	}
+
+	dispose(): void {
+		if (this.timer) clearTimeout(this.timer);
+		this.timer = null;
+		const error = new Error("LION progress batcher disposed before flush");
+		for (const entry of this.pending.values()) for (const waiter of entry.waiters) waiter.reject(error);
+		this.pending.clear();
 	}
 }
 
@@ -68,12 +77,22 @@ export function persistBatchedProgress(
 ): Promise<LionRun | undefined> {
 	let batcher = batchers.get(store.namespaceId);
 	if (!batcher) {
-		batcher = new NamespaceProgressBatcher(store, delayMs);
-		batchers.set(store.namespaceId, batcher);
+		const namespaceId = store.namespaceId;
+		let created!: NamespaceProgressBatcher;
+		created = new NamespaceProgressBatcher(store, delayMs, () => {
+			if (batchers.get(namespaceId) === created) batchers.delete(namespaceId);
+		});
+		batcher = created;
+		batchers.set(namespaceId, batcher);
 	}
 	return batcher.enqueue(run, progress);
 }
 
 export function clearProgressBatchersForTests(): void {
+	for (const batcher of batchers.values()) batcher.dispose();
 	batchers.clear();
+}
+
+export function progressBatcherCountForTests(): number {
+	return batchers.size;
 }

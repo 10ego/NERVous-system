@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
-import { clearProgressBatchersForTests, persistBatchedProgress } from "../extension/progress-batcher.ts";
+import { clearProgressBatchersForTests, persistBatchedProgress, progressBatcherCountForTests } from "../extension/progress-batcher.ts";
 import type { LionProgressSnapshot } from "../extension/schema.ts";
 
 async function makeStore(): Promise<LionStore> {
@@ -29,6 +29,7 @@ describe("namespace progress batching", () => {
 		assert.equal(mutations, 1);
 		const current = (await store.query((ledger) => runs.map((run) => ledger.get(run.id)))).result;
 		assert.deepEqual(current.map((run) => run?.progress?.activity), ["step-0", "step-1", "step-2"]);
+		assert.equal(progressBatcherCountForTests(), 0);
 	});
 
 	it("skips a terminal entry without aborting unrelated running progress", async () => {

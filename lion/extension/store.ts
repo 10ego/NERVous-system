@@ -11,6 +11,10 @@ import {
 	LION_CANCEL_DELIVERY_STATUSES,
 	LION_PROGRESS_EVENTS,
 	LION_RUN_STATUSES,
+	MAX_ACTIVE_TOOL_NAME_CHARS,
+	MAX_ACTIVE_TOOL_NAMES,
+	isActiveLionStatus,
+	isTerminalLionStatus,
 	LionError,
 	LION_STEERING_STATUSES,
 	type LionFile,
@@ -50,6 +54,18 @@ function clone<T>(x: T): T {
 
 function normalizeStringList(xs: unknown): string[] {
 	return Array.isArray(xs) ? xs.filter((x): x is string => typeof x === "string") : [];
+}
+
+function normalizeActiveTools(xs: unknown): string[] {
+	if (!Array.isArray(xs)) return [];
+	const names = new Set<string>();
+	for (const value of xs) {
+		if (typeof value !== "string") continue;
+		const name = value.trim().slice(0, MAX_ACTIVE_TOOL_NAME_CHARS);
+		if (name) names.add(name);
+		if (names.size >= MAX_ACTIVE_TOOL_NAMES) break;
+	}
+	return [...names];
 }
 
 export function canTransition(from: LionRunStatus, to: LionRunStatus): boolean {
@@ -192,7 +208,7 @@ export class LionLedger {
 
 	updateProgress(id: string, input: UpdateProgressInput): LionRun {
 		const r = this.require(id);
-		if (r.status !== "running" && r.status !== "queued") {
+		if (!isActiveLionStatus(r.status)) {
 			throw new LionError("invalid_transition", `cannot update progress for ${r.id} while ${r.status}`);
 		}
 		const previous = r.progress ?? defaultProgress();
@@ -200,7 +216,7 @@ export class LionLedger {
 		r.progress = {
 			event: isProgressEvent(input.event) ? input.event : previous.event,
 			activity: trimText(input.activity ?? previous.activity),
-			active_tools: input.active_tools ? normalizeStringList(input.active_tools) : previous.active_tools,
+			active_tools: input.active_tools ? normalizeActiveTools(input.active_tools) : previous.active_tools,
 			tool_uses: typeof input.tool_uses === "number" ? Math.max(0, Math.floor(input.tool_uses)) : previous.tool_uses,
 			turn_count: typeof input.turn_count === "number" ? Math.max(0, Math.floor(input.turn_count)) : previous.turn_count,
 			token_total: typeof input.token_total === "number" ? Math.max(0, Math.floor(input.token_total)) : (input.token_total === null ? null : previous.token_total),
@@ -213,7 +229,7 @@ export class LionLedger {
 
 	updateProgressIfCurrent(id: string, incarnationId: string | null | undefined, input: UpdateProgressInput): { run: LionRun | undefined; committed: boolean } {
 		const current = this.runsById.get(id);
-		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null) || (current.status !== "running" && current.status !== "queued")) {
+		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null) || !isActiveLionStatus(current.status)) {
 			return { run: current ? clone(current) : undefined, committed: false };
 		}
 		return { run: this.updateProgress(id, input), committed: true };
@@ -221,7 +237,7 @@ export class LionLedger {
 
 	updateControl(id: string, input: UpdateControlInput): LionRun {
 		const r = this.require(id);
-		if (r.status !== "running" && r.status !== "queued") throw new LionError("invalid_transition", `cannot update control for ${r.id} while ${r.status}`);
+		if (!isActiveLionStatus(r.status)) throw new LionError("invalid_transition", `cannot update control for ${r.id} while ${r.status}`);
 		const ts = now();
 		r.control = { ...(r.control ?? {}), ...input, last_seen_at: input.last_seen_at ?? ts };
 		r.updated_at = ts;
@@ -231,7 +247,7 @@ export class LionLedger {
 	requestCancel(id: string, reason?: string | null): CancelRunResult {
 		const r = this.require(id);
 		const ts = now();
-		if (["completed", "blocked", "failed", "aborted"].includes(r.status)) {
+		if (isTerminalLionStatus(r.status)) {
 			return { run: clone(r), already_terminal: true };
 		}
 		const deliveryStatus = r.control?.cancel_delivery_status === "delivered"
@@ -450,7 +466,7 @@ export class LionLedger {
 
 	delete(id: string): LionRun {
 		const r = this.require(id);
-		if (r.status === "queued" || r.status === "running") {
+		if (isActiveLionStatus(r.status)) {
 			throw new LionError("invalid_transition", `cannot delete nonterminal run ${r.id} while ${r.status}`);
 		}
 		this.runsById.delete(id);
@@ -664,7 +680,7 @@ function coerceProgress(value: unknown): LionProgressSnapshot | null {
 	return {
 		event: isProgressEvent(value.event) ? value.event : "heartbeat",
 		activity: typeof value.activity === "string" ? trimText(value.activity) : "running…",
-		active_tools: normalizeStringList(value.active_tools),
+		active_tools: normalizeActiveTools(value.active_tools),
 		tool_uses: typeof value.tool_uses === "number" ? Math.max(0, Math.floor(value.tool_uses)) : 0,
 		turn_count: typeof value.turn_count === "number" ? Math.max(0, Math.floor(value.turn_count)) : 0,
 		token_total: typeof value.token_total === "number" ? Math.max(0, Math.floor(value.token_total)) : null,

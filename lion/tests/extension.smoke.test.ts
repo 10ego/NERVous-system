@@ -61,6 +61,16 @@ describe("lion extension factory", () => {
 		}
 	});
 
+	it("rejects cancellation of an unknown direct run id", async () => {
+		const { pi, tools } = stubPi();
+		factory(pi);
+		const lion = tools.find((tool) => tool.name === "lion");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-unknown-cancel-"));
+		const result = await lion.execute("cancel-missing", { action: "cancel", id: "run-missing" }, undefined, undefined, { cwd: dir, isProjectTrusted: () => false });
+		assert.equal(result.isError, true);
+		assert.match(result.content[0].text, /not found/);
+	});
+
 	it("does not persist a reused run before duplicate ownership admission", async () => {
 		const { pi, tools } = stubPi();
 		factory(pi);

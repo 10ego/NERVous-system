@@ -269,6 +269,9 @@ describe("LionLedger", () => {
 		assert.equal(progress.progress?.event, "tool_start");
 		assert.deepEqual(progress.progress?.active_tools, ["bash"]);
 		assert.equal(progress.updated_at, "2026-01-01T00:00:00.000Z");
+		const bounded = l.updateProgress(r.id, { active_tools: Array.from({ length: 100 }, (_, index) => `tool-${index}-${"x".repeat(200)}`) });
+		assert.equal(bounded.progress?.active_tools.length, 32);
+		assert.equal(bounded.progress?.active_tools.every((name) => name.length <= 128), true);
 
 		const back = LionLedger.fromJSON(l.toJSON());
 		assert.equal(back.get(r.id)?.progress?.activity, "running command");
