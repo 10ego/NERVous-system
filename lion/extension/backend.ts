@@ -139,7 +139,7 @@ export class FileBackend {
 			const loaded = await this.loadUnlocked(false);
 			const before = loaded.ledger.all();
 			const result = fn(loaded.ledger);
-			const lifecycleWarnings = await this.prepareLifecycleUnlocked(before, loaded.ledger);
+			const lifecycleWarnings = await this.prepareLifecycleUnlocked(before, loaded.ledger, loaded.canonicalCertain !== false);
 			await this.saveUnlocked(loaded.ledger);
 			const cleanupWarnings = await this.cleanupLifecycleUnlocked(before, loaded.ledger);
 			return { result, warnings: boundedWarnings([...loaded.warnings, ...lifecycleWarnings, ...cleanupWarnings]) };
@@ -155,7 +155,7 @@ export class FileBackend {
 			let lifecycleWarnings: string[] = [];
 			let cleanupWarnings: string[] = [];
 			if (outcome.changed) {
-				lifecycleWarnings = await this.prepareLifecycleUnlocked(before, loaded.ledger);
+				lifecycleWarnings = await this.prepareLifecycleUnlocked(before, loaded.ledger, loaded.canonicalCertain !== false);
 				await this.saveUnlocked(loaded.ledger);
 				cleanupWarnings = await this.cleanupLifecycleUnlocked(before, loaded.ledger);
 			}
@@ -207,7 +207,7 @@ export class FileBackend {
 		});
 	}
 
-	private async prepareLifecycleUnlocked(beforeRuns: LionRun[], ledger: LionLedger): Promise<string[]> {
+	private async prepareLifecycleUnlocked(beforeRuns: LionRun[], ledger: LionLedger, canonicalCertain: boolean): Promise<string[]> {
 		const warnings: string[] = [];
 		const before = new Map(beforeRuns.map((run) => [run.id, run]));
 		const after = new Map(ledger.all().map((run) => [run.id, run]));
@@ -227,7 +227,12 @@ export class FileBackend {
 
 		// Recovery cleanup is outside the flush path and classifies against the
 		// pre-mutation canonical snapshot, so it cannot evict a currently active run.
-		if (changes.some((item) => item.kind === "open")) warnings.push(...await this.progress.cleanupUnlocked(new LionLedger(undefined, beforeRuns), true));
+		// A corrupt canonical load is not authoritative enough to classify any
+		// existing sidecar as stale, even when this mutation admits a new run.
+		if (changes.some((item) => item.kind === "open")) {
+			if (canonicalCertain) warnings.push(...await this.progress.cleanupUnlocked(new LionLedger(undefined, beforeRuns), true));
+			else warnings.push("lion progress cleanup skipped because canonical run classification is uncertain");
+		}
 		for (const change of changes.filter((item) => item.kind === "terminal" || (item.kind === "remove" && item.wasActive))) {
 			const closed = await this.progress.closeUnlocked(change.ref);
 			warnings.push(...closed.warnings);
