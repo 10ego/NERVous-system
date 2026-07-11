@@ -103,6 +103,23 @@ describe("dashboard extension factory", () => {
 		dashboard.dispose();
 	});
 
+	it("detects LION sidecar progress without a runs.json replacement", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-sidecar-fingerprint-"));
+		const target = path.join(dir, "runs.json");
+		const oldPath = process.env.LION_RUNS_PATH;
+		process.env.LION_RUNS_PATH = target;
+		try {
+			const store = LionStore.fromCwd(dir);
+			const run = (await store.mutate((ledger) => ledger.create({ objective: "dashboard progress" }))).result;
+			const changed = await createDashboardChangeDetector(dir);
+			await store.flushProgress(run, { event: "message", activity: "working", active_tools: [], tool_uses: 0, turn_count: 1, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
+			assert.deepEqual(await changed(), ["lion"]);
+			assert.equal((await loadDashboardData(dir, ["lion"])).runs[0]?.progress?.activity, "working");
+		} finally {
+			if (oldPath === undefined) delete process.env.LION_RUNS_PATH; else process.env.LION_RUNS_PATH = oldPath;
+		}
+	});
+
 	it("detects an atomic same-size replacement even when mtime is preserved", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-fingerprint-"));
 		const target = path.join(dir, "runs.json");

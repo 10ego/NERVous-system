@@ -74,23 +74,28 @@ const DASHBOARD_STATE_FILES = [
 
 const DASHBOARD_COMPONENTS = DASHBOARD_STATE_FILES.map(([component]) => component) as Tab[];
 
-function resolveDashboardStatePaths(cwd: string, resolveFile = resolveNervousStateFile): string[] {
-	return DASHBOARD_STATE_FILES.map(([component, file, env]) => resolveFile(cwd, component, file, env));
+interface DashboardStateEntry { component: Tab; statePath: string }
+function resolveDashboardStateEntries(cwd: string, resolveFile = resolveNervousStateFile): DashboardStateEntry[] {
+	const canonical = DASHBOARD_STATE_FILES.map(([component, file, env]) => ({ component, statePath: resolveFile(cwd, component, file, env) })) as DashboardStateEntry[];
+	const lionRuns = canonical.find((entry) => entry.component === "lion")!.statePath;
+	// Atomic sidecar replacement changes the directory fingerprint without touching
+	// runs.json, so dashboard refresh observes coherent overlaid progress promptly.
+	return [...canonical, { component: "lion", statePath: `${lionRuns}.progress` }];
 }
 
-async function dashboardStateFingerprints(statePaths: string[]): Promise<string[]> {
-	return Promise.all(statePaths.map(async (statePath) => {
+async function dashboardStateFingerprints(entries: DashboardStateEntry[]): Promise<string[]> {
+	return Promise.all(entries.map(async ({ statePath }) => {
 		try { const stat = await fs.stat(statePath); return `${statePath}:${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`; }
 		catch (error) { return `${statePath}:${(error as NodeJS.ErrnoException).code ?? "missing"}`; }
 	}));
 }
 
 export async function createDashboardChangeDetector(cwd: string, resolveFile = resolveNervousStateFile): Promise<() => Promise<Tab[]>> {
-	const statePaths = resolveDashboardStatePaths(cwd, resolveFile);
-	let previous = await dashboardStateFingerprints(statePaths);
+	const entries = resolveDashboardStateEntries(cwd, resolveFile);
+	let previous = await dashboardStateFingerprints(entries);
 	return async () => {
-		const current = await dashboardStateFingerprints(statePaths);
-		const changed = DASHBOARD_COMPONENTS.filter((_component, index) => current[index] !== previous[index]);
+		const current = await dashboardStateFingerprints(entries);
+		const changed = [...new Set(entries.flatMap((entry, index) => current[index] !== previous[index] ? [entry.component] : []))];
 		previous = current;
 		return changed;
 	};

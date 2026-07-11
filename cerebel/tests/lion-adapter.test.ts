@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import { createLionAdapter } from "../extension/index.ts";
 import { LionLedger } from "../../lion/extension/store.ts";
+import { FileBackend, LionStore } from "../../lion/extension/backend.ts";
 import * as activeRuns from "../../lion/extension/active-runs.ts";
 import * as cleanupSupervisor from "../../lion/extension/cleanup-supervisor.ts";
 import * as lifecycle from "../../lion/extension/lifecycle.ts";
@@ -339,6 +340,28 @@ describe("createLionAdapter", () => {
 		assert.deepEqual(events.map((event) => event.name), ["nervous:lion:started", "nervous:lion:progress", "nervous:lion:completed"]);
 		assert.equal(events[0]?.payload.run_incarnation_id, run.incarnation_id);
 		activeRuns.clearActiveRunsForTests();
+	});
+
+	it("uses the LionStore terminal fold API for every CEREBEL terminal outcome", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-lion-sidecar-fold-"));
+		const lionStore = new LionStore(new FileBackend({ runsPath: path.join(dir, "runs.json"), dir }));
+		const runner = () => async () => ({ text: "ok", report });
+		const adapter = await createLionAdapter(
+			{ cwd: dir, isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns, lifecycle },
+		);
+		for (const status of ["completed", "blocked", "failed", "aborted"] as const) {
+			const run = await adapter.createRun({ ...assignment(), id: `assign-${status}`, objective: status });
+			const activity = `final CEREBEL ${status} progress`;
+			await adapter.updateProgress?.(run.id, { event: "message", activity, active_tools: [], tool_uses: 1, turn_count: 2, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
+			await adapter.finishRun(run.id, { output: "ok", report, status });
+			const terminal = (await lionStore.query((ledger) => ledger.get(run.id))).result;
+			assert.equal(terminal?.status, status);
+			assert.equal(terminal?.progress?.activity, activity);
+		}
 	});
 
 	it("does not finalize a replacement LION incarnation", async () => {
