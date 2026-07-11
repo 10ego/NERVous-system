@@ -3,7 +3,9 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
-import factory, { createDashboardChangeDetector, describeLionProgress, NervousDashboard, summarizeWaveProgress } from "../extension/index.ts";
+import factory, { createDashboardChangeDetector, describeLionProgress, loadDashboardData, NervousDashboard, summarizeWaveProgress } from "../extension/index.ts";
+import { AxonStore } from "../../axon/extension/backend.ts";
+import { LionStore } from "../../lion/extension/backend.ts";
 
 function stubPi(): { pi: any; commands: Array<{ name: string; options: any }> } {
 	const commands: Array<{ name: string; options: any }> = [];
@@ -102,10 +104,37 @@ describe("dashboard extension factory", () => {
 			await fs.writeFile(replacement, "bbbb");
 			await fs.utimes(replacement, original.atime, original.mtime);
 			await fs.rename(replacement, target);
-			assert.equal(await changed(), true);
+			assert.deepEqual(await changed(), ["lion"]);
 		} finally {
 			if (oldPath === undefined) delete process.env.LION_RUNS_PATH; else process.env.LION_RUNS_PATH = oldPath;
 		}
+	});
+
+	it("reloads only the changed component and preserves other data and warnings", async () => {
+		const run = { id: "run-new", status: "running" } as any;
+		const previous = emptyDashboardData({
+			tasks: [{ id: "task-kept" }],
+			warnings: ["axon warning"],
+			warningGroups: { axon: ["axon warning"] },
+		});
+		const lionFromCwd = vi.spyOn(LionStore, "fromCwd").mockReturnValue({ query: async () => ({ result: [run], warnings: ["lion warning"] }) } as any);
+		const axonFromCwd = vi.spyOn(AxonStore, "fromCwd");
+		const loaded = await loadDashboardData(process.cwd(), ["lion"], previous);
+		assert.equal(lionFromCwd.mock.calls.length, 1);
+		assert.equal(axonFromCwd.mock.calls.length, 0);
+		assert.equal(loaded.runs[0]?.id, "run-new");
+		assert.equal(loaded.tasks[0]?.id, "task-kept");
+		assert.deepEqual(loaded.warnings, ["axon warning", "lion warning"]);
+	});
+
+	it("passes exact changed component keys to automatic refresh", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValue(["lion"]);
+		const refresh = vi.fn().mockResolvedValue(emptyDashboardData());
+		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
+		await vi.advanceTimersByTimeAsync(100);
+		assert.deepEqual(refresh.mock.calls[0]?.[0], ["lion"]);
+		dashboard.dispose();
 	});
 
 	it("retries a detected change after a transient reload failure", async () => {

@@ -45,10 +45,10 @@ type RefreshTimer = ReturnType<typeof setTimeout>;
 interface DashboardRefreshOptions {
 	autoRefreshMs?: number;
 	maxAutoRefreshMs?: number;
-	changeDetector?: () => Promise<boolean>;
+	changeDetector?: () => Promise<boolean | Tab[]>;
 }
 
-interface DashboardData {
+export interface DashboardData {
 	goals: Goal[];
 	magi: MagiRecord[];
 	tasks: Task[];
@@ -58,6 +58,7 @@ interface DashboardData {
 	ganglions: Ganglion[];
 	incidents: Incident[];
 	warnings: string[];
+	warningGroups?: Partial<Record<Tab, string[]>>;
 }
 
 const DASHBOARD_STATE_FILES = [
@@ -71,50 +72,73 @@ const DASHBOARD_STATE_FILES = [
 	["magi", "history.json", "MAGI_HISTORY_PATH"],
 ] as const;
 
+const DASHBOARD_COMPONENTS = DASHBOARD_STATE_FILES.map(([component]) => component) as Tab[];
+
 function resolveDashboardStatePaths(cwd: string, resolveFile = resolveNervousStateFile): string[] {
 	return DASHBOARD_STATE_FILES.map(([component, file, env]) => resolveFile(cwd, component, file, env));
 }
 
-async function dashboardStateFingerprint(statePaths: string[]): Promise<string> {
-	return (await Promise.all(statePaths.map(async (statePath) => {
+async function dashboardStateFingerprints(statePaths: string[]): Promise<string[]> {
+	return Promise.all(statePaths.map(async (statePath) => {
 		try { const stat = await fs.stat(statePath); return `${statePath}:${stat.dev}:${stat.ino}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}`; }
 		catch (error) { return `${statePath}:${(error as NodeJS.ErrnoException).code ?? "missing"}`; }
-	}))).join("|");
+	}));
 }
 
-export async function createDashboardChangeDetector(cwd: string, resolveFile = resolveNervousStateFile): Promise<() => Promise<boolean>> {
+export async function createDashboardChangeDetector(cwd: string, resolveFile = resolveNervousStateFile): Promise<() => Promise<Tab[]>> {
 	const statePaths = resolveDashboardStatePaths(cwd, resolveFile);
-	let previous = await dashboardStateFingerprint(statePaths);
+	let previous = await dashboardStateFingerprints(statePaths);
 	return async () => {
-		const current = await dashboardStateFingerprint(statePaths);
-		const changed = current !== previous;
+		const current = await dashboardStateFingerprints(statePaths);
+		const changed = DASHBOARD_COMPONENTS.filter((_component, index) => current[index] !== previous[index]);
 		previous = current;
 		return changed;
 	};
 }
 
-async function loadDashboardData(cwd: string): Promise<DashboardData> {
-	const [cortex, axon, synapse, lion, cerebel, ganglion, amygdala, magi] = await Promise.all([
-		CortexStore.fromCwd(cwd).query((store) => store.all().sort((a, b) => b.created_at.localeCompare(a.created_at))),
-		AxonStore.fromCwd(cwd).query((ledger) => ledger.all()),
-		SynapseStore.fromCwd(cwd).query((log) => log.list({ limit: 100 })),
-		LionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 })),
-		CerebelStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 })),
-		GanglionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 })),
-		AmygdalaStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 })),
-		MagiHistoryStore.fromCwd(cwd).list(100),
-	]);
-	return {
-		goals: cortex.result,
-		magi,
-		tasks: axon.result,
-		notes: synapse.result,
-		runs: lion.result,
-		waves: cerebel.result,
-		ganglions: ganglion.result,
-		incidents: amygdala.result,
-		warnings: [...cortex.warnings, ...axon.warnings, ...synapse.warnings, ...lion.warnings, ...cerebel.warnings, ...ganglion.warnings, ...amygdala.warnings],
-	};
+export async function loadDashboardData(cwd: string, components: Tab[] = DASHBOARD_COMPONENTS, previous?: DashboardData): Promise<DashboardData> {
+	const data: DashboardData = previous ? {
+		...previous,
+		goals: [...previous.goals], magi: [...previous.magi], tasks: [...previous.tasks], notes: [...previous.notes],
+		runs: [...previous.runs], waves: [...previous.waves], ganglions: [...previous.ganglions], incidents: [...previous.incidents],
+		warningGroups: { ...(previous.warningGroups ?? {}) },
+	} : { goals: [], magi: [], tasks: [], notes: [], runs: [], waves: [], ganglions: [], incidents: [], warnings: [], warningGroups: {} };
+	const warningGroups = data.warningGroups!;
+	await Promise.all([...new Set(components)].map(async (component) => {
+		switch (component) {
+			case "cortex": {
+				const loaded = await CortexStore.fromCwd(cwd).query((store) => store.all().sort((a, b) => b.created_at.localeCompare(a.created_at)));
+				data.goals = loaded.result; warningGroups.cortex = loaded.warnings; return;
+			}
+			case "magi": data.magi = await MagiHistoryStore.fromCwd(cwd).list(100); warningGroups.magi = []; return;
+			case "axon": {
+				const loaded = await AxonStore.fromCwd(cwd).query((ledger) => ledger.all());
+				data.tasks = loaded.result; warningGroups.axon = loaded.warnings; return;
+			}
+			case "synapse": {
+				const loaded = await SynapseStore.fromCwd(cwd).query((log) => log.list({ limit: 100 }));
+				data.notes = loaded.result; warningGroups.synapse = loaded.warnings; return;
+			}
+			case "lion": {
+				const loaded = await LionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+				data.runs = loaded.result; warningGroups.lion = loaded.warnings; return;
+			}
+			case "cerebel": {
+				const loaded = await CerebelStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+				data.waves = loaded.result; warningGroups.cerebel = loaded.warnings; return;
+			}
+			case "ganglion": {
+				const loaded = await GanglionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+				data.ganglions = loaded.result; warningGroups.ganglion = loaded.warnings; return;
+			}
+			case "amygdala": {
+				const loaded = await AmygdalaStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+				data.incidents = loaded.result; warningGroups.amygdala = loaded.warnings; return;
+			}
+		}
+	}));
+	data.warnings = DASHBOARD_COMPONENTS.flatMap((component) => warningGroups[component] ?? []);
+	return data;
 }
 
 function countByStatus(items: Array<{ status?: string }>): Record<string, number> {
@@ -359,7 +383,9 @@ export class NervousDashboard implements Component {
 	private readonly detailViewportRows = 20;
 	private refreshing = false;
 	private reloadPending = false;
+	private pendingFullReload = false;
 	private reloadFailed = false;
+	private readonly dirtyVersions = new Map<Tab, number>();
 	private showRefreshing = false;
 	private closed = false;
 	private error: string | null = null;
@@ -368,7 +394,7 @@ export class NervousDashboard implements Component {
 	private refreshTimer: RefreshTimer | null = null;
 	private readonly autoRefreshMs: number;
 	private readonly maxAutoRefreshMs: number;
-	private readonly changeDetector?: () => Promise<boolean>;
+	private readonly changeDetector?: () => Promise<boolean | Tab[]>;
 	private nextAutoRefreshMs: number;
 
 	constructor(
@@ -376,7 +402,7 @@ export class NervousDashboard implements Component {
 		private readonly tui: TUI,
 		private readonly theme: Theme,
 		private readonly done: () => void,
-		private readonly refresh: () => Promise<DashboardData>,
+		private readonly refresh: (components?: Tab[]) => Promise<DashboardData>,
 		options: DashboardRefreshOptions = {},
 	) {
 		this.autoRefreshMs = options.autoRefreshMs ?? DASHBOARD_AUTO_REFRESH_MS;
@@ -684,17 +710,23 @@ export class NervousDashboard implements Component {
 		this.invalidate();
 		this.tui.requestRender();
 	}
+	private markDirty(components: Tab[]): void {
+		for (const component of components) this.dirtyVersions.set(component, (this.dirtyVersions.get(component) ?? 0) + 1);
+	}
 	private startAutoRefresh(intervalMs: number): void {
 		if (intervalMs <= 0 || this.closed) return;
 		this.refreshTimer = setTimeout(() => {
 			this.refreshTimer = null;
 			void (async () => {
-				let changed = this.reloadFailed || !this.changeDetector;
-				try { if (!changed && this.changeDetector) changed = await this.changeDetector(); }
-				catch { changed = true; }
+				let detected: boolean | Tab[] = this.reloadFailed ? [] : !this.changeDetector;
+				try { if (!this.reloadFailed && this.changeDetector) detected = await this.changeDetector(); }
+				catch { detected = true; }
 				if (this.closed) return;
-				if (changed) this.reload({ showIndicator: false });
-				this.nextAutoRefreshMs = changed ? this.autoRefreshMs : Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
+				const components = detected === true ? DASHBOARD_COMPONENTS : detected === false ? [] : detected;
+				if (components.length) this.markDirty(components);
+				const dirty = [...this.dirtyVersions.keys()];
+				if (dirty.length) this.reload({ showIndicator: false, components: dirty });
+				this.nextAutoRefreshMs = dirty.length ? this.autoRefreshMs : Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
 				this.startAutoRefresh(this.nextAutoRefreshMs);
 			})();
 		}, intervalMs);
@@ -707,12 +739,15 @@ export class NervousDashboard implements Component {
 		clearTimeout(this.refreshTimer);
 		this.refreshTimer = null;
 	}
-	private reload(options: { showIndicator?: boolean } = {}): void {
+	private reload(options: { showIndicator?: boolean; components?: Tab[] } = {}): void {
 		if (this.closed) return;
 		if (this.refreshing) {
 			this.reloadPending = true;
+			if (!options.components) this.pendingFullReload = true;
 			return;
 		}
+		const requested = options.components ?? DASHBOARD_COMPONENTS;
+		const versions = new Map(requested.map((component) => [component, this.dirtyVersions.get(component) ?? 0]));
 		this.refreshing = true;
 		this.showRefreshing = options.showIndicator ?? true;
 		this.error = null;
@@ -720,18 +755,20 @@ export class NervousDashboard implements Component {
 			this.invalidate();
 			this.tui.requestRender();
 		}
-		void this.refresh()
+		void this.refresh(options.components)
 			.then((data) => {
 				if (this.closed) return;
 				const selectedKey = this.currentSelectedKey();
 				const detailKey = this.detail ? this.detailKey(this.detail) : null;
 				this.data = data;
-				this.reloadFailed = false;
+				for (const [component, version] of versions) if ((this.dirtyVersions.get(component) ?? 0) === version) this.dirtyVersions.delete(component);
+				this.reloadFailed = this.dirtyVersions.size > 0;
 				this.restoreSelection(selectedKey);
 				this.restoreDetail(detailKey);
 			})
 			.catch((err) => {
 				if (!this.closed) {
+					for (const component of requested) if (!this.dirtyVersions.has(component)) this.markDirty([component]);
 					this.reloadFailed = true;
 					this.error = err instanceof Error ? err.message : String(err);
 				}
@@ -744,8 +781,10 @@ export class NervousDashboard implements Component {
 				this.invalidate();
 				this.tui.requestRender();
 				if (this.reloadPending) {
+					const full = this.pendingFullReload;
 					this.reloadPending = false;
-					this.reload({ showIndicator: false });
+					this.pendingFullReload = false;
+					this.reload({ showIndicator: false, components: full ? undefined : [...this.dirtyVersions.keys()] });
 				}
 			});
 	}
@@ -784,9 +823,12 @@ export class NervousDashboard implements Component {
 
 async function showDashboard(ctx: ExtensionCommandContext): Promise<void> {
 	const changeDetector = await createDashboardChangeDetector(ctx.cwd);
-	const initial = await loadDashboardData(ctx.cwd);
+	let current = await loadDashboardData(ctx.cwd);
 	await ctx.ui.custom<void>(
-		(tui, theme, _keybindings, done) => new NervousDashboard(initial, tui, theme, done, () => loadDashboardData(ctx.cwd), { changeDetector }),
+		(tui, theme, _keybindings, done) => new NervousDashboard(current, tui, theme, done, async (components) => {
+			current = await loadDashboardData(ctx.cwd, components ?? DASHBOARD_COMPONENTS, components ? current : undefined);
+			return current;
+		}, { changeDetector }),
 		{ overlay: true, overlayOptions: { anchor: "center", width: "90%", minWidth: 72, maxHeight: "85%", margin: 1 } },
 	);
 }
