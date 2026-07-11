@@ -125,7 +125,7 @@ export async function executeRun(args: {
 				handoff,
 				finalize: async (intent, cleanupError) => {
 					await progressUpdater.drain();
-					return finalizeExactLionRun(args.store, activeOwner, await terminalFinishInput(args.store, activeOwner, intent, cleanupError));
+					return finalizeExactLionRun(args.store, activeOwner, await terminalFinishInput(args.store, activeOwner, intent, cleanupError, args.signal?.aborted));
 				},
 				emitTerminal: (settlement) => {
 					if (settlement.disposition === "terminal") emitLionEvent(args.pi, terminalEventKind(settlement.run.status as import("./schema.ts").TerminalLionRunStatus), settlement.run);
@@ -152,7 +152,7 @@ export async function executeRun(args: {
 		await progressUpdater.drain();
 		if (out.settlement === "cleanup_pending") {
 			ownershipTransferred = true;
-			const current = (await args.store.query((l) => l.get(runId))).result;
+			const current = await args.store.query((l) => l.get(runId)).then(({ result }) => result, () => undefined);
 			return ok(args.action, `LION run_id=${runId} incarnation_id=${runIncarnationId} cleanup_pending: attached RPC child is still exiting; run ownership and orchestration capacity remain retained.`, current ? { run: current } : {});
 		}
 		const finished = await args.store.mutate((l) => l.finishIfCurrent(runId, runIncarnationId, { output: out.text, report: out.report }));
@@ -187,12 +187,13 @@ async function terminalFinishInput(
 	owner: ActiveRunOwner,
 	intent: LionTerminalIntent,
 	cleanupError?: Error,
+	hostAborted = false,
 ): Promise<import("./store.ts").FinishRunInput> {
-	if (intent.kind === "result" && !cleanupError) return { output: intent.output.text, report: intent.output.report };
+	if (intent.kind === "result" && !cleanupError && !hostAborted) return { output: intent.output.text, report: intent.output.report };
 	const current = (await store.query((ledger) => ledger.get(owner.runId))).result;
 	const exact = current && (current.incarnation_id ?? null) === (owner.incarnationId ?? null) ? current : undefined;
-	const cancelled = Boolean(exact?.control?.cancel_requested_at);
-	const error = intent.kind === "error" ? intent.error : cleanupError!;
+	const cancelled = Boolean(exact?.control?.cancel_requested_at || hostAborted);
+	const error = intent.kind === "error" ? intent.error : cleanupError ?? new Error("LION run host aborted during cleanup");
 	return {
 		output: "",
 		report: null,

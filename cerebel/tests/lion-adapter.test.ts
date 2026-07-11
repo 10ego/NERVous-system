@@ -178,12 +178,14 @@ describe("createLionAdapter", () => {
 			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
 			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
 		};
+		const controller = new AbortController();
 		let alive = true;
 		let resolveExit!: () => void;
 		const exited = new Promise<void>((resolve) => { resolveExit = resolve; });
 		const rpcFactory = () => async (request: LionRunRequest) => {
 			const processInfo = { pid: 404, pgid: null, isAlive: () => alive, cancel: () => true };
 			request.onProcessStart?.(processInfo);
+			controller.abort();
 			const accepted = request.registerCleanupSupervisor?.({
 				namespaceId: request.cleanupOwner!.namespaceId,
 				runId: request.run.id,
@@ -201,7 +203,7 @@ describe("createLionAdapter", () => {
 		const adapter = await createLionAdapter(
 			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
 			{ action: "run_wave", runner_mode: "rpc" } as never,
-			undefined,
+			controller.signal,
 			undefined,
 			{ lionStore, createLionRunner: rpcFactory, createLionRpcRunner: rpcFactory, activeRuns, cleanupSupervisor },
 		);
@@ -217,7 +219,7 @@ describe("createLionAdapter", () => {
 		alive = false;
 		resolveExit();
 		for (let index = 0; index < 100 && ledger.get(run.id)?.status === "running"; index++) await new Promise((resolve) => setTimeout(resolve, 2));
-		assert.equal(ledger.get(run.id)?.status, "completed");
+		assert.equal(ledger.get(run.id)?.status, "aborted");
 		assert.equal(lateSettlements, 1);
 		assert.deepEqual(activeRuns.getActiveRunIds(lionStore.namespaceId), []);
 	});

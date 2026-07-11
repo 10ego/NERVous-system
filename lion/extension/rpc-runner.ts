@@ -572,7 +572,13 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		if (stopError && processLifecycle.interruptedStartPending && !processLifecycle.childAttached) await processLifecycle.waitForInterruptedStartDisposition();
 		processLifecycle.stopAdoption();
 		if (processLifecycle.childAttached && processLifecycle.isAlive() && stopError) {
-			try { await processLifecycle.childInfo?.cancel?.("SIGKILL"); } catch { /* retain ownership until actual exit */ }
+			try {
+				await withTimeout(
+					Promise.resolve(processLifecycle.childInfo?.cancel?.("SIGKILL")).then(() => undefined),
+					opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS,
+					"RPC hard stop timed out",
+				);
+			} catch { /* retain ownership until actual exit */ }
 		}
 
 		const owner = req.cleanupOwner;

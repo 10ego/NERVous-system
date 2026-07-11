@@ -128,10 +128,12 @@ describe("runWave", () => {
 			assignments: [{ agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }],
 		}))).result;
 		const adapter = fakeAdapter({});
+		const controller = new AbortController();
 		let lateSettlement: ((settlement: import("../../lion/extension/cleanup-supervisor.ts").LionCleanupFinalization) => Promise<void>) | undefined;
 		let foregroundFinishes = 0;
 		adapter.run = async (run, _assignment, _progress, _signal, onCleanupSettled) => {
 			lateSettlement = onCleanupSettled;
+			controller.abort();
 			return { settlement: "cleanup_pending", run_id: run.id, incarnation_id: run.incarnation_id ?? null, owner_id: "owner-001" };
 		};
 		adapter.finishRun = async () => { foregroundFinishes++; throw new Error("foreground must not finalize cleanup_pending"); };
@@ -139,6 +141,7 @@ describe("runWave", () => {
 		let lateAttempts = 0;
 		const result = await runWave(store, adapter, {
 			wave_id: wave.id,
+			signal: controller.signal,
 			onLateSettlement: async (late, lateWaveId) => {
 				lateAttempts++;
 				if (lateAttempts === 1) throw new Error("transient capacity persistence failure");

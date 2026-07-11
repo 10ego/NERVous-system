@@ -72,7 +72,7 @@ class FakeRpcClient implements LionRpcClient {
 		this.listeners.push(listener);
 		return () => { this.listeners = this.listeners.filter((l) => l !== listener); };
 	}
-	getProcessInfo() {
+	getProcessInfo(): import("../extension/subprocess.ts").LionProcessInfo {
 		return {
 			pid: process.pid,
 			pgid: null,
@@ -290,6 +290,36 @@ describe("createLionRpcRunner", () => {
 		assert.equal(outcome.owner_id, owner.ownerId);
 		assert.equal(fake.alive, true);
 		assert.equal(handoff?.process.pid, process.pid);
+		fake.exit();
+		await handoff?.waitForExit();
+		await handoff?.cleanup();
+	});
+
+	it("bounds a hanging hard-stop attempt before transferring cleanup", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		fake.getProcessInfo = () => ({
+			pid: process.pid,
+			pgid: null,
+			isAlive: () => fake.alive,
+			cancel: (signal = "SIGTERM") => signal === "SIGKILL" ? new Promise<boolean>(() => undefined) : false,
+		});
+		const run = (await store.mutate((l) => l.create({ objective: "bounded hard stop", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-hard-stop" };
+		let handoff: import("../extension/cleanup-supervisor.ts").LionCleanupHandoff | undefined;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, abortGraceMs: 5, clientFactory: () => fake });
+		const promise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: owner,
+			registerCleanupSupervisor: (candidate) => { handoff = candidate; return true; },
+		});
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		const outcome = await promise;
+		if (outcome.settlement !== "cleanup_pending") assert.fail("hanging hard stop did not transfer cleanup");
+		assert.equal(fake.alive, true);
 		fake.exit();
 		await handoff?.waitForExit();
 		await handoff?.cleanup();

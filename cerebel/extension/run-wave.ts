@@ -241,6 +241,19 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 			const result = await recordLateWorkerSettlement(store, waveId, assignment, run, settlement.run);
 			await options.onLateSettlement?.(result, waveId);
 		});
+		if ("settlement" in out && out.settlement === "cleanup_pending") {
+			// Supervisor authority is already registered. Foreground abort/progress
+			// errors must not route this execution through finishRun.
+			await progress.drain().catch(() => undefined);
+			return {
+				assignment_id: assignment.id,
+				lion_run_id: run.id,
+				lion_run_incarnation_id: run.incarnation_id,
+				outcome: "cleanup_pending",
+				summary: "attached RPC child cleanup remains supervised; LION ownership, assignment, and capacity are retained",
+				blockers: [],
+			};
+		}
 		if (signal?.aborted) throw new Error("Host aborted run_wave");
 		await progress.drain();
 		if (signal?.aborted) throw new Error("Host aborted run_wave during progress drain");
@@ -249,16 +262,6 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		return recordWorkerError(store, adapter, waveId, assignment, run, err, signal);
 	}
 
-	if ("settlement" in out && out.settlement === "cleanup_pending") {
-		return {
-			assignment_id: assignment.id,
-			lion_run_id: run.id,
-			lion_run_incarnation_id: run.incarnation_id,
-			outcome: "cleanup_pending",
-			summary: "attached RPC child cleanup remains supervised; LION ownership, assignment, and capacity are retained",
-			blockers: [],
-		};
-	}
 	const settledOutput = "settlement" in out ? out : { settlement: "settled" as const, ...out };
 	const missingReport = !settledOutput.report;
 	const intendedStatus: LionRun["status"] = missingReport

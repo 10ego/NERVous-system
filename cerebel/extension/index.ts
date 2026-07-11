@@ -275,12 +275,13 @@ async function lateTerminalFinishInput(
 	owner: ReturnType<typeof import("@nervous-system/lion/extension/active-runs.ts").beginActiveRun>,
 	intent: LionTerminalIntent,
 	cleanupError?: Error,
+	hostAborted = false,
 ): Promise<import("@nervous-system/lion/extension/store.ts").FinishRunInput> {
-	if (intent.kind === "result" && !cleanupError) return { output: intent.output.text, report: intent.output.report };
+	if (intent.kind === "result" && !cleanupError && !hostAborted) return { output: intent.output.text, report: intent.output.report };
 	const current = (await store.query((ledger) => ledger.get(owner.runId))).result;
 	const exact = current && (current.incarnation_id ?? null) === (owner.incarnationId ?? null) ? current : undefined;
-	const cancelled = Boolean(exact?.control?.cancel_requested_at);
-	const error = intent.kind === "error" ? intent.error : cleanupError!;
+	const cancelled = Boolean(exact?.control?.cancel_requested_at || hostAborted);
+	const error = intent.kind === "error" ? intent.error : cleanupError ?? new Error("Host aborted run_wave during cleanup");
 	return {
 		output: "",
 		report: null,
@@ -355,7 +356,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 						finalize: async (intent, cleanupError) => cleanupSupervisorMod.finalizeExactLionRun(
 							lionStore,
 							activeOwner,
-							await lateTerminalFinishInput(lionStore, activeOwner, intent, cleanupError),
+							await lateTerminalFinishInput(lionStore, activeOwner, intent, cleanupError, Boolean((runSignal ?? signal)?.aborted)),
 						),
 						emitTerminal: (settlement) => {
 							if (settlement.disposition === "terminal") lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(settlement.run.status as import("@nervous-system/lion/extension/schema.ts").TerminalLionRunStatus), settlement.run);
