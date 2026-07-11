@@ -7,7 +7,7 @@ import { afterEach, describe, it, vi } from "vitest";
 import { GanglionStore } from "../../ganglion/extension/backend.ts";
 import { LionStore } from "../../lion/extension/backend.ts";
 import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun } from "../../lion/extension/active-runs.ts";
-import factory, { recordRunWaveGanglion, resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel } from "../extension/index.ts";
+import factory, { hasPendingCancellationAssignments, recordRunWaveGanglion, resolveCancelSettlementTimeout, runWaveBatchFailureResult, settleLinkedLionsBeforeCancel } from "../extension/index.ts";
 import { CerebelStore } from "../extension/backend.ts";
 import { CerebelLedger } from "../extension/store.ts";
 import { RunWaveBatchError } from "../extension/run-wave.ts";
@@ -173,6 +173,8 @@ describe("cerebel extension factory", () => {
 		const settlements = await settleLinkedLionsBeforeCancel(process.cwd(), current, "stop", 100, async () => [{ LionStore: { fromCwd: () => ({}) } }, controls] as never);
 		assert.deepEqual(requestedIds, ["run-0", "run-1"]);
 		assert.equal(settlements.length, 2);
+		assert.equal(hasPendingCancellationAssignments(current, new Set([JSON.stringify(["run-1", "inc-1"])])), true, "terminal links added during cancellation must remain gated until their exact run settles");
+		assert.equal(hasPendingCancellationAssignments(current, new Set([JSON.stringify(["run-0", "inc-0"]), JSON.stringify(["run-1", "inc-1"])])), false);
 	});
 
 	it("admits whole-wave linked cancellation in one batch", async () => {

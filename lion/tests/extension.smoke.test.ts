@@ -69,8 +69,9 @@ describe("lion extension factory", () => {
 		const binDir = path.join(dir, "bin");
 		await fs.mkdir(binDir);
 		const fakePi = path.join(binDir, "pi");
+		const receivedArgsPath = path.join(dir, "received-args.json");
 		const reportText = '```json\n{"WORKER_REPORT":{"outcome":"completed","summary":"started successfully","changed_files":[],"tests_run":[],"blockers":[],"next_steps":[]}}\n```';
-		await fs.writeFile(fakePi, `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:\"message_end\",message:{role:\"assistant\",content:[{type:\"text\",text:${JSON.stringify(reportText)}}]}})+\"\\n\");\n`);
+		await fs.writeFile(fakePi, `#!/usr/bin/env node\nrequire(\"node:fs\").writeFileSync(${JSON.stringify(receivedArgsPath)}, JSON.stringify(process.argv.slice(2)));\nprocess.stdout.write(JSON.stringify({type:\"message_end\",message:{role:\"assistant\",content:[{type:\"text\",text:${JSON.stringify(reportText)}}]}})+\"\\n\");\n`);
 		await fs.chmod(fakePi, 0o755);
 		const oldRunsPath = process.env.LION_RUNS_PATH, oldPath = process.env.PATH, oldScript = process.argv[1];
 		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
@@ -87,6 +88,8 @@ describe("lion extension factory", () => {
 			assert.equal(started.details.run.report?.summary, "started successfully");
 			assert.equal(started.details.run.steering_messages[0]?.status, "applied");
 			assert.equal(started.details.run.progress?.event, "message_end");
+			const receivedArgs = JSON.parse(await fs.readFile(receivedArgsPath, "utf8")) as string[];
+			assert.match(receivedArgs.join("\n"), /Run the focused tests/);
 			const store = LionStore.fromCwd(dir);
 			assert.deepEqual((await store.query((ledger) => ledger.get(id))).result?.status, "completed");
 		} finally {

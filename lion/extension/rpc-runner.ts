@@ -63,15 +63,23 @@ const DEFAULT_STOP_GRACE_MS = 1500;
 const DEFAULT_START_OBSERVATION_GRACE_MS = 1000;
 export const MAX_PERSISTED_RPC_ERROR_CHARS = 2_000;
 
+function boundRpcDiagnostic(message: string): string {
+	return message.length > MAX_PERSISTED_RPC_ERROR_CHARS
+		? `${message.slice(0, MAX_PERSISTED_RPC_ERROR_CHARS - 1)}…`
+		: message;
+}
+
 export function sanitizeRpcError(error: unknown): Error {
 	const original = error instanceof Error ? error : new Error(String(error));
 	const redacted = original.message.replace(/(\.?\s*Stderr:)\s*[\s\S]*$/i, "$1 [redacted]");
-	const message = redacted.length > MAX_PERSISTED_RPC_ERROR_CHARS
-		? `${redacted.slice(0, MAX_PERSISTED_RPC_ERROR_CHARS - 1)}…`
-		: redacted;
+	const message = boundRpcDiagnostic(redacted);
 	const safe = new Error(message, { cause: original });
 	safe.name = original.name;
 	return safe;
+}
+
+export function formatPersistedRpcFailure(prefix: string, error: unknown): string {
+	return boundRpcDiagnostic(`${prefix}${sanitizeRpcError(error).message}`);
 }
 
 interface DisposableWaiter<T> {
@@ -438,7 +446,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 					await steering;
 					outcomes.push({ steering_id: msg.id, delivered: true });
 				} catch (err) {
-					outcomes.push({ steering_id: msg.id, delivered: false, reason: `RPC steer failed: ${sanitizeRpcError(err).message}` });
+					outcomes.push({ steering_id: msg.id, delivered: false, reason: formatPersistedRpcFailure("RPC steer failed: ", err) });
 				}
 			}
 			await settleReserved(outcomes);
@@ -535,7 +543,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		closeSteeringChannel();
 		void steeringClosedHook.catch(() => undefined);
 		await withTimeout(
-			opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, `RPC runner stopped before delivery: ${safeError.message}`)),
+			opts.store.mutate((l) => l.failOpenSteeringIfCurrent(req.run.id, runIncarnation, formatPersistedRpcFailure("RPC runner stopped before delivery: ", safeError))),
 			opts.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS,
 			"RPC failure-state persistence timed out",
 		).catch(() => undefined);

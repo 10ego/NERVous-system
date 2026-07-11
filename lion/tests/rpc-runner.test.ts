@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
-import { AdaptivePoller, createLionRpcRunner, MAX_PERSISTED_RPC_ERROR_CHARS, sanitizeRpcError, type LionRpcClient } from "../extension/rpc-runner.ts";
+import { AdaptivePoller, createLionRpcRunner, formatPersistedRpcFailure, MAX_PERSISTED_RPC_ERROR_CHARS, sanitizeRpcError, type LionRpcClient } from "../extension/rpc-runner.ts";
 
 class FakeRpcClient implements LionRpcClient {
 	started = false;
@@ -151,6 +151,8 @@ describe("createLionRpcRunner", () => {
 		assert.equal(safe.cause, original);
 		const bounded = sanitizeRpcError(new Error("y".repeat(5_000)));
 		assert.equal(bounded.message.length, MAX_PERSISTED_RPC_ERROR_CHARS);
+		assert.equal(formatPersistedRpcFailure("RPC steer failed: ", bounded).length, MAX_PERSISTED_RPC_ERROR_CHARS);
+		assert.equal(formatPersistedRpcFailure("RPC runner stopped before delivery: ", bounded).length, MAX_PERSISTED_RPC_ERROR_CHARS);
 	});
 
 	it("delivers pending live steering through RpcClient.steer exactly once", async () => {

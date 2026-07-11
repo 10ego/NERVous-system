@@ -386,6 +386,7 @@ export class NervousDashboard implements Component {
 	private pendingFullReload = false;
 	private reloadFailed = false;
 	private readonly dirtyVersions = new Map<Tab, number>();
+	private readonly inFlightVersions = new Map<Tab, number>();
 	private showRefreshing = false;
 	private closed = false;
 	private error: string | null = null;
@@ -724,7 +725,7 @@ export class NervousDashboard implements Component {
 				if (this.closed) return;
 				const components = detected === true ? DASHBOARD_COMPONENTS : detected === false ? [] : detected;
 				if (components.length) this.markDirty(components);
-				const dirty = [...this.dirtyVersions.keys()];
+				const dirty = [...this.dirtyVersions.keys()].filter((component) => !this.refreshing || (this.dirtyVersions.get(component) ?? 0) > (this.inFlightVersions.get(component) ?? -1));
 				if (dirty.length) this.reload({ showIndicator: false, components: dirty });
 				this.nextAutoRefreshMs = dirty.length ? this.autoRefreshMs : Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
 				this.startAutoRefresh(this.nextAutoRefreshMs);
@@ -748,6 +749,8 @@ export class NervousDashboard implements Component {
 		}
 		const requested = options.components ?? DASHBOARD_COMPONENTS;
 		const versions = new Map(requested.map((component) => [component, this.dirtyVersions.get(component) ?? 0]));
+		this.inFlightVersions.clear();
+		for (const [component, version] of versions) this.inFlightVersions.set(component, version);
 		this.refreshing = true;
 		this.showRefreshing = options.showIndicator ?? true;
 		this.error = null;
@@ -775,6 +778,7 @@ export class NervousDashboard implements Component {
 			})
 			.finally(() => {
 				this.refreshing = false;
+				this.inFlightVersions.clear();
 				this.showRefreshing = false;
 				if (this.closed) return;
 				this.selected = Math.min(this.selected, Math.max(0, this.items().length - 1));

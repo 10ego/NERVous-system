@@ -137,6 +137,13 @@ function lionRunRefKey(runId: string, incarnationId: string | null | undefined):
 	return JSON.stringify([runId, incarnationId ?? null]);
 }
 
+export function hasPendingCancellationAssignments(wave: Wave, settledRunRefs: ReadonlySet<string>): boolean {
+	return wave.assignments.some((assignment) =>
+		(assignment.status === "dispatched" && !assignment.lion_run_id)
+		|| Boolean(assignment.lion_run_id && !settledRunRefs.has(lionRunRefKey(assignment.lion_run_id, assignment.lion_run_incarnation_id))),
+	);
+}
+
 export function resolveCancelSettlementTimeout(value = process.env.CEREBEL_CANCEL_SETTLE_TIMEOUT_MS): number {
 	if (value === undefined || value.trim() === "") return DEFAULT_CANCEL_SETTLE_TIMEOUT_MS;
 	const parsed = Number(value);
@@ -397,10 +404,7 @@ export default function (pi: ExtensionAPI) {
 								l.recoverOrphanedReservations(initial.id, { stale_after_ms: CANCEL_RESERVATION_STALE_MS });
 								const current = l.get(initial.id);
 								if (!current) throw new CerebelError("not_found", `wave ${initial.id} not found`);
-								const pending = current.assignments.some((assignment) => !isTerminalAssignmentStatus(assignment.status) && (
-									(assignment.status === "dispatched" && !assignment.lion_run_id)
-									|| (assignment.lion_run_id && !settledRunRefs.has(lionRunRefKey(assignment.lion_run_id, assignment.lion_run_incarnation_id)))
-								));
+								const pending = hasPendingCancellationAssignments(current, settledRunRefs);
 								return pending ? undefined : l.cancel(initial.id);
 							});
 							cancelledWave = attempt.result;

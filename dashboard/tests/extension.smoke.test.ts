@@ -165,6 +165,20 @@ describe("dashboard extension factory", () => {
 		assert.equal(changeDetector.mock.calls.length, 1);
 	});
 
+	it("does not queue an empty follow-up while the current dirty version is loading", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValueOnce(["lion"]).mockResolvedValue([]);
+		let resolveRefresh!: (data: any) => void;
+		const refresh = vi.fn(() => new Promise<any>((resolve) => { resolveRefresh = resolve; }));
+		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
+		await vi.advanceTimersByTimeAsync(200);
+		assert.equal(refresh.mock.calls.length, 1);
+		resolveRefresh(emptyDashboardData({ runs: [{ id: "latest" }] }));
+		await vi.advanceTimersByTimeAsync(0);
+		assert.equal(refresh.mock.calls.length, 1);
+		dashboard.dispose();
+	});
+
 	it("replays a change detected while the previous dashboard reload is in flight", async () => {
 		vi.useFakeTimers();
 		const changeDetector = vi.fn().mockResolvedValue(true);
