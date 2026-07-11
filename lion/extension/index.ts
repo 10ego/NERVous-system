@@ -189,10 +189,10 @@ async function terminalFinishInput(
 	cleanupError?: Error,
 	hostAborted = false,
 ): Promise<import("./store.ts").FinishRunInput> {
-	if (intent.kind === "result" && !cleanupError && !hostAborted) return { output: intent.output.text, report: intent.output.report };
 	const current = (await store.query((ledger) => ledger.get(owner.runId))).result;
 	const exact = current && (current.incarnation_id ?? null) === (owner.incarnationId ?? null) ? current : undefined;
 	const cancelled = Boolean(exact?.control?.cancel_requested_at || hostAborted);
+	if (intent.kind === "result" && !cleanupError && !cancelled) return { output: intent.output.text, report: intent.output.report };
 	const error = intent.kind === "error" ? intent.error : cleanupError ?? new Error("LION run host aborted during cleanup");
 	return {
 		output: "",

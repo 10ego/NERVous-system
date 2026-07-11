@@ -2,9 +2,10 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { EventEmitter } from "node:events";
 import { afterEach, describe, it, vi } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
-import { AdaptivePoller, createLionRpcRunner, formatPersistedRpcFailure, MAX_PERSISTED_RPC_ERROR_CHARS, sanitizeRpcError, type LionRpcClient } from "../extension/rpc-runner.ts";
+import { AdaptivePoller, createLionRpcRunner, formatPersistedRpcFailure, MAX_PERSISTED_RPC_ERROR_CHARS, sanitizeRpcError, waitForChildExit, type LionRpcClient } from "../extension/rpc-runner.ts";
 
 class FakeRpcClient implements LionRpcClient {
 	started = false;
@@ -293,6 +294,40 @@ describe("createLionRpcRunner", () => {
 		fake.exit();
 		await handoff?.waitForExit();
 		await handoff?.cleanup();
+	});
+
+	it("does not confirm child death from an error event while the attached child remains alive", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const processEvents = new EventEmitter();
+		fake.throwOnStop = true;
+		fake.waitForExit = () => waitForChildExit(processEvents);
+		const baseExit = fake.exit.bind(fake);
+		fake.exit = () => { baseExit(); processEvents.emit("exit", 0, null); };
+		const run = (await store.mutate((ledger) => ledger.create({ objective: "live child error", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-error-event" };
+		let handoff: import("../extension/cleanup-supervisor.ts").LionCleanupHandoff | undefined;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const outcomePromise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: owner,
+			registerCleanupSupervisor: (candidate) => { handoff = candidate; return true; },
+		});
+		await until(() => fake.prompted !== null);
+		processEvents.emit("error", new Error("spawn channel error"));
+		fake.finish();
+		const outcome = await outcomePromise;
+		if (outcome.settlement !== "cleanup_pending") assert.fail("live child error incorrectly bypassed cleanup supervision");
+		assert.equal(fake.alive, true);
+		assert.ok(handoff);
+		let exitConfirmed = false;
+		const waiting = handoff.waitForExit().then(() => { exitConfirmed = true; });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(exitConfirmed, false);
+		fake.exit();
+		await waiting;
+		assert.equal(exitConfirmed, true);
 	});
 
 	it("bounds a hanging hard-stop attempt before transferring cleanup", async () => {

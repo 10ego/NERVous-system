@@ -153,10 +153,9 @@ async function retry<T>(entry: SupervisorEntry, operation: () => Promise<T>): Pr
 }
 
 function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => {
-		const timer = setTimeout(resolve, Math.max(0, ms));
-		timer.unref?.();
-	});
+	// The supervisor owns unfinished lifecycle authority. Keep its retry timer
+	// referenced so an otherwise-idle host cannot exit between retry attempts.
+	return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
 }
 
 export function hasLionCleanupSupervisor(owner: ActiveRunOwner): boolean {

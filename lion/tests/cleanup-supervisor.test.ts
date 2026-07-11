@@ -1,4 +1,9 @@
 import * as assert from "node:assert";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { spawnSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 import { afterEach, describe, it } from "vitest";
 import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun, getActiveRunIds, requestRunCancellation } from "../extension/active-runs.ts";
 import { clearLionCleanupSupervisorsForTests, finalizeExactLionRun, hasLionCleanupSupervisor, registerLionCleanupSupervisor, type LionCleanupHandoff } from "../extension/cleanup-supervisor.ts";
@@ -124,6 +129,42 @@ describe("LION cleanup supervisor", () => {
 		assert.equal(store.ledger.get(replacement.id)?.status, "running");
 		assert.equal(store.ledger.get(replacement.id)?.output, null);
 		finishActiveRun(owner);
+	});
+
+	it("keeps an otherwise-idle process alive until a supervisor retry succeeds", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lion-supervisor-liveness-"));
+		const marker = path.join(dir, "retried");
+		const supervisorUrl = pathToFileURL(path.resolve(process.cwd(), "lion/extension/cleanup-supervisor.ts")).href;
+		const activeRunsUrl = pathToFileURL(path.resolve(process.cwd(), "lion/extension/active-runs.ts")).href;
+		const script = `
+			import fs from "node:fs";
+			import { beginActiveRun, finishActiveRun } from ${JSON.stringify(activeRunsUrl)};
+			import { registerLionCleanupSupervisor } from ${JSON.stringify(supervisorUrl)};
+			const owner = beginActiveRun({ namespaceId: "idle-retry", runId: "run-001", incarnationId: "inc-001" }, "rpc");
+			let alive = true;
+			let attempts = 0;
+			const accepted = registerLionCleanupSupervisor({
+				owner,
+				handoff: {
+					namespaceId: owner.namespaceId, runId: owner.runId, incarnationId: owner.incarnationId,
+					ownerId: owner.ownerId, process: { pid: 1, pgid: null }, isAlive: () => alive,
+					waitForExit: async () => { alive = false; }, cleanup: async () => {},
+					terminalIntent: { kind: "result", output: { text: "done", report: null } },
+				},
+				retryDelayMs: 40,
+				finalize: async () => {
+					attempts++;
+					if (attempts === 1) throw new Error("retry");
+					fs.writeFileSync(${JSON.stringify(marker)}, "retried");
+					return { disposition: "superseded" };
+				},
+				releaseOwner: () => finishActiveRun(owner),
+			});
+			if (!accepted) process.exitCode = 2;
+		`;
+		const child = spawnSync(process.execPath, ["--experimental-transform-types", "--no-warnings", "--input-type=module", "-e", script], { encoding: "utf8", timeout: 2_000 });
+		assert.equal(child.status, 0, child.stderr);
+		assert.equal(fs.readFileSync(marker, "utf8"), "retried");
 	});
 
 	it("registry loss performs no persisted-PID reattachment or signaling", async () => {

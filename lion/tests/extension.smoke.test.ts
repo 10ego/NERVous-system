@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import factory, { executeRun } from "../extension/index.ts";
 import { FileBackend, LionStore } from "../extension/backend.ts";
-import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun, getActiveRunIds } from "../extension/active-runs.ts";
+import { attachActiveRunProcess, beginActiveRun, clearActiveRunsForTests, finishActiveRun, getActiveRunIds, requestRunCancellation } from "../extension/active-runs.ts";
 import { clearLionCleanupSupervisorsForTests } from "../extension/cleanup-supervisor.ts";
 
 function stubPi(): { pi: any; tools: any[]; commands: any[] } {
@@ -90,6 +90,54 @@ describe("lion extension factory", () => {
 		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.status, "completed");
 		assert.deepEqual(getActiveRunIds(store.namespaceId), []);
 		assert.equal(events.filter((name) => name === "nervous:lion:completed").length, 1);
+	});
+
+	it("honors durable cancellation requested after a successful cleanup handoff", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-direct-late-cancel-"));
+		const store = new LionStore(new FileBackend({ runsPath: path.join(dir, "runs.json"), dir }));
+		let owner!: ReturnType<typeof beginActiveRun>;
+		const { result: run } = await store.mutate((ledger) => {
+			const queued = ledger.create({ objective: "late cancellation", runner_mode: "rpc", start: false });
+			owner = beginActiveRun({ namespaceId: store.namespaceId, runId: queued.id, incarnationId: queued.incarnation_id }, "rpc");
+			return ledger.start(queued.id);
+		});
+		let alive = true;
+		let exit!: () => void;
+		const exited = new Promise<void>((resolve) => { exit = resolve; });
+		const result = await executeRun({
+			pi: {} as never,
+			ctx: { cwd: dir } as never,
+			store,
+			action: "run",
+			run,
+			activeOwner: owner,
+			runner: async (request) => {
+				const processInfo = { pid: 304, pgid: null, isAlive: () => alive, cancel: () => true };
+				request.onProcessStart?.(processInfo);
+				const accepted = await request.registerCleanupSupervisor?.({
+					namespaceId: owner.namespaceId,
+					runId: owner.runId,
+					incarnationId: owner.incarnationId ?? null,
+					ownerId: owner.ownerId,
+					process: processInfo,
+					isAlive: () => alive,
+					waitForExit: () => exited,
+					cleanup: async () => undefined,
+					terminalIntent: { kind: "result", output: { text: "must not complete", report: null } },
+				});
+				assert.equal(accepted, true);
+				return { settlement: "cleanup_pending", run_id: run.id, incarnation_id: run.incarnation_id ?? null, owner_id: owner.ownerId };
+			},
+		});
+		assert.match(result.content[0]!.text, /cleanup_pending/);
+		await requestRunCancellation(store, run.id, "late durable stop", { expectedIncarnationId: run.incarnation_id });
+		alive = false;
+		exit();
+		for (let index = 0; index < 100 && (await store.query((ledger) => ledger.get(run.id))).result?.status === "running"; index++) await new Promise((resolve) => setTimeout(resolve, 2));
+		const terminal = (await store.query((ledger) => ledger.get(run.id))).result!;
+		assert.equal(terminal.status, "aborted");
+		assert.match(terminal.error ?? "", /late durable stop/);
+		assert.notEqual(terminal.status, "completed");
 	});
 
 	it("supports queued steering and queued cancellation through the tool", async () => {

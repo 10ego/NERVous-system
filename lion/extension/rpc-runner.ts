@@ -647,6 +647,21 @@ async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: s
 	}
 }
 
+export async function waitForChildExit(proc: { exitCode?: number | null; signalCode?: string | null; once?: (event: string, listener: (...args: unknown[]) => void) => void }): Promise<void> {
+	if (proc.exitCode != null || proc.signalCode != null || !proc.once) return;
+	await new Promise<void>((resolve, reject) => {
+		let settled = false;
+		const finish = (operation: () => void) => {
+			if (settled) return;
+			settled = true;
+			operation();
+		};
+		proc.once!("exit", () => finish(resolve));
+		proc.once!("close", () => finish(resolve));
+		proc.once!("error", (error: unknown) => finish(() => reject(error instanceof Error ? error : new Error(String(error)))));
+	});
+}
+
 async function createDefaultRpcClient(config: LionRpcClientConfig): Promise<LionRpcClient> {
 	const mod = await import("@earendil-works/pi-coding-agent");
 	const cliPath = path.join(mod.getPackageDir(), "dist", "cli.js");
@@ -679,14 +694,8 @@ async function createDefaultRpcClient(config: LionRpcClientConfig): Promise<Lion
 			};
 		},
 		waitForExit: async () => {
-			const proc = (client as unknown as { process?: { exitCode?: number | null; signalCode?: string | null; once?: (event: string, listener: () => void) => void } | null }).process;
-			if (!proc || proc.exitCode != null || proc.signalCode != null || !proc.once) return;
-			await new Promise<void>((resolve) => {
-				let settled = false;
-				const done = () => { if (!settled) { settled = true; resolve(); } };
-				proc.once!("exit", done);
-				proc.once!("error", done);
-			});
+			const proc = (client as unknown as { process?: { exitCode?: number | null; signalCode?: string | null; once?: (event: string, listener: (...args: unknown[]) => void) => void } | null }).process;
+			if (proc) await waitForChildExit(proc);
 		},
 	};
 }
