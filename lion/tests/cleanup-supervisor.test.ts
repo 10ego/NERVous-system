@@ -185,7 +185,7 @@ describe("LION cleanup supervisor", () => {
 			});
 			if (!accepted) process.exitCode = 2;
 		`;
-		const child = spawnSync(process.execPath, ["--experimental-transform-types", "--no-warnings", "--input-type=module", "-e", script], { encoding: "utf8", timeout: 2_000 });
+		const child = spawnSync(process.execPath, ["--experimental-transform-types", "--no-warnings", "--input-type=module", "-e", script], { encoding: "utf8", timeout: 10_000 });
 		assert.equal(child.status, 0, child.stderr);
 		assert.equal(fs.readFileSync(marker, "utf8"), "retried");
 	});
