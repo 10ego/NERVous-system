@@ -298,7 +298,7 @@ async function recordLateWorkerSettlement(
 	const cancelled = finished.status === "aborted";
 	const outcome: AssignmentStatus = cancelled
 		? "cancelled"
-		: assignmentStatusFromReport(finished.report, finished.status);
+		: assignmentStatusFromReport(finished.report ?? null, finished.status);
 	const summary = finished.report?.summary
 		?? (cancelled ? `LION run cancelled${finished.error ? `: ${finished.error}` : ""}` : `LION run failed: ${finished.error ?? "missing WORKER_REPORT"}`);
 	const blockers = finished.report?.blockers ?? (cancelled ? [] : [finished.error ?? "missing WORKER_REPORT"]);

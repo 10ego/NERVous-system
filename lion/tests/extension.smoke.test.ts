@@ -78,7 +78,7 @@ describe("lion extension factory", () => {
 					terminalIntent: { kind: "result", output: { text: "done", report } },
 				});
 				assert.equal(accepted, true);
-				return { settlement: "cleanup_pending", run_id: run.id, incarnation_id: run.incarnation_id, owner_id: owner.ownerId };
+				return { settlement: "cleanup_pending", run_id: run.id, incarnation_id: run.incarnation_id ?? null, owner_id: owner.ownerId };
 			},
 		});
 		assert.match(result.content[0]!.text, /cleanup_pending/);

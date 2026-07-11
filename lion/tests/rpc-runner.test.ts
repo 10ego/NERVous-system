@@ -164,6 +164,7 @@ describe("createLionRpcRunner", () => {
 		await until(() => fake.prompted !== null);
 		await store.mutate((l) => l.steer(run.id, "Please adjust course", { liveDeliveryAvailable: true }));
 		const out = await promise;
+		if (out.settlement !== "settled") assert.fail("successful RPC run unexpectedly remained cleanup_pending");
 		assert.equal(out.report?.outcome, "completed");
 		assert.deepEqual(fake.steered, ["Please adjust course"]);
 		const final = (await store.query((l) => l.get(run.id))).result!;
@@ -285,7 +286,7 @@ describe("createLionRpcRunner", () => {
 		await until(() => fake.prompted !== null);
 		fake.finish();
 		const outcome = await promise;
-		assert.equal(outcome.settlement, "cleanup_pending");
+		if (outcome.settlement !== "cleanup_pending") assert.fail("live child handoff unexpectedly settled");
 		assert.equal(outcome.owner_id, owner.ownerId);
 		assert.equal(fake.alive, true);
 		assert.equal(handoff?.process.pid, process.pid);
@@ -387,6 +388,7 @@ describe("createLionRpcRunner", () => {
 		const run = (await store.mutate((l) => l.create({ objective: "immediate idle", runner_mode: "rpc" }))).result;
 		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
 		const output = await runner({ run, timeout_ms: 1000 });
+		if (output.settlement !== "settled") assert.fail("idle RPC run unexpectedly remained cleanup_pending");
 		assert.equal(output.report?.outcome, "completed");
 		assert.equal(fake.waitForIdleCalls, 0);
 	});
@@ -462,6 +464,7 @@ describe("createLionRpcRunner", () => {
 		await until(() => fake.prompted !== null);
 		fake.finish();
 		const output = await promise;
+		if (output.settlement !== "settled") assert.fail("graceful RPC stop unexpectedly remained cleanup_pending");
 		assert.equal(output.report?.outcome, "completed");
 		assert.equal(fake.stopCalls, 1);
 	});

@@ -28,6 +28,7 @@ RUN("live lion subprocess", () => {
 			timeout_ms: 120_000,
 		});
 
+		if (out.settlement !== "settled") assert.fail("JSON runner unexpectedly returned cleanup_pending");
 		assert.ok(out.text.length > 0);
 		assert.ok(out.report, `expected parsed WORKER_REPORT in:\n${out.text}`);
 		assert.equal(out.report!.outcome, "completed");
