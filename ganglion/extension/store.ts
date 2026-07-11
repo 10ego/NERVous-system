@@ -202,6 +202,9 @@ export class GanglionLedger {
 		const a = input.allocation_id ? requireAllocation(g, input.allocation_id) : findAllocation(g, input.task_id);
 		if (!a) throw new GanglionError("not_found", "allocation not found");
 		if (input.lion_run_incarnation_id && !input.lion_run_id) throw new GanglionError("invalid_arg", "lion_run_incarnation_id requires lion_run_id");
+		if (a.lion_run_incarnation_id && input.lion_run_id && !input.lion_run_incarnation_id) {
+			assertExactAllocationProvenance(a, input.lion_run_id, input.lion_run_incarnation_id, "run-linked record");
+		}
 		if (isTerminalAllocationStatus(input.status)) assertExactAllocationProvenance(a, input.lion_run_id, input.lion_run_incarnation_id, "terminal record");
 		if (input.lion_run_id && input.lion_run_incarnation_id) {
 			const existingRunId = a.lion_run_id;

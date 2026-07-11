@@ -85,6 +85,7 @@ describe("GanglionLedger", () => {
 		const replacement = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-replacement", { status: "completed" });
 		assert.equal(replacement.committed, false);
 		assert.equal(replacement.allocation.status, "assigned");
+		assert.throws(() => l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", status: "running" }), /requires matching lion_run_id and lion_run_incarnation_id/);
 		assert.throws(() => l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", status: "completed" }), /requires matching lion_run_id and lion_run_incarnation_id/);
 		assert.throws(() => l.release(g.id, "alloc-001", "run-001"), /requires matching lion_run_id and lion_run_incarnation_id/);
 		assert.equal(l.get(g.id)?.members[0]?.status, "busy");
