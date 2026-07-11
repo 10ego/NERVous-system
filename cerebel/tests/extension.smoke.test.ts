@@ -308,6 +308,102 @@ describe("cerebel extension factory", () => {
 		}
 	});
 
+	it("batches cancellation reconciliation once per GANGLION with exact provenance and fencing", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-cancel-batch-ganglion-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const ganglionStore = GanglionStore.fromCwd(dir);
+			await ganglionStore.mutate((ledger) => {
+				const group = ledger.create({ members: [{ id: "lion-a" }, { id: "lion-b" }] });
+				ledger.allocate(group.id, { tasks: [{ id: "task-a", title: "A" }, { id: "task-b", title: "B" }] });
+				ledger.record(group.id, { allocation_id: "alloc-001", lion_run_id: "run-stale", status: "completed" });
+				ledger.allocate(group.id, { tasks: [{ id: "task-new", title: "New" }] });
+			});
+			const lionStore = LionStore.fromCwd(dir);
+			const runA = (await lionStore.mutate((ledger) => {
+				const run = ledger.create({ objective: "A" });
+				return ledger.finish(run.id, { output: "", report: null, status: "completed" });
+			})).result;
+			const runB = (await lionStore.mutate((ledger) => {
+				const run = ledger.create({ objective: "B" });
+				return ledger.finish(run.id, { output: "", report: null, status: "failed" });
+			})).result;
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [
+				{ task_id: "task-a", agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" },
+				{ task_id: "task-b", agent_id: "lion-b", objective: "B", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-002" },
+			] }, undefined, undefined, { cwd: dir });
+			await cerebel.execute("dispatch", { action: "dispatch", links: [
+				{ assignment_id: "assign-001", lion_run_id: runA.id, lion_run_incarnation_id: runA.incarnation_id },
+				{ assignment_id: "assign-002", lion_run_id: runB.id, lion_run_incarnation_id: runB.incarnation_id },
+			] }, undefined, undefined, { cwd: dir });
+			const originalMutate = GanglionStore.prototype.mutate;
+			let mutations = 0;
+			vi.spyOn(GanglionStore.prototype, "mutate").mockImplementation(function (this: GanglionStore, fn: any) { mutations++; return originalMutate.call(this, fn); });
+
+			const cancelled = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, { cwd: dir });
+
+			assert.equal(mutations, 1);
+			assert.match(cancelled.content[0].text, /ganglion-001\/alloc-001 recorded; capacity retained by a newer allocation/);
+			assert.match(cancelled.content[0].text, /ganglion-001\/alloc-002 recorded; capacity released/);
+			const group = (await ganglionStore.query((ledger) => ledger.get("ganglion-001"))).result!;
+			assert.deepEqual(group.allocations.slice(0, 2).map((allocation) => allocation.lion_run_id), [runA.id, runB.id]);
+			assert.deepEqual(group.allocations.slice(0, 2).map((allocation) => allocation.status), ["cancelled", "cancelled"]);
+			assert.equal(group.members.find((member) => member.id === "lion-a")?.current_allocation_id, "alloc-003");
+			assert.equal(group.members.find((member) => member.id === "lion-b")?.status, "available");
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
+	});
+
+	it("reports per-allocation cancellation errors while continuing other GANGLION groups", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-cancel-group-failure-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const ganglionStore = GanglionStore.fromCwd(dir);
+			await ganglionStore.mutate((ledger) => {
+				const first = ledger.create({ members: [{ id: "lion-a" }, { id: "lion-b" }] });
+				ledger.allocate(first.id, { tasks: [{ id: "task-a", title: "A" }, { id: "task-b", title: "B" }] });
+				const second = ledger.create({ members: [{ id: "lion-c" }] });
+				ledger.allocate(second.id, { tasks: [{ id: "task-c", title: "C" }] });
+			});
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [
+				{ task_id: "task-a", agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" },
+				{ task_id: "task-b", agent_id: "lion-b", objective: "B", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-002" },
+				{ task_id: "task-c", agent_id: "lion-c", objective: "C", ganglion_id: "ganglion-002", ganglion_allocation_id: "alloc-001" },
+			] }, undefined, undefined, { cwd: dir });
+			const originalMutate = GanglionStore.prototype.mutate;
+			let mutations = 0;
+			vi.spyOn(GanglionStore.prototype, "mutate").mockImplementation(function (this: GanglionStore, fn: any) {
+				mutations++;
+				if (mutations === 1) return Promise.reject(new Error("group write failed"));
+				return originalMutate.call(this, fn);
+			});
+
+			const cancelled = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, { cwd: dir });
+
+			assert.equal(mutations, 2);
+			assert.match(cancelled.content[0].text, /release failed for ganglion-001\/alloc-001: group write failed/);
+			assert.match(cancelled.content[0].text, /release failed for ganglion-001\/alloc-002: group write failed/);
+			assert.match(cancelled.content[0].text, /ganglion-002\/alloc-001 recorded; capacity released/);
+			assert.deepEqual((await ganglionStore.query((ledger) => ledger.get("ganglion-001"))).result?.members.map((member) => member.status), ["busy", "busy"]);
+			assert.equal((await ganglionStore.query((ledger) => ledger.get("ganglion-002"))).result?.members[0]?.status, "available");
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
+	});
+
 	it("releases linked GANGLION capacity when recording a terminal assignment", async () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-ganglion-"));

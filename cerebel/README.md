@@ -33,7 +33,7 @@ Package surfaces:
 | `record` | Record a LION outcome for one assignment |
 | `decide` | Compute next controller decision |
 | `complete_wave` | Finish a successful wave |
-| `cancel` | Request cancellation for every linked LION, wait for confirmed settlement, then cancel the wave and release only still-owned GANGLION allocations; unsettled workers retain wave state and capacity |
+| `cancel` | Request cancellation for every linked LION, wait for confirmed settlement, then cancel the wave and reconcile terminal GANGLION allocations once per group; unsettled workers retain wave state and capacity |
 | `run_wave` | Actively launch planned assignments through LION, dispatch links, and record grouped outcomes |
 | `get` | Show one wave/current wave |
 | `list` | List waves |
