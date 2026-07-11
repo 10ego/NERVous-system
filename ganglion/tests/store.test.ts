@@ -70,7 +70,7 @@ describe("GanglionLedger", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
 		l.allocate(g.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
-		const r = l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", status: "completed", summary: "done" });
+		const r = l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001", status: "completed", summary: "done" });
 		assert.equal(r.allocations[0]?.status, "completed");
 		assert.equal(r.members[0]?.status, "available");
 		assert.equal(r.members[0]?.last_run_id, "run-001");
@@ -98,22 +98,24 @@ describe("GanglionLedger", () => {
 		assert.equal(repeated.allocation.status, "completed");
 	});
 
-	it("does not backfill incarnation provenance onto a legacy run-linked allocation", () => {
-		const l = new GanglionLedger();
-		const g = l.create({ member_count: 1 });
-		l.allocate(g.id, { tasks: [{ id: "task-legacy", title: "Legacy" }] });
-		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-legacy", status: "running" });
-		assert.equal(l.linkRunIfUnlinked(g.id, "alloc-001", "run-legacy", "inc-inferred").committed, false);
-		assert.equal(l.get(g.id)?.allocations[0]?.lion_run_incarnation_id, null);
+	it("does not backfill incarnation provenance onto an in-memory legacy run-linked allocation", () => {
+		const source = new GanglionLedger();
+		const group = source.create({ member_count: 1 });
+		source.allocate(group.id, { tasks: [{ id: "task-legacy", title: "Legacy" }] });
+		const legacy = source.get(group.id)!;
+		legacy.allocations[0]!.lion_run_id = "run-legacy";
+		const ledger = new GanglionLedger(undefined, [legacy], group.id);
+		assert.equal(ledger.linkRunIfUnlinked(group.id, "alloc-001", "run-legacy", "inc-inferred").committed, false);
+		assert.equal(ledger.get(group.id)?.allocations[0]?.lion_run_incarnation_id, null);
 	});
 
 	it("does not release a newer member lease when an old allocation is recorded again", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
 		l.allocate(g.id, { tasks: [{ id: "task-old", title: "Old" }] });
-		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "completed" });
+		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", lion_run_incarnation_id: "inc-old", status: "completed" });
 		l.allocate(g.id, { tasks: [{ id: "task-new", title: "New" }] });
-		const stale = l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "cancelled" });
+		const stale = l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", lion_run_incarnation_id: "inc-old", status: "cancelled" });
 		assert.equal(stale.release_disposition, "retained_by_newer_allocation");
 		assert.equal(stale.ganglion.allocations[0]?.status, "cancelled");
 		assert.equal(stale.ganglion.allocations[1]?.status, "assigned");
@@ -142,9 +144,29 @@ describe("GanglionLedger", () => {
 		assert.equal(report.released[0]?.allocation_id, "alloc-001");
 		assert.equal(report.ganglion.allocations[0]?.status, "completed");
 		assert.equal(report.ganglion.allocations[0]?.lion_run_id, "run-001");
-		assert.equal(report.ganglion.allocations[0]?.lion_run_incarnation_id, null);
+		assert.equal(report.ganglion.allocations[0]?.lion_run_incarnation_id, "inc-001");
 		assert.equal(report.ganglion.members[0]?.status, "available");
 		assert.equal(report.ganglion.members[0]?.last_run_id, "run-001");
+	});
+
+	it("never reconciles partial provenance from unrelated LION runs", () => {
+		for (const partial of [
+			{ lion_run_id: null, lion_run_incarnation_id: "inc-orphan", run: { id: "run-unrelated", incarnation_id: "inc-unrelated" } },
+			{ lion_run_id: "run-reused", lion_run_incarnation_id: null, run: { id: "run-reused", incarnation_id: "inc-unrelated" } },
+		]) {
+			const source = new GanglionLedger();
+			const group = source.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+			source.allocate(group.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
+			const corrupted = source.get(group.id)!;
+			corrupted.allocations[0]!.lion_run_id = partial.lion_run_id;
+			corrupted.allocations[0]!.lion_run_incarnation_id = partial.lion_run_incarnation_id;
+			const ledger = new GanglionLedger(undefined, [corrupted], group.id);
+			const before = ledger.get(group.id);
+			const reconciled = ledger.reconcile(group.id, [{ ...partial.run, agent_id: "lion-api", task_id: "task-api", status: "completed" }]);
+			assert.deepEqual(reconciled.released, []);
+			assert.match(reconciled.inconsistencies[0] ?? "", /partial LION provenance/);
+			assert.deepEqual(ledger.get(group.id), before);
+		}
 	});
 
 	it("does not reconcile an exactly linked allocation from a reused run id", () => {
@@ -214,6 +236,20 @@ describe("GanglionLedger", () => {
 		assert.equal(original.id, "ganglion-001");
 		assert.equal(replacement.id, "ganglion-002");
 		assert.equal(allocatedReplacement.allocations[0]?.id, "alloc-001");
+	});
+
+	it("rejects partial LION provenance while loading clean-slate state", () => {
+		for (const provenance of [
+			{ lion_run_id: null, lion_run_incarnation_id: "inc-orphan" },
+			{ lion_run_id: "run-orphan", lion_run_incarnation_id: null },
+		]) {
+			const ledger = new GanglionLedger();
+			const group = ledger.create({ member_count: 1 });
+			ledger.allocate(group.id, { tasks: [{ id: "task-001", title: "Task" }] });
+			const raw = ledger.toJSON();
+			Object.assign(raw.ganglions[group.id]!.allocations[0]!, provenance);
+			assert.throws(() => GanglionLedger.fromJSON(raw), /partial LION provenance.*clean-slate/i);
+		}
 	});
 
 	it("coerces bad JSON safely", () => {
