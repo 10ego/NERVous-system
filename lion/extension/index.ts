@@ -234,7 +234,7 @@ export default function (pi: ExtensionAPI) {
 				case "cancel": {
 					if (!p.id) return fail(action, "cancel requires `id`.");
 					try {
-						const cancellation = await requestRunCancellation(store, p.id, p.reason ?? p.context);
+						const cancellation = await requestRunCancellation(store, p.id, p.reason);
 						const run = cancellation.run;
 						if (!run) return fail(action, `LION ${p.id} not found.`);
 						if (cancellation.superseded) return ok(action, `Cancellation result for ${p.id} was superseded by a replacement run.`, { run });

@@ -62,6 +62,25 @@ describe("lion extension factory", () => {
 		}
 	});
 
+	it("does not use worker context as an implicit cancellation reason", async () => {
+		const { pi, tools } = stubPi();
+		factory(pi);
+		const lion = tools.find((tool) => tool.name === "lion");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-cancel-reason-test-"));
+		const oldRunsPath = process.env.LION_RUNS_PATH;
+		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
+		try {
+			const ctx = { cwd: dir, isProjectTrusted: () => false };
+			const dry = await lion.execute("queue", { action: "run", objective: "queued", context: "worker-only instructions", dry_run: true }, undefined, undefined, ctx);
+			const cancelled = await lion.execute("cancel", { action: "cancel", id: dry.details.run.id, context: "must not become a reason" }, undefined, undefined, ctx);
+			assert.equal(cancelled.details.run.control.cancel_reason, null);
+			assert.equal(cancelled.details.run.error, "Cancelled before start");
+		} finally {
+			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH;
+			else process.env.LION_RUNS_PATH = oldRunsPath;
+		}
+	});
+
 	it("starts a queued steered run through the public tool boundary", async () => {
 		const { pi, tools } = stubPi();
 		factory(pi);
