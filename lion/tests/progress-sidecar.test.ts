@@ -1,7 +1,9 @@
 import * as assert from "node:assert";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { promisify } from "node:util";
 import { describe, it } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
 import { LionLedger } from "../extension/store.ts";
@@ -20,6 +22,22 @@ async function createRunning(store: LionStore, objective = "work"): Promise<Lion
 	return (await store.mutate((ledger) => ledger.create({ objective }))).result;
 }
 async function exists(filePath: string): Promise<boolean> { try { await fs.lstat(filePath); return true; } catch { return false; } }
+const execFileAsync = promisify(execFile);
+
+async function flushInChild(runsPath: string, run: Pick<LionRun, "id" | "incarnation_id">, activityPrefix: string): Promise<void> {
+	const vitestCli = path.resolve("node_modules/vitest/vitest.mjs");
+	await execFileAsync(process.execPath, [vitestCli, "run", "lion/tests/progress-sidecar-process.fixture.test.ts", "--reporter=dot"], {
+		cwd: path.resolve("."),
+		env: {
+			...process.env,
+			LION_PROGRESS_CHILD: "1",
+			LION_RUNS_PATH: runsPath,
+			LION_RUN_ID: run.id,
+			LION_INCARNATION_ID: run.incarnation_id!,
+			LION_ACTIVITY_PREFIX: activityPrefix,
+		},
+	});
+}
 
 async function assertFlushHasZeroCanonicalIo(historySize: number): Promise<{ sidecarBytes: number; canonicalSize: number }> {
 	const { backend, store } = await makeStore(`scale-${historySize}`);
@@ -105,6 +123,14 @@ describe("exact-incarnation progress sidecars", () => {
 		await assert.rejects(() => store.flushProgress(run, snapshot("unsafe")), /malformed artifacts|symlink/);
 		assert.equal(await fs.readFile(victim, "utf8"), "untouched");
 
+		const safeRun = await createRunning(store, "backup symlink");
+		await store.flushProgress(safeRun, snapshot("one"));
+		const safePaths = backend.progress.paths({ id: safeRun.id, incarnation_id: safeRun.incarnation_id! });
+		await fs.unlink(safePaths.backup);
+		await fs.symlink(victim, safePaths.backup);
+		await store.flushProgress(safeRun, snapshot("two", 2));
+		assert.equal(await fs.readFile(victim, "utf8"), "untouched");
+
 		const { backend: rootBackend, store: rootStore, dir: rootDir } = await makeStore("root-symlink");
 		const rootRun = await createRunning(rootStore);
 		await fs.rm(rootBackend.progress.root, { recursive: true });
@@ -135,6 +161,30 @@ describe("exact-incarnation progress sidecars", () => {
 		assert.equal(await exists(paths.backup), false);
 	});
 
+	it("folds progress through reconciliation terminal paths that use generic canonical mutations", async () => {
+		const { backend, store } = await makeStore("reconcile-fold");
+		const run = await createRunning(store);
+		await store.flushProgress(run, snapshot("before owner loss", 9));
+		const paths = backend.progress.paths({ id: run.id, incarnation_id: run.incarnation_id! });
+		const changed = await store.mutate((ledger) => ledger.reconcileControls(() => false, { now_ms: Date.now() + 60_000, stale_after_ms: 1, active_run_refs: [] }));
+		assert.equal(changed.result[0]?.status, "failed");
+		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.progress?.activity, "before owner loss");
+		assert.equal(await exists(paths.primary), false);
+	});
+
+	it("recovers an interrupted snapshot replacement from the last accepted envelope", async () => {
+		const { backend, store } = await makeStore("append-crash");
+		const run = await createRunning(store);
+		await store.flushProgress(run, snapshot("accepted", 1));
+		const originalWritePrimary = (backend.progress as any).writePrimaryUnlocked.bind(backend.progress);
+		(backend.progress as any).writePrimaryUnlocked = async () => { throw new Error("crash before primary replacement"); };
+		await assert.rejects(() => store.flushProgress(run, snapshot("not accepted", 2)), /crash before primary replacement/);
+		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.progress?.activity, "accepted");
+		(backend.progress as any).writePrimaryUnlocked = originalWritePrimary;
+		await store.flushProgress(run, snapshot("retried", 3));
+		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.progress?.activity, "retried");
+	});
+
 	it("makes a pre-commit closed snapshot retryable and rejects late writers", async () => {
 		const { backend, store } = await makeStore("precommit");
 		const run = await createRunning(store);
@@ -150,6 +200,25 @@ describe("exact-incarnation progress sidecars", () => {
 		const retried = await store.finishRun(run.id, run.incarnation_id, { output: "done", report: null });
 		assert.equal(retried.result.committed, true);
 		assert.equal(retried.result.run?.progress?.activity, "accepted");
+	});
+
+	it("leaves only the closed fence when terminal cleanup is interrupted", async () => {
+		const { backend, store } = await makeStore("cleanup-order");
+		const run = await createRunning(store);
+		await store.flushProgress(run, snapshot("accepted"));
+		const paths = backend.progress.paths({ id: run.id, incarnation_id: run.incarnation_id! });
+		const originalUnlink = (backend.progress as any).unlinkArtifactUnlocked.bind(backend.progress);
+		(backend.progress as any).unlinkArtifactUnlocked = async (filePath: string) => {
+			if (filePath === paths.primary) throw Object.assign(new Error("simulated cleanup interruption"), { code: "EIO" });
+			return originalUnlink(filePath);
+		};
+		const finished = await store.finishRun(run.id, run.incarnation_id, { output: "done", report: null });
+		(backend.progress as any).unlinkArtifactUnlocked = originalUnlink;
+		assert.equal(finished.result.run?.status, "completed");
+		assert.match(finished.warnings.join("\n"), /cleanup deferred/);
+		assert.equal(await exists(paths.backup), false, "open backup must be removed first");
+		assert.equal(await exists(paths.primary), true, "closed primary remains as the stale-writer fence");
+		assert.equal(await store.flushProgress(run, snapshot("late")), undefined);
 	});
 
 	it("treats post-commit cleanup failure as terminal canonical truth and later sweeps the orphan", async () => {
@@ -185,6 +254,24 @@ describe("exact-incarnation progress sidecars", () => {
 		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.id, run.id);
 	});
 
+	it("cleanup removes only proven terminal/missing/malformed entries and never age-evicts active or unclassifiable files", async () => {
+		const { backend, store } = await makeStore("cleanup");
+		const active = await createRunning(store);
+		const activePaths = backend.progress.paths({ id: active.id, incarnation_id: active.incarnation_id! });
+		const old = new Date("2000-01-01T00:00:00.000Z");
+		await fs.utimes(activePaths.primary, old, old);
+		const unknown = path.join(backend.progress.root, "operator-note.keep");
+		await fs.writeFile(unknown, "unclassifiable", { mode: 0o600 });
+		const orphanRef = { id: "run-missing", incarnation_id: "inc-missing" };
+		const orphanPaths = backend.progress.paths(orphanRef);
+		const orphan: ProgressEnvelope = { version: 1, namespace: store.namespaceId, run_id: orphanRef.id, incarnation_id: orphanRef.incarnation_id, state: "open", sequence: 0, progress: null, updated_at: new Date().toISOString() };
+		await fs.writeFile(orphanPaths.primary, JSON.stringify(orphan), { mode: 0o600 });
+		await store.cleanupProgressArtifacts();
+		assert.equal(await exists(activePaths.primary), true, "old active authority must survive cleanup");
+		assert.equal(await exists(unknown), true, "unclassifiable entries must survive cleanup");
+		assert.equal(await exists(orphanPaths.primary), false, "canonically missing exact entry is proven stale");
+	});
+
 	it("serializes concurrent workers under one namespace lock without cross-writing", async () => {
 		const { store } = await makeStore("concurrent");
 		const runs = (await store.mutate((ledger) => Array.from({ length: 12 }, (_, index) => ledger.create({ objective: `worker-${index}` })))).result;
@@ -192,6 +279,18 @@ describe("exact-incarnation progress sidecars", () => {
 		const loaded = (await store.query((ledger) => runs.map((run) => ledger.get(run.id)))).result;
 		for (const [index, run] of loaded.entries()) assert.match(run?.progress?.activity ?? "", new RegExp(`^${index}:`));
 	});
+
+	it("serializes independent processes without crossing exact run identities", async () => {
+		const { backend, store } = await makeStore("multiprocess");
+		const runs = (await store.mutate((ledger) => [ledger.create({ objective: "process-a" }), ledger.create({ objective: "process-b" })])).result;
+		await Promise.all(runs.flatMap((run, index) => ["a", "b"].map((processLabel) => flushInChild(backend.location.runsPath, run, `process-${index}-${processLabel}`))));
+		const loaded = (await store.query((ledger) => runs.map((run) => ledger.get(run.id)))).result;
+		for (const [index, run] of loaded.entries()) assert.match(run?.progress?.activity ?? "", new RegExp(`^process-${index}-[ab]:`));
+		for (const run of runs) {
+			const primary = JSON.parse(await fs.readFile(backend.progress.paths({ id: run.id, incarnation_id: run.incarnation_id! }).primary, "utf8")) as ProgressEnvelope;
+			assert.deepEqual([primary.run_id, primary.incarnation_id], [run.id, run.incarnation_id]);
+		}
+	}, 20_000);
 
 	it("keeps flush canonical work at zero and sidecar bytes bounded for small and large ledgers", async () => {
 		const small = await assertFlushHasZeroCanonicalIo(1);

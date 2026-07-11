@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
+import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { isActiveLionStatus, LION_PROGRESS_EVENTS, MAX_ACTIVE_TOOL_NAME_CHARS, MAX_ACTIVE_TOOL_NAMES, type LionProgressSnapshot, type LionRun } from "./schema.ts";
 import type { LionLedger } from "./store.ts";
@@ -61,6 +62,11 @@ function boundedWarning(message: string): string { return message.slice(0, MAX_W
 function pushWarning(warnings: string[], message: string): void { if (warnings.length < MAX_WARNINGS) warnings.push(boundedWarning(message)); }
 function byteLength(value: unknown): number { return Buffer.byteLength(JSON.stringify(value)); }
 function isObject(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null; }
+function isIsoTimestamp(value: unknown): value is string {
+	if (typeof value !== "string") return false;
+	const parsed = Date.parse(value);
+	return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
 
 function validateProgress(value: unknown): value is LionProgressSnapshot {
 	if (!isObject(value) || byteLength(value) > MAX_PROGRESS_SNAPSHOT_BYTES) return false;
@@ -72,7 +78,7 @@ function validateProgress(value: unknown): value is LionProgressSnapshot {
 		&& typeof value.turn_count === "number" && Number.isSafeInteger(value.turn_count) && value.turn_count >= 0
 		&& (value.token_total === null || value.token_total === undefined || (typeof value.token_total === "number" && Number.isSafeInteger(value.token_total) && value.token_total >= 0))
 		&& (value.last_text === null || value.last_text === undefined || (typeof value.last_text === "string" && value.last_text.length <= 1_000))
-		&& typeof value.last_event_at === "string";
+		&& isIsoTimestamp(value.last_event_at);
 }
 
 function parseEnvelope(raw: Buffer, namespace: string, ref?: ExactRef): ProgressEnvelope {
@@ -86,7 +92,7 @@ function parseEnvelope(raw: Buffer, namespace: string, ref?: ExactRef): Progress
 	if (value.state !== "open" && value.state !== "closed") throw new Error("invalid authority state");
 	if (typeof value.sequence !== "number" || !Number.isSafeInteger(value.sequence) || value.sequence < 0) throw new Error("invalid sequence");
 	if (value.progress !== null && !validateProgress(value.progress)) throw new Error("invalid or oversized progress snapshot");
-	if (typeof value.updated_at !== "string") throw new Error("invalid updated_at");
+	if (!isIsoTimestamp(value.updated_at)) throw new Error("invalid updated_at");
 	return value as unknown as ProgressEnvelope;
 }
 
@@ -107,15 +113,16 @@ async function fsyncDirectory(dir: string): Promise<void> {
 async function atomicWrite(filePath: string, data: Buffer): Promise<void> {
 	const tmp = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
 	await assertNotSymlink(filePath);
-	const handle = await fs.open(tmp, "wx", 0o600);
-	try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
+	let renamed = false;
 	try {
+		const handle = await fs.open(tmp, "wx", 0o600);
+		try { await handle.writeFile(data); await handle.sync(); } finally { await handle.close(); }
 		await fs.rename(tmp, filePath);
+		renamed = true;
 		await fs.chmod(filePath, 0o600);
 		await fsyncDirectory(path.dirname(filePath));
-	} catch (error) {
-		await fs.unlink(tmp).catch(() => undefined);
-		throw error;
+	} finally {
+		if (!renamed) await fs.unlink(tmp).catch(() => undefined);
 	}
 }
 
@@ -154,6 +161,7 @@ export class ProgressSnapshotStore {
 				return undefined;
 			}
 			if (latest.candidate.envelope.state !== "open") return undefined;
+			if (latest.candidate.envelope.sequence >= Number.MAX_SAFE_INTEGER) throw new ProgressSidecarError(`progress sequence exhausted for ${ref.id}/${ref.incarnation_id}`);
 			const next: ProgressEnvelope = { ...latest.candidate.envelope, state: "open", sequence: latest.candidate.envelope.sequence + 1, progress, updated_at: new Date().toISOString() };
 			await this.replaceUnlocked(exact, next, latest.candidate);
 			return progress;
@@ -183,6 +191,7 @@ export class ProgressSnapshotStore {
 		await this.quarantineInvalidUnlocked(latest.invalid);
 		if (!latest.candidate) return { progress: null, warnings: latest.warnings };
 		if (latest.candidate.envelope.state === "closed") return { progress: latest.candidate.envelope.progress, warnings: latest.warnings };
+		if (latest.candidate.envelope.sequence >= Number.MAX_SAFE_INTEGER) throw new ProgressSidecarError(`progress sequence exhausted for ${ref.id}/${ref.incarnation_id}`);
 		const closed: ProgressEnvelope = { ...latest.candidate.envelope, state: "closed", sequence: latest.candidate.envelope.sequence + 1, updated_at: new Date().toISOString() };
 		await this.replaceUnlocked(ref, closed, latest.candidate);
 		return { progress: closed.progress, warnings: latest.warnings };
@@ -200,21 +209,27 @@ export class ProgressSnapshotStore {
 	}
 
 	async removeExactUnlocked(ref: ExactRef): Promise<void> {
+		if (!await this.assertSafeRootUnlocked()) return;
 		const { primary, backup } = this.paths(ref);
-		for (const filePath of [primary, backup]) {
-			await assertNotSymlink(filePath);
-			await fs.unlink(filePath).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
+		// The backup may contain the previous open envelope while the primary is
+		// closed. Remove it first so an interrupted cleanup can only leave the
+		// closed fence behind; a stale writer must never regain open authority.
+		for (const filePath of [backup, primary]) {
+			await this.assertSafeRootUnlocked();
+			await this.unlinkArtifactUnlocked(filePath);
 		}
-		await fsyncDirectory(this.root).catch(() => undefined);
+		await fsyncDirectory(this.root);
+	}
+
+	private async unlinkArtifactUnlocked(filePath: string): Promise<void> {
+		await assertNotSymlink(filePath);
+		await fs.unlink(filePath).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
 	}
 
 	async cleanupUnlocked(ledger: LionLedger, canonicalCertain = true): Promise<string[]> {
 		if (!canonicalCertain) return ["lion progress cleanup skipped because canonical run classification is uncertain"];
-		let names: string[];
-		try { names = await fs.readdir(this.root); } catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-			throw error;
-		}
+		if (!await this.assertSafeRootUnlocked()) return [];
+		const names = await fs.readdir(this.root);
 		const warnings: string[] = [];
 		for (const name of names) {
 			if (!/^[a-f0-9]{64}\.(json|bak)$/.test(name)) continue;
@@ -227,9 +242,16 @@ export class ProgressSnapshotStore {
 				continue;
 			}
 			if (!candidate) continue;
+			const expectedHash = progressSidecarHash(this.namespace, candidate.envelope.run_id, candidate.envelope.incarnation_id);
+			if (!name.startsWith(`${expectedHash}.`)) {
+				pushWarning(warnings, `misplaced LION progress sidecar ${name} did not match its envelope identity`);
+				await this.quarantineInvalidUnlocked([{ filePath, reason: "filename/envelope identity mismatch" }]);
+				continue;
+			}
 			const run = ledger.get(candidate.envelope.run_id);
 			const exactActive = run && isActiveLionStatus(run.status) && run.incarnation_id === candidate.envelope.incarnation_id;
 			if (exactActive) continue;
+			await this.assertSafeRootUnlocked();
 			await fs.unlink(filePath).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
 		}
 		await this.boundQuarantineUnlocked();
@@ -239,20 +261,23 @@ export class ProgressSnapshotStore {
 
 	private async ensureRootUnlocked(): Promise<void> {
 		await fs.mkdir(this.root, { recursive: true, mode: 0o700 });
-		await assertNotSymlink(this.root);
-		const stat = await fs.lstat(this.root);
-		if (!stat.isDirectory()) throw new ProgressSidecarError(`progress sidecar root is not a directory: ${this.root}`);
+		if (!await this.assertSafeRootUnlocked()) throw new ProgressSidecarError(`progress sidecar root disappeared: ${this.root}`);
 		await fs.chmod(this.root, 0o700);
 	}
 
-	private async readLatestExactUnlocked(ref: ExactRef): Promise<LatestResult> {
+	private async assertSafeRootUnlocked(): Promise<boolean> {
 		try {
-			const rootStat = await fs.lstat(this.root);
-			if (rootStat.isSymbolicLink() || !rootStat.isDirectory()) throw new ProgressSidecarError(`lion progress sidecar rejects unsafe root ${this.root}`);
+			const stat = await fs.lstat(this.root);
+			if (stat.isSymbolicLink() || !stat.isDirectory()) throw new ProgressSidecarError(`lion progress sidecar rejects unsafe root ${this.root}`);
+			return true;
 		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ENOENT") return { warnings: [], invalid: [] };
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 			throw error;
 		}
+	}
+
+	private async readLatestExactUnlocked(ref: ExactRef): Promise<LatestResult> {
+		if (!await this.assertSafeRootUnlocked()) return { warnings: [], invalid: [] };
 		const { primary, backup } = this.paths(ref);
 		const candidates: Candidate[] = [];
 		const invalid: Array<{ filePath: string; reason: string }> = [];
@@ -272,10 +297,19 @@ export class ProgressSnapshotStore {
 	}
 
 	private async readCandidate(filePath: string, kind: "primary" | "backup", ref?: ExactRef): Promise<Candidate | undefined> {
-		await assertNotSymlink(filePath);
-		let raw: Buffer;
-		try { raw = await fs.readFile(filePath); }
+		let handle: fs.FileHandle;
+		try { handle = await fs.open(filePath, fsSync.constants.O_RDONLY | fsSync.constants.O_NOFOLLOW); }
 		catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+		let raw: Buffer;
+		try {
+			const stat = await handle.stat();
+			if (!stat.isFile()) throw new ProgressSidecarError(`sidecar artifact is not a regular file: ${filePath}`);
+			if (stat.size > MAX_PROGRESS_ENVELOPE_BYTES) throw new ProgressSidecarError(`envelope exceeds ${MAX_PROGRESS_ENVELOPE_BYTES} bytes`);
+			const bounded = Buffer.alloc(MAX_PROGRESS_ENVELOPE_BYTES + 1);
+			const { bytesRead } = await handle.read(bounded, 0, bounded.byteLength, 0);
+			if (bytesRead > MAX_PROGRESS_ENVELOPE_BYTES) throw new ProgressSidecarError(`envelope exceeds ${MAX_PROGRESS_ENVELOPE_BYTES} bytes`);
+			raw = Buffer.from(bounded.subarray(0, bytesRead));
+		} finally { await handle.close(); }
 		this.counters.sidecar_reads++;
 		this.counters.sidecar_bytes_read += raw.byteLength;
 		return { envelope: parseEnvelope(raw, this.namespace, ref), raw, filePath, kind };
@@ -286,6 +320,7 @@ export class ProgressSnapshotStore {
 		if (raw.byteLength > MAX_PROGRESS_ENVELOPE_BYTES) throw new ProgressSidecarError(`progress envelope exceeds ${MAX_PROGRESS_ENVELOPE_BYTES} bytes`);
 		await this.ensureRootUnlocked();
 		const { primary, backup } = this.paths(ref);
+		await this.assertReplacementCapacityUnlocked(primary, backup, raw.byteLength, previous.raw.byteLength);
 		await atomicWrite(backup, previous.raw);
 		this.counters.sidecar_backups++;
 		this.counters.sidecar_bytes_written += previous.raw.byteLength;
@@ -317,8 +352,10 @@ export class ProgressSnapshotStore {
 	}
 
 	private async boundQuarantineUnlocked(): Promise<void> {
-		let names: string[];
-		try { names = await fs.readdir(this.quarantineRoot); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+		let quarantineStat: Awaited<ReturnType<typeof fs.lstat>>;
+		try { quarantineStat = await fs.lstat(this.quarantineRoot); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+		if (quarantineStat.isSymbolicLink() || !quarantineStat.isDirectory()) throw new ProgressSidecarError(`lion progress sidecar rejects unsafe quarantine ${this.quarantineRoot}`);
+		const names = await fs.readdir(this.quarantineRoot);
 		const entries = (await Promise.all(names.map(async (name) => {
 			const filePath = path.join(this.quarantineRoot, name);
 			try { const stat = await fs.lstat(filePath); return { filePath, mtime: stat.mtimeMs, size: stat.isFile() ? stat.size : 0 }; } catch { return null; }
@@ -327,6 +364,30 @@ export class ProgressSnapshotStore {
 		for (let index = 0; index < entries.length; index++) {
 			bytes += entries[index]!.size;
 			if (index >= MAX_QUARANTINE_FILES || bytes > MAX_QUARANTINE_BYTES) await fs.unlink(entries[index]!.filePath).catch(() => undefined);
+		}
+	}
+
+	private async assertReplacementCapacityUnlocked(primary: string, backup: string, primaryBytes: number, backupBytes: number): Promise<void> {
+		const names = await fs.readdir(this.root);
+		let files = 0;
+		let bytes = 0;
+		let oldPrimary = 0;
+		let oldBackup = 0;
+		for (const name of names) {
+			const filePath = path.join(this.root, name);
+			try {
+				const stat = await fs.lstat(filePath);
+				if (!stat.isFile()) continue;
+				files++;
+				bytes += stat.size;
+				if (filePath === primary) oldPrimary = stat.size;
+				if (filePath === backup) oldBackup = stat.size;
+			} catch { /* capacity checks fail conservatively below when classified bytes are already full */ }
+		}
+		const projectedFiles = files + (oldPrimary ? 0 : 1) + (oldBackup ? 0 : 1);
+		const projectedBytes = bytes - oldPrimary - oldBackup + primaryBytes + backupBytes;
+		if (projectedFiles > MAX_SIDECAR_FILES || projectedBytes > MAX_SIDECAR_STORAGE_BYTES) {
+			throw new ProgressSidecarError("progress sidecar capacity reached; classification cleanup is required before accepting more progress");
 		}
 	}
 
