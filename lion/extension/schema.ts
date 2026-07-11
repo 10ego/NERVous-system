@@ -105,6 +105,15 @@ export const LION_CANCEL_DELIVERY_STATUSES = [
 ] as const;
 export type LionCancelDeliveryStatus = (typeof LION_CANCEL_DELIVERY_STATUSES)[number];
 
+export interface LionCleanupPendingObservation {
+	/** Exact durable observation only; never process-control or signaling authority. */
+	observed_at: string;
+	incarnation_id: string | null;
+	pid: number;
+	pgid: number | null;
+	process_identity: string | null;
+}
+
 export interface LionControlState {
 	pid?: number | null;
 	pgid?: number | null;
@@ -119,6 +128,8 @@ export interface LionControlState {
 	cancel_delivered_at?: string | null;
 	cancel_delivery_error?: string | null;
 	reconciled_at?: string | null;
+	/** Persisted before cleanup handoff so restart reconciliation fails closed. */
+	cleanup_pending?: LionCleanupPendingObservation | null;
 }
 
 export const LION_STEERING_STATUSES = [

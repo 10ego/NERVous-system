@@ -13,7 +13,7 @@ import { createProgressUpdater, emitLionEvent, startedProgress, terminalEventKin
 import { resolveConfiguredLionModel, resolveLionRunnerMode } from "./options.ts";
 import { createLionRunner, getProcessIdentity, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
-import { finalizeExactLionRun, registerLionCleanupSupervisor, type LionTerminalIntent } from "./cleanup-supervisor.ts";
+import { finalizeExactLionRun, persistCleanupPendingObservation, registerLionCleanupSupervisor, type LionTerminalIntent } from "./cleanup-supervisor.ts";
 import { persistBatchedProgress } from "./progress-batcher.ts";
 import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunRefs, isActiveRunAttached, isActiveRunOwner, markActiveRunControlClosed, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
@@ -120,18 +120,21 @@ export async function executeRun(args: {
 		const out = await runner({
 			run,
 			cleanupOwner: activeOwner,
-			registerCleanupSupervisor: (handoff) => registerLionCleanupSupervisor({
-				owner: activeOwner,
-				handoff,
-				finalize: async (intent, cleanupError) => {
-					await progressUpdater.drain();
-					return finalizeExactLionRun(args.store, activeOwner, await terminalFinishInput(args.store, activeOwner, intent, cleanupError, args.signal?.aborted));
-				},
-				emitTerminal: (settlement) => {
-					if (settlement.disposition === "terminal") emitLionEvent(args.pi, terminalEventKind(settlement.run.status as import("./schema.ts").TerminalLionRunStatus), settlement.run);
-				},
-				releaseOwner: () => finishActiveRun(activeOwner),
-			}),
+			registerCleanupSupervisor: async (handoff) => {
+				run = await persistCleanupPendingObservation(args.store, activeOwner, handoff);
+				return registerLionCleanupSupervisor({
+					owner: activeOwner,
+					handoff,
+					finalize: async (intent, cleanupError) => {
+						await progressUpdater.drain();
+						return finalizeExactLionRun(args.store, activeOwner, await terminalFinishInput(args.store, activeOwner, intent, cleanupError, args.signal?.aborted));
+					},
+					emitTerminal: (settlement) => {
+						if (settlement.disposition === "terminal") emitLionEvent(args.pi, terminalEventKind(settlement.run.status as import("./schema.ts").TerminalLionRunStatus), settlement.run);
+					},
+					releaseOwner: () => finishActiveRun(activeOwner),
+				});
+			},
 			signal: args.signal,
 			timeout_ms: args.timeout_ms ?? DEFAULT_TIMEOUT_MS,
 			include_progress_text: args.include_progress_text,

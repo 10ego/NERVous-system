@@ -131,6 +131,33 @@ describe("LionLedger", () => {
 		assert.equal(l.reconcileControls(() => true, { now_ms: Date.parse(legacy.started_at) + 60_000, stale_after_ms: 1, get_process_identity: (pid) => pid === 4343 ? "boot-a:start-3" : "boot-a:start-other" }).length, 0);
 	});
 
+	it("fails closed for a cleanup-pending observation after registry loss until exit is proven", () => {
+		const l = new LionLedger();
+		const run = l.create({ objective: "cleanup pending restart", runner_mode: "rpc" });
+		l.updateControl(run.id, {
+			pid: 4545,
+			process_identity: "boot-a:start-cleanup",
+			last_seen_at: run.started_at,
+			cleanup_pending: {
+				observed_at: run.started_at,
+				incarnation_id: run.incarnation_id ?? null,
+				pid: 4545,
+				pgid: null,
+				process_identity: "boot-a:start-cleanup",
+			},
+		});
+		const afterRestart = Date.parse(run.started_at) + 60_000;
+		assert.equal(l.reconcileControls(() => true, {
+			now_ms: afterRestart,
+			stale_after_ms: 1,
+			active_run_refs: [],
+			get_process_identity: () => null,
+		}).length, 0);
+		assert.equal(l.get(run.id)?.status, "running");
+		const exited = l.reconcileControls(() => false, { now_ms: afterRestart, stale_after_ms: 1, active_run_refs: [] });
+		assert.equal(exited[0]?.status, "failed");
+	});
+
 	it("reconciles a stale ownerless running run without process metadata", () => {
 		const l = new LionLedger();
 		const run = l.create({ objective: "lost before attach" });

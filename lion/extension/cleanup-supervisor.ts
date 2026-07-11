@@ -36,6 +36,47 @@ export interface LionFinalizationStore {
 }
 
 /**
+ * Durably records the exact cleanup-pending process observation before the
+ * foreground owner may hand authority to the process-local supervisor.
+ * Persisted metadata remains observational and grants no restart authority.
+ */
+export async function persistCleanupPendingObservation(
+	store: LionFinalizationStore,
+	owner: ActiveRunOwner,
+	handoff: LionCleanupHandoff,
+): Promise<LionRun> {
+	if (handoff.namespaceId !== owner.namespaceId
+		|| handoff.runId !== owner.runId
+		|| (handoff.incarnationId ?? null) !== (owner.incarnationId ?? null)
+		|| handoff.ownerId !== owner.ownerId
+		|| !Number.isSafeInteger(handoff.process.pid)
+		|| handoff.process.pid <= 0) {
+		throw new Error("cleanup-pending observation does not match the exact active owner");
+	}
+	const observation = {
+		observed_at: new Date().toISOString(),
+		incarnation_id: owner.incarnationId ?? null,
+		pid: handoff.process.pid,
+		pgid: handoff.process.pgid,
+		process_identity: handoff.process.process_identity ?? null,
+	};
+	const { result } = await store.mutate((ledger) => ledger.updateControlIfCurrent(owner.runId, owner.incarnationId, {
+		pid: observation.pid,
+		pgid: observation.pgid,
+		process_identity: observation.process_identity,
+		cleanup_pending: observation,
+	}));
+	const persisted = result.run?.control?.cleanup_pending;
+	if (!result.committed || !result.run
+		|| persisted?.observed_at !== observation.observed_at
+		|| persisted.pid !== observation.pid
+		|| (persisted.incarnation_id ?? null) !== (owner.incarnationId ?? null)) {
+		throw new Error(`cleanup-pending observation persistence was superseded for ${owner.runId}/${owner.incarnationId ?? "null"}`);
+	}
+	return result.run;
+}
+
+/**
  * One exact-incarnation finalization attempt with authoritative-read handling.
  * Ambiguous writes that actually committed are accepted; active exact records
  * retry, and replacements are fenced without mutation.

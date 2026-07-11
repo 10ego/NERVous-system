@@ -66,7 +66,7 @@ describe("lion extension factory", () => {
 			runner: async (request) => {
 				const processInfo = { pid: 303, pgid: null, isAlive: () => alive, cancel: () => true };
 				request.onProcessStart?.(processInfo);
-				const accepted = request.registerCleanupSupervisor?.({
+				const accepted = await request.registerCleanupSupervisor?.({
 					namespaceId: owner.namespaceId,
 					runId: owner.runId,
 					incarnationId: owner.incarnationId ?? null,
@@ -83,6 +83,8 @@ describe("lion extension factory", () => {
 		});
 		assert.match(result.content[0]!.text, /cleanup_pending/);
 		assert.equal(result.details.run?.status, "running");
+		assert.equal(result.details.run?.control?.cleanup_pending?.pid, 303);
+		assert.equal(result.details.run?.control?.cleanup_pending?.incarnation_id, run.incarnation_id);
 		assert.deepEqual(getActiveRunIds(store.namespaceId), [run.id]);
 		alive = false;
 		exit();

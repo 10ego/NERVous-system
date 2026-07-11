@@ -186,7 +186,7 @@ describe("createLionAdapter", () => {
 			const processInfo = { pid: 404, pgid: null, isAlive: () => alive, cancel: () => true };
 			request.onProcessStart?.(processInfo);
 			controller.abort();
-			const accepted = request.registerCleanupSupervisor?.({
+			const accepted = await request.registerCleanupSupervisor?.({
 				namespaceId: request.cleanupOwner!.namespaceId,
 				runId: request.run.id,
 				incarnationId: request.run.incarnation_id ?? null,

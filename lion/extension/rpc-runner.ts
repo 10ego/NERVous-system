@@ -596,7 +596,7 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 					? { kind: "error", error: sanitizeRpcError(stopError) }
 					: { kind: "result", output: operationOutput ?? { text: "", report: null } };
 			try {
-				cleanupPending = req.registerCleanupSupervisor({
+				cleanupPending = await req.registerCleanupSupervisor({
 					namespaceId: exactCleanupOwner.namespaceId,
 					runId: exactCleanupOwner.runId,
 					incarnationId: exactCleanupOwner.incarnationId ?? null,

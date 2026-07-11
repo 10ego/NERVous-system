@@ -350,23 +350,26 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				return runner({
 					run,
 					cleanupOwner: activeOwner,
-					registerCleanupSupervisor: (handoff) => cleanupSupervisorMod.registerLionCleanupSupervisor({
-						owner: activeOwner,
-						handoff,
-						finalize: async (intent, cleanupError) => cleanupSupervisorMod.finalizeExactLionRun(
-							lionStore,
-							activeOwner,
-							await lateTerminalFinishInput(lionStore, activeOwner, intent, cleanupError, Boolean((runSignal ?? signal)?.aborted)),
-						),
-						emitTerminal: (settlement) => {
-							if (settlement.disposition === "terminal") lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(settlement.run.status as import("@nervous-system/lion/extension/schema.ts").TerminalLionRunStatus), settlement.run);
-						},
-						onSettled: async (settlement) => { await onCleanupSettled?.(settlement); },
-						releaseOwner: () => {
-							activeRuns.finishActiveRun(activeOwner);
-							activeOwners.delete(run.id);
-						},
-					}),
+					registerCleanupSupervisor: async (handoff) => {
+						await cleanupSupervisorMod.persistCleanupPendingObservation(lionStore, activeOwner, handoff);
+						return cleanupSupervisorMod.registerLionCleanupSupervisor({
+							owner: activeOwner,
+							handoff,
+							finalize: async (intent, cleanupError) => cleanupSupervisorMod.finalizeExactLionRun(
+								lionStore,
+								activeOwner,
+								await lateTerminalFinishInput(lionStore, activeOwner, intent, cleanupError, Boolean((runSignal ?? signal)?.aborted)),
+							),
+							emitTerminal: (settlement) => {
+								if (settlement.disposition === "terminal") lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(settlement.run.status as import("@nervous-system/lion/extension/schema.ts").TerminalLionRunStatus), settlement.run);
+							},
+							onSettled: async (settlement) => { await onCleanupSettled?.(settlement); },
+							releaseOwner: () => {
+								activeRuns.finishActiveRun(activeOwner);
+								activeOwners.delete(run.id);
+							},
+						});
+					},
 					signal: runSignal ?? signal,
 					timeout_ms: timeoutMs,
 					onProcessStart: (info) => {

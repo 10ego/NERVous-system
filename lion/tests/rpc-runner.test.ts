@@ -401,6 +401,35 @@ describe("createLionRpcRunner", () => {
 		await assert.rejects(() => promise, /stop boom/);
 	});
 
+	it("retains foreground supervision when durable cleanup observation persistence fails", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		const run = (await store.mutate((ledger) => ledger.create({ objective: "handoff persistence failure", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-persistence-failure" };
+		let registrations = 0;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: owner,
+			registerCleanupSupervisor: async () => {
+				registrations++;
+				throw new Error("durable cleanup marker write failed");
+			},
+		});
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await until(() => registrations === 1);
+		let settled = false;
+		void promise.finally(() => { settled = true; }).catch(() => undefined);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(settled, false);
+		assert.equal(fake.alive, true);
+		fake.exit();
+		await assert.rejects(() => promise, /stop boom/);
+	});
+
 	it("bounds a prompt that never acknowledges by the session timeout", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();

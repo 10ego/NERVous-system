@@ -460,6 +460,16 @@ export class LionLedger {
 			if (active.has(JSON.stringify([r.id, r.incarnation_id ?? null]))) continue;
 			if (!isReconcileStale(r, nowMs, staleAfterMs)) continue;
 			const pid = r.control?.pid;
+			const pending = r.control?.cleanup_pending;
+			if (pending) {
+				// A cleanup handoff was durably observed. Any missing or inconsistent
+				// observation fails closed; persisted metadata grants no authority to
+				// signal or reattach, and absence of proof is never proof of exit.
+				if ((pending.incarnation_id ?? null) !== (r.incarnation_id ?? null)
+					|| typeof pid !== "number"
+					|| pending.pid !== pid
+					|| (pending.process_identity ?? null) !== (r.control?.process_identity ?? null)) continue;
+			}
 			if (typeof pid === "number" && isAlive(pid)) {
 				const expectedIdentity = r.control?.process_identity;
 				const observedIdentity = expectedIdentity && options.get_process_identity ? options.get_process_identity(pid) : null;
@@ -723,6 +733,23 @@ function coerceControl(value: unknown): LionControlState | null {
 		cancel_delivered_at: typeof value.cancel_delivered_at === "string" ? value.cancel_delivered_at : null,
 		cancel_delivery_error: typeof value.cancel_delivery_error === "string" ? value.cancel_delivery_error : null,
 		reconciled_at: typeof value.reconciled_at === "string" ? value.reconciled_at : null,
+		cleanup_pending: coerceCleanupPendingObservation(value.cleanup_pending),
+	};
+}
+
+function coerceCleanupPendingObservation(value: unknown): import("./schema.ts").LionCleanupPendingObservation | null {
+	if (!isObject(value)
+		|| typeof value.observed_at !== "string"
+		|| !(typeof value.incarnation_id === "string" || value.incarnation_id === null)
+		|| typeof value.pid !== "number"
+		|| !Number.isSafeInteger(value.pid)
+		|| value.pid <= 0) return null;
+	return {
+		observed_at: value.observed_at,
+		incarnation_id: value.incarnation_id,
+		pid: value.pid,
+		pgid: typeof value.pgid === "number" ? Math.floor(value.pgid) : null,
+		process_identity: typeof value.process_identity === "string" ? value.process_identity : null,
 	};
 }
 

@@ -51,7 +51,7 @@ export interface LionRunRequest {
 	 * Atomically transfers an attached live RPC child and terminal intent to a
 	 * process-local supervisor. False/throw retains the foreground wait.
 	 */
-	registerCleanupSupervisor?: (handoff: import("./cleanup-supervisor.ts").LionCleanupHandoff) => boolean;
+	registerCleanupSupervisor?: (handoff: import("./cleanup-supervisor.ts").LionCleanupHandoff) => boolean | Promise<boolean>;
 	/** Exact existing process-local capability transferred with a cleanup handoff. */
 	cleanupOwner?: import("./active-runs.ts").ActiveRunOwner;
 }
