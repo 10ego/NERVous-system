@@ -75,6 +75,8 @@ export interface LionCleanupSupervisorRegistration {
 	handoff: LionCleanupHandoff;
 	/** Exact-incarnation finalization. Throwing requests an idempotent retry. */
 	finalize(intent: LionTerminalIntent, cleanupError?: Error): Promise<LionCleanupFinalization>;
+	/** Emits the process-local terminal event once; it is never retried. */
+	emitTerminal?(result: LionCleanupFinalization): void;
 	/** Late orchestration/capacity settlement. Throwing requests an idempotent retry. */
 	onSettled?(result: LionCleanupFinalization): Promise<void> | void;
 	/** Releases the exact process-local owner only after all settlement succeeds. */
@@ -121,18 +123,18 @@ export function registerLionCleanupSupervisor(registration: LionCleanupSuperviso
 
 async function supervise(entry: SupervisorEntry): Promise<void> {
 	try {
-		await entry.handoff.waitForExit();
-		let cleanupError: Error | undefined;
-		try { await entry.handoff.cleanup(); }
-		catch (error) { cleanupError = asError(error); }
+		await retry(entry, async () => {
+			await entry.handoff.waitForExit();
+			if (entry.handoff.isAlive()) throw new Error("cleanup child remains alive after exit observation");
+		});
+		await retry(entry, entry.handoff.cleanup);
 
-		const finalized = await retry(entry, () => entry.finalize(entry.handoff.terminalIntent, cleanupError));
+		const finalized = await retry(entry, () => entry.finalize(entry.handoff.terminalIntent));
 		if (!entry.settlementEmitted) {
-			await retry(entry, async () => {
-				await entry.onSettled?.(finalized);
-				entry.settlementEmitted = true;
-			});
+			try { entry.emitTerminal?.(finalized); }
+			finally { entry.settlementEmitted = true; }
 		}
+		await retry(entry, async () => { await entry.onSettled?.(finalized); });
 		entry.releaseOwner();
 	} finally {
 		// Exact-key deletion cannot remove a replacement owner/supervisor.
@@ -154,10 +156,6 @@ function delay(ms: number): Promise<void> {
 		const timer = setTimeout(resolve, Math.max(0, ms));
 		timer.unref?.();
 	});
-}
-
-function asError(error: unknown): Error {
-	return error instanceof Error ? error : new Error(String(error));
 }
 
 export function hasLionCleanupSupervisor(owner: ActiveRunOwner): boolean {

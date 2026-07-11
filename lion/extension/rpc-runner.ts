@@ -331,7 +331,13 @@ class RpcProcessLifecycle {
 
 	async waitForConfirmedExit(): Promise<void> {
 		while (this.isAlive()) {
-			if (this.rawExit) { await this.rawExit; break; }
+			if (this.rawExit) {
+				try { await this.rawExit; }
+				catch { /* fall back to the attached handle; never infer exit from rejection */ }
+				if (!this.isAlive()) break;
+				this.rawExit = null;
+				continue;
+			}
 			await new Promise((resolve) => setTimeout(resolve, 25));
 		}
 		this.exited = true;

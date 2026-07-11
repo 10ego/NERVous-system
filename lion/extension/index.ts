@@ -127,7 +127,7 @@ export async function executeRun(args: {
 					await progressUpdater.drain();
 					return finalizeExactLionRun(args.store, activeOwner, await terminalFinishInput(args.store, activeOwner, intent, cleanupError));
 				},
-				onSettled: async (settlement) => {
+				emitTerminal: (settlement) => {
 					if (settlement.disposition === "terminal") emitLionEvent(args.pi, terminalEventKind(settlement.run.status as import("./schema.ts").TerminalLionRunStatus), settlement.run);
 				},
 				releaseOwner: () => finishActiveRun(activeOwner),

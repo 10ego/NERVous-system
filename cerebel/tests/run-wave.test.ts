@@ -121,6 +121,60 @@ describe("runWave", () => {
 		);
 	});
 
+	it("returns cleanup_pending with assignment/capacity retained, then records one late exact settlement", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((ledger) => ledger.planWave({
+			max_parallel: 1,
+			assignments: [{ agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }],
+		}))).result;
+		const adapter = fakeAdapter({});
+		let lateSettlement: ((settlement: import("../../lion/extension/cleanup-supervisor.ts").LionCleanupFinalization) => Promise<void>) | undefined;
+		let foregroundFinishes = 0;
+		adapter.run = async (run, _assignment, _progress, _signal, onCleanupSettled) => {
+			lateSettlement = onCleanupSettled;
+			return { settlement: "cleanup_pending", run_id: run.id, incarnation_id: run.incarnation_id ?? null, owner_id: "owner-001" };
+		};
+		adapter.finishRun = async () => { foregroundFinishes++; throw new Error("foreground must not finalize cleanup_pending"); };
+		const lateResults: string[] = [];
+		let lateAttempts = 0;
+		const result = await runWave(store, adapter, {
+			wave_id: wave.id,
+			onLateSettlement: async (late, lateWaveId) => {
+				lateAttempts++;
+				if (lateAttempts === 1) throw new Error("transient capacity persistence failure");
+				lateResults.push(`${lateWaveId}:${late.outcome}`);
+			},
+		});
+		assert.equal(result.assignment_results[0]?.outcome, "cleanup_pending");
+		assert.equal(result.wave.assignments[0]?.status, "dispatched");
+		assert.equal(result.wave.assignments[0]?.ganglion_allocation_id, "alloc-001");
+		assert.equal(foregroundFinishes, 0);
+		assert.ok(lateSettlement);
+		const terminalSettlement = {
+			disposition: "terminal" as const,
+			run: {
+				id: "run-001",
+				incarnation_id: "inc-run-001",
+				agent_id: "lion-a",
+				status: "completed",
+				task_id: null,
+				objective: "A",
+				context: "",
+				started_at: new Date().toISOString(),
+				updated_at: new Date().toISOString(),
+				output: "done",
+				report: completedReport("late done"),
+				error: null,
+			} as LionRun,
+		};
+		await assert.rejects(() => lateSettlement!(terminalSettlement), /transient capacity persistence failure/);
+		await lateSettlement!(terminalSettlement);
+		const settled = (await store.query((ledger) => ledger.get(wave.id))).result!;
+		assert.equal(settled.assignments[0]?.status, "completed");
+		assert.equal(lateAttempts, 2);
+		assert.deepEqual(lateResults, [`${wave.id}:completed`]);
+	});
+
 	it("reserves assignments before creating LION runs", async () => {
 		const store = await tmpStore();
 		const wave = (await store.mutate((l) => l.planWave({ max_parallel: 2, assignments: [{ agent_id: "lion-a", objective: "A" }, { agent_id: "lion-b", objective: "B" }] }))).result;

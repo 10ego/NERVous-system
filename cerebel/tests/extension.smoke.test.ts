@@ -308,6 +308,33 @@ describe("cerebel extension factory", () => {
 		}
 	});
 
+	it("does not release GANGLION capacity for a cleanup_pending run_wave result", async () => {
+		const previous = process.env.GANGLION_PATH;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-pending-ganglion-"));
+		process.env.GANGLION_PATH = path.join(dir, "ganglion.json");
+		try {
+			const store = GanglionStore.fromCwd(dir);
+			await store.mutate((ledger) => {
+				const group = ledger.create({ members: [{ id: "lion-a" }] });
+				ledger.allocate(group.id, { tasks: [{ id: "task-a", title: "A" }] });
+			});
+			const wave = new CerebelLedger().planWave({ assignments: [
+				{ task_id: "task-a", agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" },
+			] });
+			const messages = await recordRunWaveGanglion(dir, {
+				wave,
+				summary: "retained",
+				assignment_results: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001", outcome: "cleanup_pending", summary: "retained", blockers: [] }],
+			});
+			assert.deepEqual(messages, []);
+			const { result: group } = await store.query((ledger) => ledger.get("ganglion-001"));
+			assert.equal(group?.members[0]?.status, "busy");
+			assert.equal(group?.allocations[0]?.status, "assigned");
+		} finally {
+			if (previous === undefined) delete process.env.GANGLION_PATH; else process.env.GANGLION_PATH = previous;
+		}
+	});
+
 	it("batches cancellation reconciliation once per GANGLION with exact provenance and fencing", async () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-cancel-batch-ganglion-"));

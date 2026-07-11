@@ -44,6 +44,7 @@ describe("LION cleanup supervisor", () => {
 		attachActiveRunProcess(owner, { pid: 101, pgid: null, isAlive: () => alive, cancel: () => true });
 		let cleanupCalls = 0;
 		let finalizeCalls = 0;
+		let terminalEmissions = 0;
 		let settlementAttempts = 0;
 		let settlementEmissions = 0;
 		const handoff: LionCleanupHandoff = {
@@ -54,7 +55,7 @@ describe("LION cleanup supervisor", () => {
 			process: { pid: 101, pgid: null, isAlive: () => alive },
 			isAlive: () => alive,
 			waitForExit: () => exit.promise,
-			cleanup: async () => { cleanupCalls++; },
+			cleanup: async () => { cleanupCalls++; if (cleanupCalls === 1) throw new Error("transient temp cleanup failure"); },
 			terminalIntent: { kind: "result", output: { text: "done", report: null } },
 		};
 		assert.equal(registerLionCleanupSupervisor({
@@ -67,6 +68,7 @@ describe("LION cleanup supervisor", () => {
 				assert.equal(intent.kind, "result");
 				return finalizeExactLionRun(store, owner, { output: "done", report: null });
 			},
+			emitTerminal: () => { terminalEmissions++; },
 			onSettled: async () => {
 				settlementAttempts++;
 				if (settlementAttempts === 1) throw new Error("transient CEREBEL write failure");
@@ -81,8 +83,9 @@ describe("LION cleanup supervisor", () => {
 		exit.resolve();
 		await until(() => getActiveRunIds(store.namespaceId).length === 0);
 		assert.equal(store.ledger.get(run.id)?.status, "completed");
-		assert.equal(cleanupCalls, 1);
+		assert.equal(cleanupCalls, 2);
 		assert.equal(finalizeCalls, 2);
+		assert.equal(terminalEmissions, 1);
 		assert.equal(settlementAttempts, 2);
 		assert.equal(settlementEmissions, 1);
 		assert.equal(hasLionCleanupSupervisor(owner), false);

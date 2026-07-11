@@ -6,6 +6,7 @@ import { afterEach, describe, it, vi } from "vitest";
 import { createLionAdapter } from "../extension/index.ts";
 import { LionLedger } from "../../lion/extension/store.ts";
 import * as activeRuns from "../../lion/extension/active-runs.ts";
+import * as cleanupSupervisor from "../../lion/extension/cleanup-supervisor.ts";
 import * as lifecycle from "../../lion/extension/lifecycle.ts";
 import * as options from "../../lion/extension/options.ts";
 import type { Assignment } from "../extension/schema.ts";
@@ -15,6 +16,7 @@ import type { LionRunRequest } from "../../lion/extension/subprocess.ts";
 const report: LionReport = { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] };
 
 afterEach(() => {
+	cleanupSupervisor.clearLionCleanupSupervisorsForTests();
 	activeRuns.clearActiveRunsForTests();
 	vi.restoreAllMocks();
 });
@@ -167,6 +169,57 @@ describe("createLionAdapter", () => {
 		assert.ok(!activeRuns.getActiveRunIds(lionStore.namespaceId).includes(run.id), "owner should be released after finishRun persists final state");
 		assert.equal(ledger.get(run.id)?.status, "completed");
 		activeRuns.clearActiveRunsForTests();
+	});
+
+	it("keeps run_wave ownership and assignment settlement authority in the late cleanup supervisor", async () => {
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "run-wave-cleanup-pending",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		let alive = true;
+		let resolveExit!: () => void;
+		const exited = new Promise<void>((resolve) => { resolveExit = resolve; });
+		const rpcFactory = () => async (request: LionRunRequest) => {
+			const processInfo = { pid: 404, pgid: null, isAlive: () => alive, cancel: () => true };
+			request.onProcessStart?.(processInfo);
+			const accepted = request.registerCleanupSupervisor?.({
+				namespaceId: request.cleanupOwner!.namespaceId,
+				runId: request.run.id,
+				incarnationId: request.run.incarnation_id ?? null,
+				ownerId: request.cleanupOwner!.ownerId,
+				process: processInfo,
+				isAlive: () => alive,
+				waitForExit: () => exited,
+				cleanup: async () => undefined,
+				terminalIntent: { kind: "result", output: { text: "done", report } },
+			});
+			assert.equal(accepted, true);
+			return { settlement: "cleanup_pending" as const, run_id: request.run.id, incarnation_id: request.run.incarnation_id ?? null, owner_id: request.cleanupOwner!.ownerId };
+		};
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave", runner_mode: "rpc" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: rpcFactory, createLionRpcRunner: rpcFactory, activeRuns, cleanupSupervisor },
+		);
+		const run = await adapter.createRun(assignment());
+		let lateSettlements = 0;
+		const outcome = await adapter.run(run, assignment(), () => undefined, undefined, async (settlement) => {
+			assert.equal(settlement.disposition, "terminal");
+			lateSettlements++;
+		});
+		assert.equal("settlement" in outcome ? outcome.settlement : "settled", "cleanup_pending");
+		assert.equal(ledger.get(run.id)?.status, "running");
+		assert.deepEqual(activeRuns.getActiveRunIds(lionStore.namespaceId), [run.id]);
+		alive = false;
+		resolveExit();
+		for (let index = 0; index < 100 && ledger.get(run.id)?.status === "running"; index++) await new Promise((resolve) => setTimeout(resolve, 2));
+		assert.equal(ledger.get(run.id)?.status, "completed");
+		assert.equal(lateSettlements, 1);
+		assert.deepEqual(activeRuns.getActiveRunIds(lionStore.namespaceId), []);
 	});
 
 	it("emits started progress and terminal LION telemetry for run_wave workers", async () => {

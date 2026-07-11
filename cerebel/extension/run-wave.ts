@@ -1,6 +1,8 @@
 /** CEREBEL run_wave orchestration helper. */
 
 import type { LionProgressSnapshot, LionReport, LionRun } from "@nervous-system/lion/extension/schema.ts";
+import type { LionRunnerOutcome } from "@nervous-system/lion/extension/subprocess.ts";
+import type { LionCleanupFinalization } from "@nervous-system/lion/extension/cleanup-supervisor.ts";
 import type { Assignment, AssignmentStatus, Wave } from "./schema.ts";
 import { CerebelStore } from "./backend.ts";
 import { isTerminalAssignmentStatus, normalizeParallelism, type RecordInput } from "./store.ts";
@@ -15,7 +17,13 @@ function requireExactLionRun(run: LionRun): asserts run is ExactLionRun {
 
 export interface RunWaveLionAdapter {
 	createRun(assignment: Assignment): Promise<LionRun>;
-	run(run: LionRun, assignment: Assignment, onProgress: (progress: LionProgressSnapshot) => void, signal?: AbortSignal): Promise<{ text: string; report: LionReport | null }>;
+	run(
+		run: LionRun,
+		assignment: Assignment,
+		onProgress: (progress: LionProgressSnapshot) => void,
+		signal?: AbortSignal,
+		onCleanupSettled?: (settlement: LionCleanupFinalization) => Promise<void>,
+	): Promise<LionRunnerOutcome | { text: string; report: LionReport | null }>;
 	finishRun(runId: string, result: { output: string; report: LionReport | null; status?: "completed" | "blocked" | "failed" | "aborted"; error?: string | null }): Promise<LionRun>;
 	getRun?(runId: string): Promise<LionRun | undefined>;
 	updateProgress?(runId: string, progress: LionProgressSnapshot): Promise<void>;
@@ -27,13 +35,15 @@ export interface RunWaveOptions {
 	max_parallel?: number;
 	reservation_stale_ms?: number;
 	signal?: AbortSignal;
+	/** Invoked only after a late exact LION finalization records its CEREBEL result. */
+	onLateSettlement?: (result: RunWaveAssignmentResult, waveId: string) => Promise<void> | void;
 }
 
 export interface RunWaveAssignmentResult {
 	assignment_id: string;
 	lion_run_id?: string;
 	lion_run_incarnation_id?: string;
-	outcome: AssignmentStatus | "skipped";
+	outcome: AssignmentStatus | "skipped" | "cleanup_pending";
 	summary: string;
 	blockers: string[];
 }
@@ -79,7 +89,7 @@ export async function runWave(store: CerebelStore, adapter: RunWaveLionAdapter, 
 		if (wave.assignments.some((a) => a.status === "blocked" || a.status === "failed")) break;
 		if (!reservation.assignments.length) break;
 
-		const settled = await Promise.allSettled(reservation.assignments.map((assignment) => createAndRunOne(store, adapter, wave.id, assignment, options.signal)));
+		const settled = await Promise.allSettled(reservation.assignments.map((assignment) => createAndRunOne(store, adapter, wave.id, assignment, options)));
 		const failures: unknown[] = [];
 		for (const outcome of settled) {
 			if (outcome.status === "fulfilled") results.push(outcome.value);
@@ -149,7 +159,8 @@ async function reservePlannedAssignments(store: CerebelStore, waveId: string, ma
 	return result;
 }
 
-async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
+async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, options: RunWaveOptions): Promise<RunWaveAssignmentResult> {
+	const signal = options.signal;
 	if (signal?.aborted) {
 		await releaseReservations(store, waveId, [assignment], "host aborted before LION creation");
 		return { assignment_id: assignment.id, outcome: "skipped", summary: "host aborted before LION creation", blockers: [] };
@@ -193,7 +204,7 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 		return { assignment_id: assignment.id, lion_run_id: run?.id, lion_run_incarnation_id: run?.incarnation_id, outcome: "failed", summary, blockers: [message] };
 	}
 	if (!run || !linkedAssignment) throw new Error(`LION run setup did not produce a linked run for ${assignment.id}`);
-	return runOne(store, adapter, waveId, linkedAssignment, run, signal);
+	return runOne(store, adapter, waveId, linkedAssignment, run, options);
 }
 
 async function recoverSetupFailure(store: CerebelStore, waveId: string, assignment: Assignment, run: ExactLionRun | undefined, summary: string, message: string): Promise<{ superseded: boolean; assignment: Assignment }> {
@@ -219,12 +230,17 @@ async function recoverSetupFailure(store: CerebelStore, waveId: string, assignme
 	return result;
 }
 
-async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: ExactLionRun, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
+async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: ExactLionRun, options: RunWaveOptions): Promise<RunWaveAssignmentResult> {
+	const signal = options.signal;
 	if (signal?.aborted) return recordWorkerError(store, adapter, waveId, assignment, run, new Error("Host aborted before LION launch"), signal);
 	const progress = adapter.createProgressUpdater((snapshot) => adapter.updateProgress?.(run.id, snapshot) ?? Promise.resolve());
-	let out: { text: string; report: LionReport | null };
+	let out: LionRunnerOutcome | { text: string; report: LionReport | null };
 	try {
-		out = await adapter.run(run, assignment, progress.enqueue, signal);
+		out = await adapter.run(run, assignment, progress.enqueue, signal, async (settlement) => {
+			if (settlement.disposition !== "terminal") return;
+			const result = await recordLateWorkerSettlement(store, waveId, assignment, run, settlement.run);
+			await options.onLateSettlement?.(result, waveId);
+		});
 		if (signal?.aborted) throw new Error("Host aborted run_wave");
 		await progress.drain();
 		if (signal?.aborted) throw new Error("Host aborted run_wave during progress drain");
@@ -233,19 +249,30 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		return recordWorkerError(store, adapter, waveId, assignment, run, err, signal);
 	}
 
-	const missingReport = !out.report;
+	if ("settlement" in out && out.settlement === "cleanup_pending") {
+		return {
+			assignment_id: assignment.id,
+			lion_run_id: run.id,
+			lion_run_incarnation_id: run.incarnation_id,
+			outcome: "cleanup_pending",
+			summary: "attached RPC child cleanup remains supervised; LION ownership, assignment, and capacity are retained",
+			blockers: [],
+		};
+	}
+	const settledOutput = "settlement" in out ? out : { settlement: "settled" as const, ...out };
+	const missingReport = !settledOutput.report;
 	const intendedStatus: LionRun["status"] = missingReport
 		? "failed"
-		: out.report?.outcome === "blocked" ? "blocked" : out.report?.outcome === "failed" ? "failed" : "completed";
+		: settledOutput.report?.outcome === "blocked" ? "blocked" : settledOutput.report?.outcome === "failed" ? "failed" : "completed";
 	const finished = await adapter.finishRun(run.id, {
-		output: out.text,
-		report: out.report,
+		output: settledOutput.text,
+		report: settledOutput.report,
 		status: missingReport ? "failed" : undefined,
 		error: missingReport ? "missing WORKER_REPORT" : null,
 	});
-	const outcome = assignmentStatusFromReport(out.report, finished.status ?? intendedStatus);
-	const summary = out.report?.summary ?? (finished.error ? `failed: ${finished.error}` : "failed: missing WORKER_REPORT");
-	const blockers = out.report?.blockers ?? (finished.error ? [finished.error] : ["missing WORKER_REPORT"]);
+	const outcome = assignmentStatusFromReport(settledOutput.report, finished.status ?? intendedStatus);
+	const summary = settledOutput.report?.summary ?? (finished.error ? `failed: ${finished.error}` : "failed: missing WORKER_REPORT");
+	const blockers = settledOutput.report?.blockers ?? (finished.error ? [finished.error] : ["missing WORKER_REPORT"]);
 	return recordOwnedResult(store, waveId, assignment, run, {
 		assignment_id: assignment.id,
 		lion_run_id: run.id,
@@ -254,11 +281,66 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		ganglion_allocation_id: assignment.ganglion_allocation_id,
 		outcome,
 		summary,
-		changed_files: out.report?.changed_files ?? [],
-		tests_run: out.report?.tests_run ?? [],
+		changed_files: settledOutput.report?.changed_files ?? [],
+		tests_run: settledOutput.report?.tests_run ?? [],
 		blockers,
-		next_steps: out.report?.next_steps ?? [],
+		next_steps: settledOutput.report?.next_steps ?? [],
 	});
+}
+
+async function recordLateWorkerSettlement(
+	store: CerebelStore,
+	waveId: string,
+	assignment: Assignment,
+	run: ExactLionRun,
+	finished: LionRun,
+): Promise<RunWaveAssignmentResult> {
+	const cancelled = finished.status === "aborted";
+	const outcome: AssignmentStatus = cancelled
+		? "cancelled"
+		: assignmentStatusFromReport(finished.report, finished.status);
+	const summary = finished.report?.summary
+		?? (cancelled ? `LION run cancelled${finished.error ? `: ${finished.error}` : ""}` : `LION run failed: ${finished.error ?? "missing WORKER_REPORT"}`);
+	const blockers = finished.report?.blockers ?? (cancelled ? [] : [finished.error ?? "missing WORKER_REPORT"]);
+	const input: RecordInput & { assignment_id: string } = {
+		assignment_id: assignment.id,
+		lion_run_id: run.id,
+		lion_run_incarnation_id: run.incarnation_id,
+		ganglion_id: assignment.ganglion_id,
+		ganglion_allocation_id: assignment.ganglion_allocation_id,
+		outcome,
+		summary,
+		changed_files: finished.report?.changed_files ?? [],
+		tests_run: finished.report?.tests_run ?? [],
+		blockers,
+		next_steps: finished.report?.next_steps ?? [],
+	};
+	const { result } = await store.mutate((ledger) => ledger.recordIfOwned(waveId, run.id, run.incarnation_id, input));
+	if (result.committed) return assignmentResultFromInput(assignment.id, run, input);
+	const sameExactOwner = result.assignment.lion_run_id === run.id
+		&& (result.assignment.lion_run_incarnation_id ?? null) === run.incarnation_id;
+	if (sameExactOwner && isTerminalAssignmentStatus(result.assignment.status)) {
+		return {
+			assignment_id: assignment.id,
+			lion_run_id: run.id,
+			lion_run_incarnation_id: run.incarnation_id,
+			outcome: result.assignment.status,
+			summary: result.assignment.outcome_summary ?? summary,
+			blockers: result.assignment.blockers,
+		};
+	}
+	return supersededResult(assignment, run, result.assignment, summary);
+}
+
+function assignmentResultFromInput(assignmentId: string, run: ExactLionRun, input: RecordInput): RunWaveAssignmentResult {
+	return {
+		assignment_id: assignmentId,
+		lion_run_id: run.id,
+		lion_run_incarnation_id: run.incarnation_id,
+		outcome: input.outcome,
+		summary: input.summary ?? "",
+		blockers: input.blockers ?? [],
+	};
 }
 
 async function recordWorkerError(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: string, assignment: Assignment, run: ExactLionRun, err: unknown, signal?: AbortSignal): Promise<RunWaveAssignmentResult> {
