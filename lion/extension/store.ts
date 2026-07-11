@@ -694,7 +694,7 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 		output: typeof value.output === "string" ? value.output : null,
 		report: coerceReport(value.report),
 		progress: coerceProgress(value.progress),
-		control: coerceControl(value.control),
+		control: coerceControl(value.control, typeof value.id === "string" ? value.id : id),
 		steering_messages: coerceSteeringMessages(value.steering_messages),
 		error: typeof value.error === "string" ? value.error : null,
 	};
@@ -730,7 +730,7 @@ function coerceProgress(value: unknown): LionProgressSnapshot | null {
 	};
 }
 
-function coerceControl(value: unknown): LionControlState | null {
+function coerceControl(value: unknown, runId: string): LionControlState | null {
 	if (!isObject(value)) return null;
 	return {
 		pid: typeof value.pid === "number" ? Math.floor(value.pid) : null,
@@ -745,23 +745,35 @@ function coerceControl(value: unknown): LionControlState | null {
 		cancel_delivered_at: typeof value.cancel_delivered_at === "string" ? value.cancel_delivered_at : null,
 		cancel_delivery_error: typeof value.cancel_delivery_error === "string" ? value.cancel_delivery_error : null,
 		reconciled_at: typeof value.reconciled_at === "string" ? value.reconciled_at : null,
-		cleanup_pending: coerceCleanupPendingObservation(value.cleanup_pending),
+		cleanup_pending: coerceCleanupPendingObservation(value.cleanup_pending, runId),
 	};
 }
 
-function coerceCleanupPendingObservation(value: unknown): import("./schema.ts").LionCleanupPendingObservation | null {
-	if (!isObject(value)
-		|| typeof value.observed_at !== "string"
-		|| !(typeof value.incarnation_id === "string" || value.incarnation_id === null)
-		|| typeof value.pid !== "number"
-		|| !Number.isSafeInteger(value.pid)
-		|| value.pid <= 0) return null;
+function coerceCleanupPendingObservation(value: unknown, runId: string): import("./schema.ts").LionCleanupPendingObservation | null {
+	if (value === null || value === undefined) return null;
+	const malformed = () => new LionError("invalid_arg", `run ${runId} has malformed cleanup_pending observation; delete/reset this clean-slate LION ledger because cleanup liveness cannot be proven and migration is unsupported`);
+	if (!isObject(value)) throw malformed();
+	const observedAt = value.observed_at;
+	const incarnationId = value.incarnation_id;
+	const pid = value.pid;
+	const pgid = value.pgid;
+	const processIdentity = value.process_identity;
+	if (typeof observedAt !== "string"
+		|| !observedAt
+		|| !(typeof incarnationId === "string" || incarnationId === null)
+		|| typeof pid !== "number"
+		|| !Number.isSafeInteger(pid)
+		|| pid <= 0
+		|| !(typeof pgid === "number" || pgid === null)
+		|| !(typeof processIdentity === "string" || processIdentity === null)) {
+		throw malformed();
+	}
 	return {
-		observed_at: value.observed_at,
-		incarnation_id: value.incarnation_id,
-		pid: value.pid,
-		pgid: typeof value.pgid === "number" ? Math.floor(value.pgid) : null,
-		process_identity: typeof value.process_identity === "string" ? value.process_identity : null,
+		observed_at: observedAt,
+		incarnation_id: typeof incarnationId === "string" ? incarnationId : null,
+		pid,
+		pgid: typeof pgid === "number" ? Math.floor(pgid) : null,
+		process_identity: typeof processIdentity === "string" ? processIdentity : null,
 	};
 }
 

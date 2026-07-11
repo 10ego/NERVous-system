@@ -602,36 +602,53 @@ function coerceAssignment(value: unknown): Assignment | null {
 	};
 	const hasRunId = value.lion_run_id !== null && value.lion_run_id !== undefined;
 	const hasIncarnation = value.lion_run_incarnation_id !== null && value.lion_run_incarnation_id !== undefined;
+	const hasPendingSettlement = value.cleanup_pending_settlement !== null && value.cleanup_pending_settlement !== undefined;
 	if (hasRunId !== hasIncarnation) {
 		throw new CerebelError("invalid_arg", `assignment ${base.id} has invalid LION provenance; delete/reset this clean-slate record because migration and incarnation backfill are unsupported`);
 	}
-	if (!hasRunId) return { ...base, lion_run_id: null, lion_run_incarnation_id: null };
+	if (!hasRunId) {
+		if (hasPendingSettlement) throw malformedCleanupSettlement(base.id, "an exact LION link is required");
+		return { ...base, lion_run_id: null, lion_run_incarnation_id: null };
+	}
 	const lionRunId = requireNonEmpty(value.lion_run_id, `assignment ${base.id} lion_run_id`);
 	const lionIncarnationId = requireNonEmpty(value.lion_run_incarnation_id, `assignment ${base.id} lion_run_incarnation_id`);
-	const pending = coerceCleanupPendingSettlement(value.cleanup_pending_settlement);
+	const pending = hasPendingSettlement ? coerceCleanupPendingSettlement(value.cleanup_pending_settlement, base.id) : null;
+	if (pending && (pending.lion_run_id !== lionRunId
+		|| pending.lion_run_incarnation_id !== lionIncarnationId
+		|| pending.ganglion_id !== base.ganglion_id
+		|| pending.ganglion_allocation_id !== base.ganglion_allocation_id)) {
+		throw malformedCleanupSettlement(base.id, "settlement provenance differs from the assignment");
+	}
 	return {
 		...base,
-		cleanup_pending_settlement: pending
-			&& pending.lion_run_id === lionRunId
-			&& pending.lion_run_incarnation_id === lionIncarnationId ? pending : null,
+		cleanup_pending_settlement: pending,
 		lion_run_id: lionRunId,
 		lion_run_incarnation_id: lionIncarnationId,
 	};
 }
 
-function coerceCleanupPendingSettlement(value: unknown): CleanupPendingSettlement | null {
+function malformedCleanupSettlement(assignmentId: string, reason: string): CerebelError {
+	return new CerebelError("invalid_arg", `assignment ${assignmentId} has malformed cleanup_pending_settlement (${reason}); delete/reset this clean-slate CEREBEL ledger because the settlement obligation cannot be safely migrated`);
+}
+
+function coerceCleanupPendingSettlement(value: unknown, assignmentId: string): CleanupPendingSettlement {
 	if (!isObject(value)
 		|| typeof value.lion_run_id !== "string"
 		|| !value.lion_run_id.trim()
 		|| typeof value.lion_run_incarnation_id !== "string"
 		|| !value.lion_run_incarnation_id.trim()
-		|| typeof value.observed_at !== "string") return null;
+		|| typeof value.observed_at !== "string"
+		|| !value.observed_at
+		|| !(typeof value.ganglion_id === "string" || value.ganglion_id === null)
+		|| !(typeof value.ganglion_allocation_id === "string" || value.ganglion_allocation_id === null)) {
+		throw malformedCleanupSettlement(assignmentId, "required fields are invalid or missing");
+	}
 	return {
 		lion_run_id: value.lion_run_id,
 		lion_run_incarnation_id: value.lion_run_incarnation_id,
 		observed_at: value.observed_at,
-		ganglion_id: typeof value.ganglion_id === "string" ? value.ganglion_id : null,
-		ganglion_allocation_id: typeof value.ganglion_allocation_id === "string" ? value.ganglion_allocation_id : null,
+		ganglion_id: value.ganglion_id,
+		ganglion_allocation_id: value.ganglion_allocation_id,
 	};
 }
 

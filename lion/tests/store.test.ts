@@ -353,6 +353,25 @@ describe("LionLedger", () => {
 		assert.equal(messages.every((message) => message.message.length <= 4_000), true);
 	});
 
+	it("rejects malformed cleanup-pending observations instead of erasing liveness state", () => {
+		const ledger = new LionLedger();
+		const run = ledger.create({ objective: "cleanup load", runner_mode: "rpc" });
+		ledger.updateControl(run.id, {
+			pid: 5151,
+			cleanup_pending: {
+				observed_at: run.started_at,
+				incarnation_id: run.incarnation_id ?? null,
+				pid: 5151,
+				pgid: null,
+				process_identity: null,
+			},
+		});
+		const raw = ledger.toJSON() as any;
+		raw.runs[run.id].control.cleanup_pending.observed_at = 123;
+		raw.runs[run.id].control.pid = null;
+		assert.throws(() => LionLedger.fromJSON(raw), /malformed cleanup_pending observation.*delete\/reset this clean-slate LION ledger/);
+	});
+
 	it("round-trips through JSON and coerces bad values", () => {
 		const l = new LionLedger("p");
 		const r = l.create({ objective: "x", tools: ["read", "bash"] });

@@ -327,6 +327,20 @@ describe("CerebelLedger", () => {
 		assert.equal(settled.assignments.find((assignment) => assignment.task_id === "b")?.status, "completed");
 	});
 
+	it("rejects malformed cleanup settlement obligations instead of erasing them", () => {
+		const ledger = new CerebelLedger();
+		const wave = ledger.planWave({ assignments: [{ objective: "cleanup", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] });
+		ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] });
+		ledger.markCleanupPendingSettlementIfOwned(wave.id, "assign-001", "run-001", "inc-001");
+		const raw = ledger.toJSON() as any;
+		raw.waves[wave.id].assignments[0].cleanup_pending_settlement.observed_at = 123;
+		assert.throws(() => CerebelLedger.fromJSON(raw), /malformed cleanup_pending_settlement.*delete\/reset this clean-slate CEREBEL ledger/);
+
+		const mismatched = ledger.toJSON() as any;
+		mismatched.waves[wave.id].assignments[0].cleanup_pending_settlement.ganglion_allocation_id = "alloc-replacement";
+		assert.throws(() => CerebelLedger.fromJSON(mismatched), /settlement provenance differs from the assignment/);
+	});
+
 	it("lists, summarizes, and round-trips JSON", () => {
 		const l = new CerebelLedger("p");
 		const a = l.planWave({ tasks: [{ id: "a", title: "A" }] });
