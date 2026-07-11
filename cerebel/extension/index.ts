@@ -574,6 +574,7 @@ export default function (pi: ExtensionAPI) {
 							wave_id: p.wave_id,
 							max_parallel: p.max_parallel,
 							signal,
+							onRunLinked: async (assignment, run) => linkRunWaveGanglion(ctx.cwd, assignment, run),
 							onLateSettlement: async (lateResult, lateWaveId) => {
 								if (lateResult.outcome === "skipped" || lateResult.outcome === "cleanup_pending") return;
 								const { result: latestWave } = await store.query((ledger) => ledger.get(lateWaveId));

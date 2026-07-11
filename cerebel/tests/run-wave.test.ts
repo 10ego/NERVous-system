@@ -147,7 +147,7 @@ describe("runWave", () => {
 		const result = await runWave(store, adapter, {
 			wave_id: wave.id,
 			signal: controller.signal,
-			onCleanupHandoff: async (_assignment, exactRun) => {
+			onRunLinked: async (_assignment, exactRun) => {
 				assert.equal(ganglion.linkRunIfUnlinked(group.id, "alloc-001", exactRun.id, exactRun.incarnation_id).committed, true);
 			},
 			onLateSettlement: async (late, lateWaveId) => {
@@ -191,6 +191,82 @@ describe("runWave", () => {
 		assert.equal(ganglion.get(group.id)?.allocations[0]?.status, "cancelled");
 		assert.notEqual(ganglion.get(group.id)?.allocations[0]?.status, "completed");
 		assert.equal(ganglion.get(group.id)?.members[0]?.status, "available");
+	});
+
+	it("freezes exact GANGLION provenance before a cleanup obligation can become visible", async () => {
+		const store = await tmpStore();
+		const ganglion = new GanglionLedger();
+		const group = ganglion.create({ members: [{ id: "lion-a" }] });
+		ganglion.allocate(group.id, { tasks: [{ id: "task-001", title: "A" }] });
+		const wave = (await store.mutate((ledger) => ledger.planWave({
+			max_parallel: 1,
+			assignments: [{ task_id: "task-001", agent_id: "lion-a", objective: "A", ganglion_id: group.id, ganglion_allocation_id: "alloc-001" }],
+		}))).result;
+		const adapter = fakeAdapter({});
+		const trace: string[] = [];
+		adapter.run = async (run) => {
+			trace.push("worker-started");
+			const beforeCrash = (await store.query((ledger) => ledger.get(wave.id))).result!;
+			assert.equal(beforeCrash.assignments[0]?.cleanup_pending_settlement, null);
+			const reconciled = ganglion.reconcile(group.id, [{
+				id: "run-older",
+				incarnation_id: "inc-older",
+				agent_id: "lion-a",
+				task_id: "task-001",
+				status: "completed",
+				summary: "older same-member/task run",
+				updated_at: "2026-01-01T00:00:00.000Z",
+			}]);
+			trace.push(`ordinary-reconcile:${reconciled.released.length}`);
+			assert.deepEqual(reconciled.released, []);
+			assert.equal(reconciled.ganglion.allocations[0]?.lion_run_id, run.id);
+			assert.equal(reconciled.ganglion.allocations[0]?.lion_run_incarnation_id, run.incarnation_id);
+			assert.equal(reconciled.ganglion.members[0]?.status, "busy");
+			throw new Error("simulated crash before cleanup obligation persistence");
+		};
+		const result = await runWave(store, adapter, {
+			wave_id: wave.id,
+			onRunLinked: async (_assignment, run) => {
+				const linked = ganglion.linkRunIfUnlinked(group.id, "alloc-001", run.id, run.incarnation_id);
+				assert.equal(linked.committed, true);
+				trace.push(`ganglion-linked:${run.id}/${run.incarnation_id}`);
+			},
+		});
+		assert.deepEqual(trace, ["ganglion-linked:run-001/inc-run-001", "worker-started", "ordinary-reconcile:0"]);
+		assert.equal(result.assignment_results[0]?.outcome, "failed");
+		assert.equal(result.wave.assignments[0]?.cleanup_pending_settlement, null);
+		const retained = ganglion.get(group.id)!;
+		assert.equal(retained.allocations[0]?.lion_run_id, "run-001");
+		assert.equal(retained.allocations[0]?.lion_run_incarnation_id, "inc-run-001");
+		assert.equal(retained.members[0]?.status, "busy");
+	});
+
+	it("does not start a worker or publish cleanup obligation when exact capacity linking fails", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((ledger) => ledger.planWave({
+			assignments: [{ task_id: "task-001", agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }],
+		}))).result;
+		const adapter = fakeAdapter({});
+		let workerStarted = false;
+		let finished = false;
+		adapter.run = async () => {
+			workerStarted = true;
+			return { text: "unexpected", report: completedReport("unexpected") };
+		};
+		const baseFinishRun = adapter.finishRun.bind(adapter);
+		adapter.finishRun = async (runId, result) => {
+			finished = true;
+			return baseFinishRun(runId, result);
+		};
+		const result = await runWave(store, adapter, {
+			wave_id: wave.id,
+			onRunLinked: async () => { throw new Error("GANGLION exact provenance link rejected"); },
+		});
+		assert.equal(workerStarted, false);
+		assert.equal(finished, true);
+		assert.equal(result.assignment_results[0]?.outcome, "failed");
+		assert.equal(result.wave.assignments[0]?.cleanup_pending_settlement, null);
+		assert.match(result.wave.assignments[0]?.outcome_summary ?? "", /GANGLION exact provenance link rejected/);
 	});
 
 	it("reserves assignments before creating LION runs", async () => {

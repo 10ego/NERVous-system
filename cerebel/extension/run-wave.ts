@@ -36,8 +36,8 @@ export interface RunWaveOptions {
 	max_parallel?: number;
 	reservation_stale_ms?: number;
 	signal?: AbortSignal;
-	/** Invoked before cleanup handoff, after the exact CEREBEL obligation is durable. */
-	onCleanupHandoff?: (assignment: Assignment, run: ExactLionRun, waveId: string) => Promise<void> | void;
+	/** Invoked after exact CEREBEL dispatch and before worker execution begins. */
+	onRunLinked?: (assignment: Assignment, run: ExactLionRun, waveId: string) => Promise<void> | void;
 	/** Invoked only after a late exact LION finalization records its CEREBEL result. */
 	onLateSettlement?: (result: RunWaveAssignmentResult, waveId: string) => Promise<void> | void;
 }
@@ -191,6 +191,9 @@ async function createAndRunOne(store: CerebelStore, adapter: RunWaveLionAdapter,
 			}],
 		}));
 		linkedAssignment = linkedWave.assignments.find((a) => a.id === assignment.id) ?? assignment;
+		// Freeze cross-store capacity ownership before the worker can start. Cleanup
+		// handoff must never publish an obligation for an unlinked allocation.
+		await options.onRunLinked?.(linkedAssignment, run, waveId);
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		if (abortCleanupAttempted && run) throw new Error(`LION cleanup failed for unlinked ${run.id} after host abort: ${message}`, { cause: err });
@@ -249,7 +252,6 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		}, async () => {
 			const { result } = await store.mutate((ledger) => ledger.markCleanupPendingSettlementIfOwned(waveId, assignment.id, run.id, run.incarnation_id));
 			if (!result.committed) throw new Error(`cleanup-pending settlement obligation was superseded for ${waveId}/${assignment.id}/${run.id}/${run.incarnation_id}`);
-			await options.onCleanupHandoff?.(result.assignment, run, waveId);
 		});
 		if ("settlement" in out && out.settlement === "cleanup_pending") {
 			// Supervisor authority is already registered. Foreground abort/progress
