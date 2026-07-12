@@ -46,12 +46,24 @@ function waveId(l: import("./store.ts").CerebelLedger, id?: string): string | un
 }
 
 const DEFAULT_RUN_WAVE_TIMEOUT_MS = 10 * 60_000;
+export const MAX_RUN_WAVE_TIMEOUT_MS = 2_147_483_647;
+
+export function validateRunWaveTimeoutMs(value: number | undefined): number {
+	if (value === undefined) return DEFAULT_RUN_WAVE_TIMEOUT_MS;
+	if (!Number.isInteger(value) || value < 1 || value > MAX_RUN_WAVE_TIMEOUT_MS) {
+		throw new CerebelError("invalid_arg", `run_wave timeout_ms must be an integer from 1 through ${MAX_RUN_WAVE_TIMEOUT_MS}`);
+	}
+	return value;
+}
 
 function ganglionStatusFromAssignment(status: AssignmentStatus): "completed" | "blocked" | "failed" | "cancelled" { return status === "blocked" ? "blocked" : status === "failed" ? "failed" : status === "cancelled" ? "cancelled" : "completed"; }
 function findRecordedAssignment(wave: Wave, p: CerebelToolInput): Assignment | undefined {
-	return wave.assignments.find((a) => (p.assignment_id && a.id === p.assignment_id)
-		|| (p.task_id && a.task_id === p.task_id)
-		|| (p.lion_run_id && a.lion_run_id === p.lion_run_id && (!p.lion_run_incarnation_id || a.lion_run_incarnation_id === p.lion_run_incarnation_id)));
+	if (p.assignment_id) return wave.assignments.find((a) => a.id === p.assignment_id);
+	if (p.task_id) return wave.assignments.find((a) => a.task_id === p.task_id);
+	if (p.lion_run_id && p.lion_run_incarnation_id) {
+		return wave.assignments.find((a) => a.lion_run_id === p.lion_run_id && a.lion_run_incarnation_id === p.lion_run_incarnation_id);
+	}
+	return undefined;
 }
 function formatGanglionRecordMessage(
 	ganglionId: string,
@@ -203,6 +215,7 @@ export async function settleLinkedLionsBeforeCancel(
 }
 
 export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}, pi?: ExtensionAPI): Promise<RunWaveLionAdapter> {
+	const timeoutMs = validateRunWaveTimeoutMs(p.timeout_ms);
 	try {
 		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod, optionsMod, progressBatcherMod] = await Promise.all([
 			deps.lionStore ? Promise.resolve({ LionStore: { fromCwd: () => deps.lionStore! as never } }) : import("@nervous-system/lion/extension/backend.ts"),
@@ -260,7 +273,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				return runner({
 					run,
 					signal: runSignal ?? signal,
-					timeout_ms: p.timeout_ms ?? DEFAULT_RUN_WAVE_TIMEOUT_MS,
+					timeout_ms: timeoutMs,
 					onProcessStart: (info) => {
 						activeRuns.attachActiveRunProcess(activeOwner, info);
 						void lionStore.mutate((l) => activeRuns.isActiveRunOwner(activeOwner)
@@ -445,7 +458,9 @@ export default function (pi: ExtensionAPI) {
 							const suffix = ganglionMessages.length ? ` ${ganglionMessages.join(" ")}` : "";
 							return runWaveBatchFailureResult(e, suffix);
 						}
-						return fail(action, `cerebel run_wave failed: ${e instanceof Error ? e.message : String(e)}`);
+						return e instanceof CerebelError
+							? fail(action, `cerebel run_wave failed (${e.code}): ${e.message}`)
+							: fail(action, `cerebel run_wave failed: ${e instanceof Error ? e.message : String(e)}`);
 					}
 				}
 				case "get": {

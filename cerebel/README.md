@@ -62,6 +62,8 @@ cerebel record assignment_id="assign-002" lion_run_id="run-002" lion_run_incarna
 cerebel decide
 ```
 
+A manual `record` may target an explicit `assignment_id` or `task_id`. If neither is supplied and `lion_run_id` is the selector, `lion_run_incarnation_id` is mandatory and CEREBEL matches both values; a reused run ID cannot select a replacement incarnation. Explicit assignment/task targeting can establish a new link only with a complete run ID/incarnation pair. Incomplete persisted provenance is not migrated or backfilled and still requires a clean-slate delete/reset.
+
 Or use the bounded active dispatcher after planning a wave:
 
 ```text
@@ -73,6 +75,7 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 
 - Reserves planned assignments under the CEREBEL lock before creating workers.
 - Creates exact LION run/incarnation links and executes up to the wave's stored `max_parallel` unless an explicit bounded override is supplied.
+- Uses a 600,000 ms per-LION timeout when `timeout_ms` is omitted. Explicit values must be integers from 1 through 2,147,483,647; invalid values return an `invalid_arg` tool error before adapter or LION worker creation and do not fall back to the default.
 - Emits the same `nervous:lion:started`, progress, and terminal telemetry as direct LION execution.
 - Time-throttles durable progress writes while sending UI progress immediately and forcing the final snapshot before terminalization.
 - Joins every admitted batch with all-settled semantics before returning or propagating failure.
@@ -86,7 +89,7 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 - A CEREBEL terminal result is committed only after LION finalization succeeds. Finalization or unlinked cleanup failure surfaces and does not release linked capacity.
 - Host abort does not manufacture a separate durable `lion cancel` request.
 - Terminal assignments are not rerun, terminal links cannot be replaced, missing/unparseable `WORKER_REPORT` output fails, and later batches stop after blocked/failed/cancelled outcomes.
-- Stale reservations that never received a LION link are recovered. Active ownership remains registered until LION finalization.
+- Stale reservations that never received a LION link are recovered. When release or recovery leaves all pending assignments planned, the wave returns to coherent `planned` / `dispatch` state. Active ownership remains registered until LION finalization.
 
 JSON remains the fallback runner. Explicit `runner_mode` wins, followed by `LION_RUNNER`; use `rpc` only when live steering is required.
 
