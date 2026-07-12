@@ -234,9 +234,10 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 			createProgressUpdater: lifecycle.createProgressUpdater,
 			async createRun(assignment) {
 				let activeOwner: ReturnType<typeof activeRuns.beginActiveRun> | undefined;
+				let started: LionRun | undefined;
 				try {
 					const initialProgress = lifecycle.startedProgress();
-					const { result: started } = await lionStore.mutate((l) => {
+					({ result: started } = await lionStore.mutate((l) => {
 						const queued = l.create({
 							agent_id: assignment.agent_id,
 							task_id: assignment.task_id,
@@ -250,8 +251,15 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 						});
 						activeOwner = activeRuns.beginActiveRun({ namespaceId: lionStore.namespaceId, runId: queued.id, incarnationId: queued.incarnation_id ?? null }, runnerMode);
 						return l.start(queued.id);
-					});
-					if ("flushProgress" in lionStore && typeof lionStore.flushProgress === "function") await lionStore.flushProgress(started, initialProgress);
+					}));
+					if (!started) throw new Error("LION start did not return a run");
+					if ("flushProgress" in lionStore && typeof lionStore.flushProgress === "function") {
+						await lionStore.flushProgress(started, initialProgress);
+					} else {
+						const persisted = await lionStore.mutate((ledger) => ledger.updateProgressIfCurrent(started!.id, started!.incarnation_id, initialProgress));
+						if (!persisted.result.committed || !persisted.result.run) throw new Error(`LION start progress was superseded for run_id=${started.id}`);
+						started = persisted.result.run;
+					}
 					const result = { ...started, progress: initialProgress, updated_at: initialProgress.last_event_at };
 					activeOwners.set(result.id, activeOwner!);
 					activeRunViews.set(result.id, result);
@@ -259,6 +267,13 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					try { onUpdate?.({ content: [{ type: "text", text: `${result.id}/${result.agent_id}: ${initialProgress.activity}` }], details: { action: "run_wave", run: result } }); } catch { /* progress display is best-effort */ }
 					return result;
 				} catch (err) {
+					if (started && activeOwner) {
+						const message = err instanceof Error ? err.message : String(err);
+						try {
+							if ("finishRun" in lionStore && typeof lionStore.finishRun === "function") await lionStore.finishRun(started.id, activeOwner.incarnationId, { output: "", report: null, status: "failed", error: `LION startup progress failed: ${message}` });
+							else await lionStore.mutate((ledger) => ledger.finishIfCurrent(started!.id, activeOwner!.incarnationId, { output: "", report: null, status: "failed", error: `LION startup progress failed: ${message}` }));
+						} catch (cleanupError) { console.warn(`[nervous-system/cerebel] failed to terminalize startup error for ${started.id}:`, cleanupError); }
+					}
 					if (activeOwner) activeRuns.finishActiveRun(activeOwner);
 					throw err;
 				}

@@ -108,6 +108,26 @@ describe("dashboard extension factory", () => {
 		}
 	});
 
+	it("detects sidecar progress through a direct LION_RUNS_PATH symlink", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-sidecar-symlink-"));
+		const targetDir = path.join(dir, "canonical");
+		const target = path.join(targetDir, "runs.json");
+		const alias = path.join(dir, "runs-link.json");
+		const oldPath = process.env.LION_RUNS_PATH;
+		await fs.mkdir(targetDir);
+		await fs.symlink(target, alias, "file");
+		process.env.LION_RUNS_PATH = alias;
+		try {
+			const store = LionStore.fromCwd(dir);
+			const run = (await store.mutate((ledger) => ledger.create({ objective: "dashboard symlink progress" }))).result;
+			const changed = await createDashboardChangeDetector(dir);
+			await store.flushProgress(run, { event: "message", activity: "working", active_tools: [], tool_uses: 0, turn_count: 1, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
+			assert.deepEqual(await changed(), ["lion"]);
+		} finally {
+			if (oldPath === undefined) delete process.env.LION_RUNS_PATH; else process.env.LION_RUNS_PATH = oldPath;
+		}
+	});
+
 	it("detects an atomic same-size replacement even when mtime is preserved", async () => {
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-fingerprint-"));
 		const target = path.join(dir, "runs.json");

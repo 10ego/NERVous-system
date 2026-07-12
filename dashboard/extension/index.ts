@@ -12,7 +12,7 @@ import { CortexStore } from "../../cortex/extension/backend.ts";
 import type { Goal } from "../../cortex/extension/schema.ts";
 import { GanglionStore } from "../../ganglion/extension/backend.ts";
 import type { Ganglion } from "../../ganglion/extension/schema.ts";
-import { LionStore } from "../../lion/extension/backend.ts";
+import { canonicalLionNamespace, LionStore } from "../../lion/extension/backend.ts";
 import type { LionRun } from "../../lion/extension/schema.ts";
 import { MagiHistoryStore, type MagiRecord } from "../../magi/extension/history.ts";
 import { SynapseStore } from "../../synapse/extension/backend.ts";
@@ -77,7 +77,7 @@ const DASHBOARD_COMPONENTS = DASHBOARD_STATE_FILES.map(([component]) => componen
 interface DashboardStateEntry { component: Tab; statePath: string }
 function resolveDashboardStateEntries(cwd: string, resolveFile = resolveNervousStateFile): DashboardStateEntry[] {
 	const canonical = DASHBOARD_STATE_FILES.map(([component, file, env]) => ({ component, statePath: resolveFile(cwd, component, file, env) })) as DashboardStateEntry[];
-	const lionRuns = canonical.find((entry) => entry.component === "lion")!.statePath;
+	const lionRuns = canonicalLionNamespace(canonical.find((entry) => entry.component === "lion")!.statePath);
 	// Atomic sidecar replacement changes the directory fingerprint without touching
 	// runs.json, so dashboard refresh observes coherent overlaid progress promptly.
 	return [...canonical, { component: "lion", statePath: `${lionRuns}.progress` }];
