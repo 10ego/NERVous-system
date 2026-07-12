@@ -380,7 +380,7 @@ describe("cerebel extension factory", () => {
 			await ganglionStore.mutate((ledger) => {
 				const group = ledger.create({ members: [{ id: "lion-a" }, { id: "lion-b" }] });
 				ledger.allocate(group.id, { tasks: [{ id: "task-a", title: "A" }, { id: "task-b", title: "B" }] });
-				ledger.record(group.id, { allocation_id: "alloc-001", lion_run_id: "run-stale", status: "completed" });
+				ledger.record(group.id, { allocation_id: "alloc-001", lion_run_id: "run-stale", lion_run_incarnation_id: "inc-stale", status: "completed" });
 				ledger.allocate(group.id, { tasks: [{ id: "task-new", title: "New" }] });
 			});
 			const lionStore = LionStore.fromCwd(dir);
@@ -410,11 +410,11 @@ describe("cerebel extension factory", () => {
 			const cancelled = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, { cwd: dir });
 
 			assert.equal(mutations, 1);
-			assert.match(cancelled.content[0].text, /ganglion-001\/alloc-001 recorded; capacity retained by a newer allocation/);
+			assert.match(cancelled.content[0].text, /release failed for ganglion-001\/alloc-001: terminal record for exactly linked allocation alloc-001 requires matching lion_run_id and lion_run_incarnation_id/);
 			assert.match(cancelled.content[0].text, /ganglion-001\/alloc-002 recorded; capacity released/);
 			const group = (await ganglionStore.query((ledger) => ledger.get("ganglion-001"))).result!;
-			assert.deepEqual(group.allocations.slice(0, 2).map((allocation) => allocation.lion_run_id), [runA.id, runB.id]);
-			assert.deepEqual(group.allocations.slice(0, 2).map((allocation) => allocation.status), ["cancelled", "cancelled"]);
+			assert.deepEqual(group.allocations.slice(0, 2).map((allocation) => allocation.lion_run_id), ["run-stale", runB.id]);
+			assert.deepEqual(group.allocations.slice(0, 2).map((allocation) => allocation.status), ["completed", "cancelled"]);
 			assert.equal(group.members.find((member) => member.id === "lion-a")?.current_allocation_id, "alloc-003");
 			assert.equal(group.members.find((member) => member.id === "lion-b")?.status, "available");
 		} finally {

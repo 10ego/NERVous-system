@@ -166,7 +166,11 @@ async function recordGroupedGanglion(cwd: string, entries: Iterable<GroupedGangl
 					const allocationIds = new Set(ganglion.allocations.map((allocation) => allocation.id));
 					return group.map((entry) => {
 						if (!allocationIds.has(entry.allocationId)) return { entry, errorMessage: `allocation ${entry.allocationId} not found` };
-						return { entry, releaseDisposition: ledger.recordWithResult(ganglionId, { allocation_id: entry.allocationId, lion_run_id: entry.lionRunId, lion_run_incarnation_id: entry.lionRunIncarnationId, status: ganglionStatusFromAssignment(entry.outcome), summary: entry.summary }).release_disposition };
+						try {
+							return { entry, releaseDisposition: ledger.recordWithResult(ganglionId, { allocation_id: entry.allocationId, lion_run_id: entry.lionRunId, lion_run_incarnation_id: entry.lionRunIncarnationId, status: ganglionStatusFromAssignment(entry.outcome), summary: entry.summary }).release_disposition };
+						} catch (error) {
+							return { entry, errorMessage: error instanceof Error ? error.message : String(error) };
+						}
 					});
 				});
 				for (const record of records) {
