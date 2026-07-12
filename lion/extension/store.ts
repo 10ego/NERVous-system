@@ -673,7 +673,7 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 		report: coerceReport(value.report),
 		progress: coerceProgress(value.progress),
 		control: coerceControl(value.control),
-		steering_messages: Array.isArray(value.steering_messages) ? value.steering_messages.map(coerceSteering).filter((x): x is LionSteeringMessage => Boolean(x)) : [],
+		steering_messages: coerceSteeringMessages(value.steering_messages),
 		error: typeof value.error === "string" ? value.error : null,
 	};
 }
@@ -726,12 +726,36 @@ function coerceControl(value: unknown): LionControlState | null {
 	};
 }
 
+function coerceSteeringMessages(value: unknown): LionSteeringMessage[] {
+	if (!Array.isArray(value)) return [];
+
+	// Select bounded raw entries before reading or coercing message payloads. Open
+	// messages preserve FIFO delivery order; terminal history keeps the newest.
+	const open: unknown[] = [];
+	const terminal: unknown[] = [];
+	for (const entry of value) {
+		const status = isObject(entry) && typeof entry.status === "string" && STEERING_STATUS_SET.has(entry.status)
+			? entry.status as LionSteeringMessage["status"]
+			: "rejected_terminal";
+		if (OPEN_STEERING_STATUSES.has(status)) {
+			if (open.length < MAX_OPEN_STEERING_MESSAGES) open.push(entry);
+			continue;
+		}
+		terminal.push(entry);
+		if (terminal.length > MAX_TERMINAL_STEERING_HISTORY) terminal.shift();
+	}
+
+	return [...terminal, ...open]
+		.map(coerceSteering)
+		.filter((entry): entry is LionSteeringMessage => entry !== null);
+}
+
 function coerceSteering(value: unknown): LionSteeringMessage | null {
 	if (!isObject(value) || typeof value.message !== "string") return null;
 	const status = typeof value.status === "string" && STEERING_STATUS_SET.has(value.status) ? value.status as LionSteeringMessage["status"] : "rejected_terminal";
 	return {
 		id: typeof value.id === "string" ? value.id : "steer-unknown",
-		message: value.message,
+		message: value.message.slice(0, MAX_STEERING_MESSAGE_CHARS),
 		status,
 		created_at: typeof value.created_at === "string" ? value.created_at : now(),
 		applied_at: typeof value.applied_at === "string" ? value.applied_at : null,
