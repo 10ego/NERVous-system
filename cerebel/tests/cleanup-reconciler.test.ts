@@ -32,6 +32,27 @@ function setupGanglion() {
 const report = { outcome: "completed" as const, summary: "reconciled done", changed_files: [], tests_run: ["npm test"], blockers: [], next_steps: [] };
 
 describe("cleanup-pending settlement reconciliation", () => {
+	it("does not reconcile or rewrite unrelated LION runs when no settlement is pending", async () => {
+		const cerebelLedger = new CerebelLedger();
+		const lionLedger = new LionLedger();
+		const unrelated = lionLedger.create({ objective: "unrelated LION" });
+		lionLedger.updateControl(unrelated.id, { pid: 101, last_seen_at: unrelated.started_at });
+		let lionMutations = 0;
+		const result = await reconcileCleanupPendingSettlements("/unused", {
+			cerebelStore: memoryStore(cerebelLedger) as never,
+			lionStore: {
+				...memoryStore(lionLedger),
+				async mutate<R>(fn: (value: LionLedger) => R) { lionMutations++; return { result: fn(lionLedger) }; },
+			},
+			isLionPidAlive: () => false,
+			lionReconcileNowMs: Date.parse(unrelated.started_at) + 60_000,
+			lionReconcileStaleAfterMs: 1,
+		});
+		assert.deepEqual(result, []);
+		assert.equal(lionMutations, 0);
+		assert.equal(lionLedger.get(unrelated.id)?.status, "running");
+	});
+
 	it("settles CEREBEL and an immutable GANGLION allocation once after registry loss", async () => {
 		const stores = await cerebelStores();
 		const lionLedger = new LionLedger();

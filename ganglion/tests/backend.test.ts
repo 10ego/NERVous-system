@@ -58,6 +58,21 @@ describe("FileBackend", () => {
 		assert.ok(!(await exists(`${backend.location.ganglionPath}.tmp`)));
 		assert.ok(await exists(`${backend.location.ganglionPath}.bak`));
 	});
+	it("fails closed without rewriting a legacy linked allocation", async () => {
+		const { backend, store, dir } = await tmpStore();
+		const group = (await store.mutate((ledger) => ledger.create({ member_count: 1 }))).result;
+		await store.mutate((ledger) => ledger.allocate(group.id, { tasks: [{ id: "task-001", title: "legacy" }] }));
+		await store.mutate((ledger) => ledger.linkRunIfUnlinked(group.id, "alloc-001", "run-legacy", "inc-legacy"));
+		const raw = JSON.parse(await fs.readFile(backend.location.ganglionPath, "utf8"));
+		delete raw.ganglions[group.id].allocations[0].lion_run_incarnation_id;
+		await fs.writeFile(backend.location.ganglionPath, JSON.stringify(raw), "utf8");
+		await assert.rejects(() => backend.load(), /no migration or automatic reset was performed/);
+		await assert.rejects(() => backend.mutate((ledger) => ledger.create({ name: "must not overwrite" })), /no migration or automatic reset was performed/);
+		const persisted = JSON.parse(await fs.readFile(backend.location.ganglionPath, "utf8"));
+		assert.equal(persisted.ganglions[group.id].allocations[0].lion_run_id, "run-legacy");
+		assert.equal(persisted.ganglions[group.id].allocations[0].lion_run_incarnation_id, undefined);
+		assert.equal((await fs.readdir(dir)).some((entry) => entry.startsWith("ganglion.json.corrupt-")), false);
+	});
 	it("recovers corrupt files", async () => {
 		const { backend, dir } = await tmpStore();
 		await fs.writeFile(backend.location.ganglionPath, "{ broken", "utf8");

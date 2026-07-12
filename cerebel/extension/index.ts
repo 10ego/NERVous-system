@@ -369,7 +369,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					throw err;
 				}
 			},
-			async run(run: LionRun, _assignment, onProgress, runSignal, onCleanupSettled) {
+			async run(run: LionRun, _assignment, onProgress, runSignal, onCleanupSettled, prepareCleanupHandoff, beforeCleanupFinalize) {
 				const activeOwner = activeOwners.get(run.id);
 				if (!activeOwner) throw new Error(`active LION ownership missing for ${run.id}`);
 				return runner({
@@ -384,11 +384,14 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 						return cleanupSupervisorMod.registerLionCleanupSupervisor({
 							owner: activeOwner,
 							handoff,
-							finalize: async (intent, cleanupError) => cleanupSupervisorMod.finalizeExactLionRun(
-								lionStore,
-								activeOwner,
-								lateTerminalFinishInput(intent, cleanupError, Boolean((runSignal ?? signal)?.aborted)),
-							),
+							finalize: async (intent, cleanupError) => {
+								await beforeCleanupFinalize?.();
+								return cleanupSupervisorMod.finalizeExactLionRun(
+									lionStore,
+									activeOwner,
+									lateTerminalFinishInput(intent, cleanupError, Boolean((runSignal ?? signal)?.aborted)),
+								);
+							},
 							emitTerminal: (settlement) => {
 								if (settlement.disposition === "terminal") lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(settlement.run.status as import("@nervous-system/lion/extension/schema.ts").TerminalLionRunStatus), settlement.run);
 							},

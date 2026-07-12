@@ -100,6 +100,22 @@ describe("LionLedger", () => {
 		assert.equal(stale.some((r) => r.id === fresh.id && r.status === "failed"), true);
 	});
 
+	it("reconciles only explicitly targeted exact incarnations", () => {
+		const ledger = new LionLedger();
+		const target = ledger.create({ objective: "target" });
+		const unrelated = ledger.create({ objective: "unrelated" });
+		ledger.updateControl(target.id, { pid: 111, last_seen_at: target.started_at });
+		ledger.updateControl(unrelated.id, { pid: 222, last_seen_at: unrelated.started_at });
+		const changed = ledger.reconcileControls(() => false, {
+			target_run_refs: [{ id: target.id, incarnation_id: target.incarnation_id }],
+			now_ms: Date.parse(target.started_at) + 60_000,
+			stale_after_ms: 1,
+		});
+		assert.deepEqual(changed.map((run) => run.id), [target.id]);
+		assert.equal(ledger.get(target.id)?.status, "failed");
+		assert.equal(ledger.get(unrelated.id)?.status, "running");
+	});
+
 	it("does not let an active reference for an old incarnation protect a replacement", () => {
 		const l = new LionLedger();
 		const replacement = l.create({ objective: "replacement" });

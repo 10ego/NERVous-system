@@ -122,6 +122,77 @@ describe("runWave", () => {
 		);
 	});
 
+	it("clears a provisional cleanup obligation when foreground finalization wins", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((ledger) => ledger.planWave({ assignments: [{ agent_id: "lion-a", objective: "fallback" }] }))).result;
+		const adapter = fakeAdapter({});
+		adapter.run = async (_run, _assignment, _progress, _signal, _onCleanupSettled, prepareCleanupHandoff) => {
+			await prepareCleanupHandoff?.();
+			throw new Error("supervisor registration declined after child exit");
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(result.assignment_results[0]?.outcome, "failed");
+		assert.equal(result.wave.assignments[0]?.status, "failed");
+		assert.equal(result.wave.assignments[0]?.cleanup_pending_settlement, null);
+	});
+
+	it("records an atomically cancelled successful worker as cancelled", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((ledger) => ledger.planWave({ assignments: [{ agent_id: "lion-a", objective: "late cancellation" }] }))).result;
+		const adapter = fakeAdapter({ "assign-001": completedReport("must not be recorded as failed") });
+		adapter.finishRun = async (runId) => ({
+			id: runId,
+			agent_id: "lion-a",
+			status: "aborted",
+			task_id: null,
+			objective: "",
+			context: "",
+			started_at: new Date().toISOString(),
+			updated_at: new Date().toISOString(),
+			report: null,
+			error: "Cancelled: late durable stop",
+		} as LionRun);
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(result.assignment_results[0]?.outcome, "cancelled");
+		assert.equal(result.wave.assignments[0]?.status, "cancelled");
+		assert.match(result.assignment_results[0]?.summary ?? "", /late durable stop/);
+		assert.deepEqual(result.assignment_results[0]?.blockers, []);
+	});
+
+	it("drains queued progress before a supervisor finalizes cleanup-pending work", async () => {
+		const store = await tmpStore();
+		const wave = (await store.mutate((ledger) => ledger.planWave({ assignments: [{ agent_id: "lion-a", objective: "final progress" }] }))).result;
+		const adapter = fakeAdapter({});
+		const persisted: string[] = [];
+		adapter.updateProgress = async (_runId, progress) => { persisted.push(progress.activity); };
+		adapter.run = async (run, _assignment, onProgress, _signal, onCleanupSettled, prepareCleanupHandoff, beforeCleanupFinalize) => {
+			onProgress({ event: "message", activity: "final snapshot", active_tools: [], tool_uses: 1, turn_count: 1, token_total: null, last_text: null, last_event_at: new Date().toISOString() });
+			await prepareCleanupHandoff?.();
+			await beforeCleanupFinalize?.();
+			assert.deepEqual(persisted, ["final snapshot"]);
+			await onCleanupSettled?.({
+				disposition: "terminal",
+				run: {
+					id: run.id,
+					incarnation_id: run.incarnation_id,
+					agent_id: run.agent_id,
+					status: "completed",
+					task_id: run.task_id,
+					objective: run.objective,
+					context: run.context,
+					started_at: run.started_at,
+					updated_at: new Date().toISOString(),
+					report: completedReport("late complete"),
+					error: null,
+				} as LionRun,
+			});
+			return { settlement: "cleanup_pending", run_id: run.id, incarnation_id: run.incarnation_id ?? null, owner_id: "owner-001" };
+		};
+		const result = await runWave(store, adapter, { wave_id: wave.id });
+		assert.equal(result.wave.assignments[0]?.status, "completed");
+		assert.equal(result.wave.assignments[0]?.cleanup_pending_settlement, null);
+	});
+
 	it("settles a late-aborted cleanup_pending assignment and retained capacity as cancelled once", async () => {
 		const store = await tmpStore();
 		const ganglion = new GanglionLedger();

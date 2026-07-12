@@ -165,6 +165,9 @@ export async function executeRun(args: {
 		run = finished.run;
 		if (isActiveLionStatus(run.status)) throw new Error(`LION ${run.id} remained nonterminal after finish`);
 		emitLionEvent(args.pi, terminalEventKind(run.status), run);
+		if (run.status === "aborted") {
+			return fail(args.action, `LION ${modelVisibleRunRef(run)} status=aborted: ${run.error ?? "Cancelled"}`, { run });
+		}
 		const reportHint = run.report ? `${run.report.outcome}: ${run.report.summary}` : "completed with unparsed report";
 		return ok(args.action, `LION ${modelVisibleRunRef(run)} status=${run.status}: ${reportHint}`, { run });
 	} catch (err) {

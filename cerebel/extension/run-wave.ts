@@ -24,6 +24,7 @@ export interface RunWaveLionAdapter {
 		signal?: AbortSignal,
 		onCleanupSettled?: (settlement: LionCleanupFinalization) => Promise<void>,
 		prepareCleanupHandoff?: () => Promise<void>,
+		beforeCleanupFinalize?: () => Promise<void>,
 	): Promise<LionRunnerOutcome | { text: string; report: LionReport | null }>;
 	finishRun(runId: string, result: { output: string; report: LionReport | null; status?: "completed" | "blocked" | "failed" | "aborted"; error?: string | null }): Promise<LionRun>;
 	getRun?(runId: string): Promise<LionRun | undefined>;
@@ -240,6 +241,11 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 	const signal = options.signal;
 	if (signal?.aborted) return recordWorkerError(store, adapter, waveId, assignment, run, new Error("Host aborted before LION launch"), signal);
 	const progress = adapter.createProgressUpdater((snapshot) => adapter.updateProgress?.(run.id, snapshot) ?? Promise.resolve());
+	let cleanupHandoffPrepared = false;
+	const completeForegroundCleanupHandoff = async (): Promise<void> => {
+		if (!cleanupHandoffPrepared) return;
+		await store.mutate((ledger) => ledger.completeCleanupPendingSettlementIfOwned(waveId, assignment.id, run.id, run.incarnation_id));
+	};
 	let out: LionRunnerOutcome | { text: string; report: LionReport | null };
 	try {
 		out = await adapter.run(run, assignment, progress.enqueue, signal, async (settlement) => {
@@ -252,7 +258,8 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		}, async () => {
 			const { result } = await store.mutate((ledger) => ledger.markCleanupPendingSettlementIfOwned(waveId, assignment.id, run.id, run.incarnation_id));
 			if (!result.committed) throw new Error(`cleanup-pending settlement obligation was superseded for ${waveId}/${assignment.id}/${run.id}/${run.incarnation_id}`);
-		});
+			cleanupHandoffPrepared = true;
+		}, () => progress.drain());
 		if ("settlement" in out && out.settlement === "cleanup_pending") {
 			// Supervisor authority is already registered. Foreground abort/progress
 			// errors must not route this execution through finishRun.
@@ -271,7 +278,9 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		if (signal?.aborted) throw new Error("Host aborted run_wave during progress drain");
 	} catch (err) {
 		await progress.drain().catch(() => undefined);
-		return recordWorkerError(store, adapter, waveId, assignment, run, err, signal);
+		const result = await recordWorkerError(store, adapter, waveId, assignment, run, err, signal);
+		await completeForegroundCleanupHandoff();
+		return result;
 	}
 
 	const settledOutput = "settlement" in out ? out : { settlement: "settled" as const, ...out };
@@ -285,10 +294,13 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		status: missingReport ? "failed" : undefined,
 		error: missingReport ? "missing WORKER_REPORT" : null,
 	});
-	const outcome = assignmentStatusFromReport(settledOutput.report, finished.status ?? intendedStatus);
-	const summary = settledOutput.report?.summary ?? (finished.error ? `failed: ${finished.error}` : "failed: missing WORKER_REPORT");
-	const blockers = settledOutput.report?.blockers ?? (finished.error ? [finished.error] : ["missing WORKER_REPORT"]);
-	return recordOwnedResult(store, waveId, assignment, run, {
+	const cancelled = finished.status === "aborted";
+	const outcome = cancelled ? "cancelled" : assignmentStatusFromReport(settledOutput.report, finished.status ?? intendedStatus);
+	const summary = cancelled
+		? `LION run cancelled${finished.error ? `: ${finished.error}` : ""}`
+		: settledOutput.report?.summary ?? (finished.error ? `failed: ${finished.error}` : "failed: missing WORKER_REPORT");
+	const blockers = cancelled ? [] : settledOutput.report?.blockers ?? (finished.error ? [finished.error] : ["missing WORKER_REPORT"]);
+	const result = await recordOwnedResult(store, waveId, assignment, run, {
 		assignment_id: assignment.id,
 		lion_run_id: run.id,
 		lion_run_incarnation_id: run.incarnation_id,
@@ -296,11 +308,13 @@ async function runOne(store: CerebelStore, adapter: RunWaveLionAdapter, waveId: 
 		ganglion_allocation_id: assignment.ganglion_allocation_id,
 		outcome,
 		summary,
-		changed_files: settledOutput.report?.changed_files ?? [],
-		tests_run: settledOutput.report?.tests_run ?? [],
+		changed_files: cancelled ? [] : settledOutput.report?.changed_files ?? [],
+		tests_run: cancelled ? [] : settledOutput.report?.tests_run ?? [],
 		blockers,
-		next_steps: settledOutput.report?.next_steps ?? [],
+		next_steps: cancelled ? [] : settledOutput.report?.next_steps ?? [],
 	});
+	await completeForegroundCleanupHandoff();
+	return result;
 }
 
 async function recordLateWorkerSettlement(

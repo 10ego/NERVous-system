@@ -88,6 +88,8 @@ export async function reconcileCleanupPendingSettlements(
 	deps: CleanupSettlementReconcilerDeps = {},
 ): Promise<CleanupSettlementReconcileResult[]> {
 	const cerebelStore = deps.cerebelStore ?? CerebelStore.fromCwd(cwd);
+	const obligations = (await cerebelStore.query((ledger) => ledger.cleanupPendingSettlements())).result;
+	if (!obligations.length) return [];
 	let lionStore = deps.lionStore;
 	let isLionPidAlive = deps.isLionPidAlive;
 	let getLionProcessIdentity = deps.getLionProcessIdentity;
@@ -111,12 +113,12 @@ export async function reconcileCleanupPendingSettlements(
 	if (isLionPidAlive) {
 		await lionStore.mutate((ledger) => ledger.reconcileControls(isLionPidAlive!, {
 			active_run_refs: activeLionRunRefs,
+			target_run_refs: obligations.map((obligation) => ({ id: obligation.settlement.lion_run_id, incarnation_id: obligation.settlement.lion_run_incarnation_id })),
 			get_process_identity: getLionProcessIdentity,
 			now_ms: deps.lionReconcileNowMs,
 			stale_after_ms: deps.lionReconcileStaleAfterMs,
 		}));
 	}
-	const obligations = (await cerebelStore.query((ledger) => ledger.cleanupPendingSettlements())).result;
 	const results: CleanupSettlementReconcileResult[] = [];
 	for (const obligation of obligations) {
 		const expected = obligation.settlement;

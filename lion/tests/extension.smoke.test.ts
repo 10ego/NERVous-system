@@ -142,6 +142,32 @@ describe("lion extension factory", () => {
 		assert.notEqual(terminal.status, "completed");
 	});
 
+	it("returns an error result when cancellation wins direct finalization", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-direct-cancelled-result-"));
+		const store = new LionStore(new FileBackend({ runsPath: path.join(dir, "runs.json"), dir }));
+		let owner!: ReturnType<typeof beginActiveRun>;
+		const { result: run } = await store.mutate((ledger) => {
+			const queued = ledger.create({ objective: "late cancellation", start: false });
+			owner = beginActiveRun({ namespaceId: store.namespaceId, runId: queued.id, incarnationId: queued.incarnation_id }, "json");
+			return ledger.start(queued.id);
+		});
+		const result = await executeRun({
+			pi: {} as never,
+			ctx: { cwd: dir } as never,
+			store,
+			action: "run",
+			run,
+			activeOwner: owner,
+			runner: async () => {
+				await store.mutate((ledger) => ledger.requestCancel(run.id, "late durable stop"));
+				return { settlement: "settled", text: "completed output", report: { outcome: "completed", summary: "must not win", changed_files: [], tests_run: [], blockers: [], next_steps: [] } };
+			},
+		});
+		assert.equal(result.isError, true);
+		assert.match(result.content[0]!.text, /status=aborted.*late durable stop/i);
+		assert.equal(result.details.run?.status, "aborted");
+	});
+
 	it("supports queued steering and queued cancellation through the tool", async () => {
 		const { pi, tools } = stubPi();
 		factory(pi);

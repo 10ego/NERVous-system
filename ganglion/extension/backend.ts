@@ -4,7 +4,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { resolveNervousStateFile } from "@nervous-system/state";
 import { GanglionLedger } from "./store.ts";
-import type { GanglionFile } from "./schema.ts";
+import { GanglionError, type GanglionFile } from "./schema.ts";
 
 const LOCK_STALE_TTL_MS = 30_000;
 const LOCK_MAX_ATTEMPTS = 200;
@@ -72,6 +72,9 @@ export class FileBackend {
 		catch (err) { const code = (err as NodeJS.ErrnoException).code; if (code === "ENOENT") return { ledger: new GanglionLedger(), warnings: [], fresh: true }; throw err; }
 		try { return { ledger: GanglionLedger.fromJSON(JSON.parse(raw) as GanglionFile), warnings: [], fresh: false }; }
 		catch (err) {
+			if (err instanceof GanglionError) {
+				throw new GanglionError(err.code, `ganglion state at ${this.location.ganglionPath} was rejected: ${err.message}; no migration or automatic reset was performed`);
+			}
 			const stamp = Date.now();
 			try { await fs.copyFile(this.location.ganglionPath, `${this.location.ganglionPath}.corrupt-${stamp}`); } catch { /* best effort */ }
 			return { ledger: new GanglionLedger(), warnings: [`ganglion state at ${this.location.ganglionPath} was corrupt (${err instanceof Error ? err.message : String(err)}); backed up to .corrupt-${stamp} and started fresh.`], fresh: false };

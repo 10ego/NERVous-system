@@ -149,7 +149,7 @@ cerebel/
 - **SYNAPSE**: transient coordination notes.
 - **AMYGDALA**: future risk escalation target for blocked waves.
 
-CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. LION is declared as an optional peer and loaded through its scoped package path only for `run_wave` or linked cancellation; if unavailable, those actions fail clearly without affecting standalone CEREBEL actions.
+CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. LION—including its process-local cleanup supervisor—is declared as an optional peer and loaded through scoped package paths for `run_wave`, linked cancellation, or reconciliation of an outstanding cleanup-pending settlement; if unavailable, those operations fail clearly without affecting standalone CEREBEL actions.
 
 CEREBEL provides whole-wave cancellation through `cerebel cancel reason="..."`. Every new CEREBEL→LION link stores both `lion_run_id` and immutable `lion_run_incarnation_id`; cancellation and settlement target that exact execution. CEREBEL waits for every verifiable exact linked LION—including links on assignments already recorded terminal—and for fresh unlinked reservations before terminalizing the wave or releasing capacity. Stale unlinked reservations are recovered before the cancellation gate. Incomplete pre-release links are unsupported and require operator delete/reset. Settlement uses one batched ledger snapshot with adaptive backoff. `CEREBEL_CANCEL_SETTLE_TIMEOUT_MS` defaults to 15,000 ms, accepts positive safe integers through 120,000 ms, and falls back to the default for invalid values. Steering remains per-run and RPC live steering remains explicit opt-in.
 

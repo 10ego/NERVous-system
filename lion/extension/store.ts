@@ -110,6 +110,8 @@ export interface CancelRunResult {
 
 export interface ReconcileControlsOptions {
 	active_run_refs?: Iterable<Pick<LionRun, "id" | "incarnation_id">>;
+	/** Restrict reconciliation to these exact run incarnations. */
+	target_run_refs?: Iterable<Pick<LionRun, "id" | "incarnation_id">>;
 	/** Run ids protected by a different exact process-local owner during a fenced operation. */
 	protected_run_ids?: Iterable<string>;
 	now_ms?: number;
@@ -464,11 +466,15 @@ export class LionLedger {
 	reconcileControls(isAlive: (pid: number) => boolean, options: ReconcileControlsOptions = {}): LionRun[] {
 		const changed: LionRun[] = [];
 		const active = new Set(Array.from(options.active_run_refs ?? [], (ref) => JSON.stringify([ref.id, ref.incarnation_id ?? null])));
+		const targets = options.target_run_refs
+			? new Set(Array.from(options.target_run_refs, (ref) => JSON.stringify([ref.id, ref.incarnation_id ?? null])))
+			: undefined;
 		const protectedRunIds = new Set(options.protected_run_ids ?? []);
 		const nowMs = options.now_ms ?? Date.now();
 		const staleAfterMs = options.stale_after_ms ?? DEFAULT_RECONCILE_GRACE_MS;
 		for (const r of this.runsById.values()) {
 			if (r.status !== "running" || protectedRunIds.has(r.id)) continue;
+			if (targets && !targets.has(JSON.stringify([r.id, r.incarnation_id ?? null]))) continue;
 			if (active.has(JSON.stringify([r.id, r.incarnation_id ?? null]))) continue;
 			if (!isReconcileStale(r, nowMs, staleAfterMs)) continue;
 			const pid = r.control?.pid;

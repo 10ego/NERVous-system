@@ -132,6 +132,7 @@ interface SupervisorEntry extends LionCleanupSupervisorRegistration {
 
 const supervisors = new Map<string, SupervisorEntry>();
 const DEFAULT_RETRY_DELAY_MS = 100;
+const MAX_RETRY_DELAY_MS = 5_000;
 
 export function cleanupSupervisorKey(owner: ActiveRunOwner): string {
 	return JSON.stringify([owner.namespaceId, owner.runId, owner.incarnationId ?? null, owner.ownerId]);
@@ -185,18 +186,31 @@ async function supervise(entry: SupervisorEntry): Promise<void> {
 }
 
 async function retry<T>(entry: SupervisorEntry, operation: () => Promise<T>): Promise<T> {
+	let attempts = 0;
 	for (;;) {
 		try { return await operation(); }
-		catch {
-			await delay(entry.retryDelayMs ?? DEFAULT_RETRY_DELAY_MS);
+		catch (error) {
+			attempts++;
+			const retryDelayMs = retryDelay(entry.retryDelayMs, attempts);
+			const message = error instanceof Error ? error.message : String(error);
+			console.warn(`[nervous-system/lion] cleanup supervisor retry ${attempts} for ${entry.owner.runId}/${entry.owner.incarnationId ?? "null"} in ${retryDelayMs}ms: ${message}`);
+			await delay(retryDelayMs);
 		}
 	}
+}
+
+function retryDelay(configuredDelayMs: number | undefined, attempts: number): number {
+	const base = typeof configuredDelayMs === "number" && Number.isFinite(configuredDelayMs) && configuredDelayMs > 0
+		? Math.floor(configuredDelayMs)
+		: DEFAULT_RETRY_DELAY_MS;
+	const exponent = Math.min(Math.max(0, attempts - 1), 8);
+	return Math.min(MAX_RETRY_DELAY_MS, base * 2 ** exponent);
 }
 
 function delay(ms: number): Promise<void> {
 	// The supervisor owns unfinished lifecycle authority. Keep its retry timer
 	// referenced so an otherwise-idle host cannot exit between retry attempts.
-	return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms)));
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function hasLionCleanupSupervisor(owner: ActiveRunOwner): boolean {
