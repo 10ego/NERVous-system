@@ -90,6 +90,7 @@ describe("lion extension factory", () => {
 		exit();
 		for (let index = 0; index < 100 && (await store.query((ledger) => ledger.get(run.id))).result?.status === "running"; index++) await new Promise((resolve) => setTimeout(resolve, 2));
 		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.status, "completed");
+		for (let index = 0; index < 100 && getActiveRunIds(store.namespaceId).includes(run.id); index++) await new Promise((resolve) => setTimeout(resolve, 2));
 		assert.deepEqual(getActiveRunIds(store.namespaceId), []);
 		assert.equal(events.filter((name) => name === "nervous:lion:completed").length, 1);
 	});

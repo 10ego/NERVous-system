@@ -76,6 +76,7 @@
     "test:synapse": "vitest run --dir synapse",
     "test:cortex": "vitest run --dir cortex",
     "test:lion": "vitest run --dir lion",
+    "benchmark:lion-progress": "vitest run lion/tests/progress-sidecar.test.ts -t \"keeps flush canonical work at zero\" --reporter=verbose",
     "test:cerebel": "vitest run --dir cerebel",
     "test:ganglion": "vitest run --dir ganglion",
     "test:amygdala": "vitest run --dir amygdala",

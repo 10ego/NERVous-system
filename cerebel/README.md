@@ -77,7 +77,7 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 - Creates exact LION run/incarnation links and executes up to the wave's stored `max_parallel` unless an explicit bounded override is supplied.
 - Uses a 600,000 ms per-LION timeout when `timeout_ms` is omitted. Explicit values must be integers from 1 through 2,147,483,647; invalid values return an `invalid_arg` tool error before adapter or LION worker creation and do not fall back to the default.
 - Emits the same `nervous:lion:started`, progress, and terminal telemetry as direct LION execution.
-- Time-throttles durable progress writes while sending UI progress immediately and forcing the final snapshot before terminalization.
+- Time-throttles bounded exact-incarnation LION sidecar writes while sending UI progress immediately, then drains and folds the final snapshot through LION's terminal API.
 - Joins every admitted batch with all-settled semantics before returning or propagating failure.
 - Records completed, partial, blocked, failed, and cancelled outcomes; terminal GANGLION updates are batched once per group.
 - Summarizes completed, partial, cancelled, blocked, failed, and still-planned assignment counts separately without changing their settlement semantics.

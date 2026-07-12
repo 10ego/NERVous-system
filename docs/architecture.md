@@ -31,6 +31,8 @@ LIONs complete → update AXON → CEREBEL assigns more → … → CORTEX check
 
 **Key principle:** AXON is durable state; SYNAPSE is transient coordination. Interrupted work resumes from AXON without the original context window.
 
+LION keeps lifecycle authority singular: canonical `runs.json` owns run existence, immutable incarnation, active/terminal status, control, and final output. Newly executed exact incarnations may have an adjacent bounded latest-progress sidecar, but it is only an active-run read overlay and local open/closed stale-writer fence. Progress flushes and terminal folds share the canonical namespace lock; terminal canonical state always wins.
+
 ## Repository layout
 
 Each component is an independent, installable pi package so it can be used and shipped separately:

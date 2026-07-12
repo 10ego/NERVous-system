@@ -259,6 +259,15 @@ export class LionLedger {
 		return { run: this.updateProgress(id, input), committed: true };
 	}
 
+	/** Storage-only fold used after exact-incarnation sidecar validation. */
+	foldProgressIfCurrent(id: string, incarnationId: string, progress: LionProgressSnapshot): { run: LionRun | undefined; committed: boolean } {
+		const current = this.runsById.get(id);
+		if (!current || current.incarnation_id !== incarnationId) return { run: current ? clone(current) : undefined, committed: false };
+		current.progress = clone(progress);
+		if (isActiveLionStatus(current.status) && progress.last_event_at > current.updated_at) current.updated_at = progress.last_event_at;
+		return { run: clone(current), committed: true };
+	}
+
 	updateControl(id: string, input: UpdateControlInput): LionRun {
 		const r = this.require(id);
 		if (!isActiveLionStatus(r.status)) throw new LionError("invalid_transition", `cannot update control for ${r.id} while ${r.status}`);
@@ -523,6 +532,15 @@ export class LionLedger {
 	get(id: string): LionRun | undefined {
 		const r = this.runsById.get(id);
 		return r ? clone(r) : undefined;
+	}
+
+	/** Exact active references for storage overlays; deliberately avoids cloning/sorting history. */
+	activeExactRefs(): Array<{ id: string; incarnation_id: string }> {
+		const refs: Array<{ id: string; incarnation_id: string }> = [];
+		for (const run of this.runsById.values()) {
+			if (isActiveLionStatus(run.status) && run.incarnation_id) refs.push({ id: run.id, incarnation_id: run.incarnation_id });
+		}
+		return refs;
 	}
 
 	all(): LionRun[] {
