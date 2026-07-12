@@ -26,6 +26,8 @@ describe("namespace progress batching", () => {
 		await Promise.all(runs.map((run, index) => persistBatchedProgress(store, run, progress(`step-${index}`), 5)));
 		const counters = store.ioCounters();
 		assert.deepEqual({ reads: counters.canonical_reads, parses: counters.canonical_parses, backups: counters.canonical_backups, serializations: counters.canonical_serializations, writes: counters.canonical_writes }, { reads: 0, parses: 0, backups: 0, serializations: 0, writes: 0 });
+		assert.equal(counters.sidecar_lock_acquisitions, 1);
+		assert.equal(counters.sidecar_capacity_scans, 0);
 		assert.equal(counters.sidecar_writes, 3);
 		const current = (await store.query((ledger) => runs.map((run) => ledger.get(run.id)))).result;
 		assert.deepEqual(current.map((run) => run?.progress?.activity), ["step-0", "step-1", "step-2"]);

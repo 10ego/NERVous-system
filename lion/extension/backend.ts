@@ -10,7 +10,7 @@ import { randomUUID } from "node:crypto";
 import { resolveNervousStateFile } from "@nervous-system/state";
 import { LionLedger, type FinishRunInput } from "./store.ts";
 import { isActiveLionStatus, isTerminalLionStatus, type LionFile, type LionProgressSnapshot, type LionRun } from "./schema.ts";
-import { ProgressSnapshotStore, emptyLionIoCounters, type LionIoCounters } from "./progress-sidecar.ts";
+import { ProgressSnapshotStore, emptyLionIoCounters, type LionIoCounters, type ProgressFlushOutcome, type ProgressFlushRequest } from "./progress-sidecar.ts";
 
 const LOCK_STALE_TTL_MS = 30_000;
 const LOCK_MAX_ATTEMPTS = 200;
@@ -89,7 +89,8 @@ async function fsyncDirectory(dir: string): Promise<void> {
 	const handle = await fs.open(dir, "r");
 	try { await handle.sync(); } finally { await handle.close(); }
 }
-async function atomicWrite(filePath: string, data: string): Promise<number> {
+interface AtomicWriteResult { bytes: number; post_commit_warning?: string }
+async function atomicWrite(filePath: string, data: string): Promise<AtomicWriteResult> {
 	const tmp = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
 	let renamed = false;
 	try {
@@ -97,15 +98,17 @@ async function atomicWrite(filePath: string, data: string): Promise<number> {
 		try { await handle.writeFile(data, "utf8"); await handle.sync(); } finally { await handle.close(); }
 		await fs.rename(tmp, filePath);
 		renamed = true;
-		await fs.chmod(filePath, 0o600);
-		await fsyncDirectory(path.dirname(filePath));
+		try { await fsyncDirectory(path.dirname(filePath)); }
+		catch (error) {
+			return { bytes: Buffer.byteLength(data), post_commit_warning: `atomic rename committed but directory sync failed for ${filePath}: ${error instanceof Error ? error.message : String(error)}` };
+		}
 	} finally {
 		if (!renamed) await fs.unlink(tmp).catch(() => undefined);
 	}
-	return Buffer.byteLength(data);
+	return { bytes: Buffer.byteLength(data) };
 }
 
-export interface LoadResult { ledger: LionLedger; warnings: string[]; fresh: boolean; canonicalCertain?: boolean }
+export interface LoadResult { ledger: LionLedger; warnings: string[]; fresh: boolean; canonicalCertain?: boolean; raw?: string }
 interface LifecycleChange { ref: { id: string; incarnation_id: string }; kind: "open" | "terminal" | "remove"; wasActive?: boolean }
 function boundedWarnings(warnings: string[]): string[] { return warnings.slice(0, 20).map((warning) => warning.slice(0, 500)); }
 
@@ -137,12 +140,13 @@ export class FileBackend {
 		await fs.mkdir(this.location.dir, { recursive: true });
 		return withLock(this.lockPath, async () => {
 			const loaded = await this.loadUnlocked(false);
+			await this.overlayActiveProgressUnlocked(loaded);
 			const before = loaded.ledger.all();
 			const result = fn(loaded.ledger);
 			const lifecycleWarnings = await this.prepareLifecycleUnlocked(before, loaded.ledger, loaded.canonicalCertain !== false);
-			await this.saveUnlocked(loaded.ledger);
+			const saveWarnings = await this.saveUnlocked(loaded.ledger, loaded.raw);
 			const cleanupWarnings = await this.cleanupLifecycleUnlocked(before, loaded.ledger);
-			return { result, warnings: boundedWarnings([...loaded.warnings, ...lifecycleWarnings, ...cleanupWarnings]) };
+			return { result, warnings: boundedWarnings([...loaded.warnings, ...lifecycleWarnings, ...saveWarnings, ...cleanupWarnings]) };
 		});
 	}
 
@@ -150,21 +154,27 @@ export class FileBackend {
 		await fs.mkdir(this.location.dir, { recursive: true });
 		return withLock(this.lockPath, async () => {
 			const loaded = await this.loadUnlocked(false);
+			await this.overlayActiveProgressUnlocked(loaded);
 			const before = loaded.ledger.all();
 			const outcome = fn(loaded.ledger);
 			let lifecycleWarnings: string[] = [];
 			let cleanupWarnings: string[] = [];
+			let saveWarnings: string[] = [];
 			if (outcome.changed) {
 				lifecycleWarnings = await this.prepareLifecycleUnlocked(before, loaded.ledger, loaded.canonicalCertain !== false);
-				await this.saveUnlocked(loaded.ledger);
+				saveWarnings = await this.saveUnlocked(loaded.ledger, loaded.raw);
 				cleanupWarnings = await this.cleanupLifecycleUnlocked(before, loaded.ledger);
 			}
-			return { result: outcome.result, warnings: boundedWarnings([...loaded.warnings, ...lifecycleWarnings, ...cleanupWarnings]), changed: outcome.changed };
+			return { result: outcome.result, warnings: boundedWarnings([...loaded.warnings, ...lifecycleWarnings, ...saveWarnings, ...cleanupWarnings]), changed: outcome.changed };
 		});
 	}
 
 	async flushProgress(ref: Pick<LionRun, "id" | "incarnation_id">, progress: LionProgressSnapshot): Promise<LionProgressSnapshot | undefined> {
 		return this.progress.flush(ref, progress);
+	}
+
+	async flushProgressBatch(requests: ProgressFlushRequest[]): Promise<ProgressFlushOutcome[]> {
+		return this.progress.flushBatch(requests);
 	}
 
 	async finishExact(id: string, incarnationId: string | null | undefined, input: FinishRunInput): Promise<{ result: { run: LionRun | undefined; committed: boolean }; warnings: string[] }> {
@@ -185,13 +195,13 @@ export class FileBackend {
 			}
 			if (closed.progress) reloaded.ledger.foldProgressIfCurrent(id, incarnationId, closed.progress);
 			const result = reloaded.ledger.finishIfCurrent(id, incarnationId, input);
-			await this.saveUnlocked(reloaded.ledger);
+			const saveWarnings = await this.saveUnlocked(reloaded.ledger, reloaded.raw);
 			// A crash/failure after save leaves canonical terminal truth; retain a bounded
 			// warning so later classification cleanup can recover the ignorable orphan.
 			const cleanupWarnings: string[] = [];
 			try { await this.progress.removeExactUnlocked({ id, incarnation_id: incarnationId }); }
 			catch (error) { cleanupWarnings.push(`terminal progress cleanup deferred for ${id}/${incarnationId}: ${error instanceof Error ? error.message : String(error)}`); }
-			return { result, warnings: boundedWarnings([...initial.warnings, ...closed.warnings, ...reloaded.warnings, ...cleanupWarnings]) };
+			return { result, warnings: boundedWarnings([...initial.warnings, ...closed.warnings, ...reloaded.warnings, ...saveWarnings, ...cleanupWarnings]) };
 		});
 	}
 
@@ -270,6 +280,11 @@ export class FileBackend {
 		return boundedWarnings(warnings);
 	}
 
+	private async overlayActiveProgressUnlocked(loaded: LoadResult): Promise<void> {
+		try { loaded.warnings.push(...await this.progress.overlayUnlocked(loaded.ledger)); }
+		catch (error) { loaded.warnings.push(`lion progress overlay was ignored without changing canonical truth: ${error instanceof Error ? error.message : String(error)}`); }
+	}
+
 	private async loadUnlocked(overlay: boolean): Promise<LoadResult> {
 		let raw: string;
 		try {
@@ -292,31 +307,34 @@ export class FileBackend {
 				warnings: [`lion run ledger at ${this.location.runsPath} was corrupt (${error instanceof Error ? error.message : String(error)}); backed up to .corrupt-${stamp} and started fresh.`],
 			};
 		}
-		if (!overlay) return { ledger, warnings: [], fresh: false, canonicalCertain: true };
-		try {
-			return { ledger, warnings: await this.progress.overlayUnlocked(ledger), fresh: false, canonicalCertain: true };
-		} catch (error) {
-			return { ledger, warnings: [`lion progress overlay was ignored without changing canonical truth: ${error instanceof Error ? error.message : String(error)}`], fresh: false, canonicalCertain: true };
-		}
+		const loaded: LoadResult = { ledger, warnings: [], fresh: false, canonicalCertain: true, raw };
+		if (!overlay) return loaded;
+		await this.overlayActiveProgressUnlocked(loaded);
+		return loaded;
 	}
 
-	private async saveUnlocked(ledger: LionLedger): Promise<void> {
+	private async saveUnlocked(ledger: LionLedger, previous?: string): Promise<string[]> {
 		this.counters.canonical_serializations++;
+		const warnings: string[] = [];
 		const data = JSON.stringify(ledger.toJSON(), null, 2);
-		let previous: string | undefined;
-		try {
-			previous = await fs.readFile(this.location.runsPath, "utf8");
-			this.counters.canonical_reads++;
-			this.counters.canonical_bytes_read += Buffer.byteLength(previous);
-		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-		if (previous !== undefined) {
-			const bytes = await atomicWrite(this.bakPath, previous);
-			this.counters.canonical_backups++;
-			this.counters.canonical_bytes_written += bytes;
+		if (previous === undefined) {
+			try {
+				previous = await fs.readFile(this.location.runsPath, "utf8");
+				this.counters.canonical_reads++;
+				this.counters.canonical_bytes_read += Buffer.byteLength(previous);
+			} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		}
-		const bytes = await atomicWrite(this.location.runsPath, data);
+		if (previous !== undefined) {
+			const backup = await atomicWrite(this.bakPath, previous);
+			this.counters.canonical_backups++;
+			this.counters.canonical_bytes_written += backup.bytes;
+			if (backup.post_commit_warning) warnings.push(backup.post_commit_warning);
+		}
+		const canonical = await atomicWrite(this.location.runsPath, data);
 		this.counters.canonical_writes++;
-		this.counters.canonical_bytes_written += bytes;
+		this.counters.canonical_bytes_written += canonical.bytes;
+		if (canonical.post_commit_warning) warnings.push(canonical.post_commit_warning);
+		return warnings;
 	}
 }
 
@@ -331,6 +349,7 @@ export class LionStore {
 	async mutate<T>(fn: (ledger: LionLedger) => T): Promise<{ result: T; warnings: string[] }> { return this.backend.mutate(fn); }
 	async mutateMaybe<T>(fn: (ledger: LionLedger) => { result: T; changed: boolean }): Promise<{ result: T; warnings: string[]; changed: boolean }> { return this.backend.mutateMaybe(fn); }
 	async flushProgress(ref: Pick<LionRun, "id" | "incarnation_id">, progress: LionProgressSnapshot): Promise<LionProgressSnapshot | undefined> { return this.backend.flushProgress(ref, progress); }
+	async flushProgressBatch(requests: ProgressFlushRequest[]): Promise<ProgressFlushOutcome[]> { return this.backend.flushProgressBatch(requests); }
 	async finishRun(id: string, incarnationId: string | null | undefined, input: FinishRunInput): Promise<{ result: { run: LionRun | undefined; committed: boolean }; warnings: string[] }> { return this.backend.finishExact(id, incarnationId, input); }
 	async deleteRun(id: string): Promise<{ result: LionRun; warnings: string[] }> { return this.backend.deleteExact(id); }
 	async cleanupProgressArtifacts(): Promise<string[]> { return this.backend.cleanupProgress(); }
