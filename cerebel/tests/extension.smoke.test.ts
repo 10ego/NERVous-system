@@ -361,6 +361,43 @@ describe("cerebel extension factory", () => {
 		}
 	});
 
+	it("releases valid cancellation siblings when one allocation is missing", async () => {
+		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-cancel-invalid-allocation-"));
+		process.env.NERVOUS_STATE_ROOT = dir; process.env.NERVOUS_PROJECT = "proj"; process.env.NERVOUS_CONTEXT = "ctx";
+		try {
+			const ganglionStore = GanglionStore.fromCwd(dir);
+			await ganglionStore.mutate((ledger) => {
+				const group = ledger.create({ members: [{ id: "lion-a" }, { id: "lion-b" }] });
+				ledger.allocate(group.id, { tasks: [{ id: "task-a", title: "A" }, { id: "task-b", title: "B" }] });
+			});
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			await cerebel.execute("plan", { action: "plan_wave", assignments: [
+				{ task_id: "task-a", agent_id: "lion-a", objective: "A", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-missing" },
+				{ task_id: "task-b", agent_id: "lion-b", objective: "B", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-002" },
+			] }, undefined, undefined, { cwd: dir });
+			const originalMutate = GanglionStore.prototype.mutate;
+			let mutations = 0;
+			vi.spyOn(GanglionStore.prototype, "mutate").mockImplementation(function (this: GanglionStore, fn: any) { mutations++; return originalMutate.call(this, fn); });
+
+			const cancelled = await cerebel.execute("cancel", { action: "cancel" }, undefined, undefined, { cwd: dir });
+
+			assert.equal(mutations, 1);
+			assert.match(cancelled.content[0].text, /release failed for ganglion-001\/alloc-missing: allocation alloc-missing not found/);
+			assert.match(cancelled.content[0].text, /ganglion-001\/alloc-002 recorded; capacity released/);
+			const group = (await ganglionStore.query((ledger) => ledger.get("ganglion-001"))).result!;
+			assert.equal(group.members.find((member) => member.id === "lion-a")?.status, "busy");
+			assert.equal(group.members.find((member) => member.id === "lion-b")?.status, "available");
+			assert.equal(group.allocations.find((allocation) => allocation.id === "alloc-002")?.status, "cancelled");
+		} finally {
+			if (oldRoot === undefined) delete process.env.NERVOUS_STATE_ROOT; else process.env.NERVOUS_STATE_ROOT = oldRoot;
+			if (oldProject === undefined) delete process.env.NERVOUS_PROJECT; else process.env.NERVOUS_PROJECT = oldProject;
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+		}
+	});
+
 	it("reports per-allocation cancellation errors while continuing other GANGLION groups", async () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-cancel-group-failure-"));
