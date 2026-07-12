@@ -534,6 +534,15 @@ export class LionLedger {
 		return r ? clone(r) : undefined;
 	}
 
+	/** Exact active references for storage overlays; deliberately avoids cloning/sorting history. */
+	activeExactRefs(): Array<{ id: string; incarnation_id: string }> {
+		const refs: Array<{ id: string; incarnation_id: string }> = [];
+		for (const run of this.runsById.values()) {
+			if (isActiveLionStatus(run.status) && run.incarnation_id) refs.push({ id: run.id, incarnation_id: run.incarnation_id });
+		}
+		return refs;
+	}
+
 	all(): LionRun[] {
 		return Array.from(this.runsById.values())
 			.map(clone)

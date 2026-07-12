@@ -57,6 +57,16 @@ describe("FileBackend", () => {
 		assert.equal(result[0]?.objective, "persist");
 	});
 
+	it("reuses loaded canonical bytes when writing a backup", async () => {
+		const { store } = await tmpStore();
+		await store.mutate((l) => l.create({ objective: "first" }));
+		store.resetIoCounters();
+		await store.mutate((l) => l.create({ objective: "second" }));
+		const counters = store.ioCounters();
+		assert.equal(counters.canonical_reads, 1, "mutation load is reused for the backup");
+		assert.equal(counters.canonical_backups, 1);
+	});
+
 	it("skips saving conditional mutations when unchanged", async () => {
 		const { backend, store } = await tmpStore();
 		await store.mutate((l) => l.create({ objective: "persist" }));

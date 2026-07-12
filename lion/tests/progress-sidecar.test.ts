@@ -1,8 +1,10 @@
 import * as assert from "node:assert";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, it } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
@@ -25,9 +27,11 @@ async function exists(filePath: string): Promise<boolean> { try { await fs.lstat
 const execFileAsync = promisify(execFile);
 
 async function flushInChild(runsPath: string, run: Pick<LionRun, "id" | "incarnation_id">, activityPrefix: string): Promise<void> {
-	const vitestCli = path.resolve("node_modules/vitest/vitest.mjs");
-	await execFileAsync(process.execPath, [vitestCli, "run", "lion/tests/progress-sidecar-process.fixture.test.ts", "--reporter=dot"], {
-		cwd: path.resolve("."),
+	const require = createRequire(import.meta.url);
+	const vitestCli = require.resolve("vitest/vitest.mjs");
+	const fixture = fileURLToPath(new URL("./progress-sidecar-process.fixture.test.ts", import.meta.url));
+	await execFileAsync(process.execPath, [vitestCli, "run", fixture, "--reporter=dot"], {
+		cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
 		env: {
 			...process.env,
 			LION_PROGRESS_CHILD: "1",
@@ -168,17 +172,19 @@ describe("exact-incarnation progress sidecars", () => {
 		const paths = backend.progress.paths({ id: run.id, incarnation_id: run.incarnation_id! });
 		const changed = await store.mutate((ledger) => ledger.reconcileControls(() => false, { now_ms: Date.now() + 60_000, stale_after_ms: 1, active_run_refs: [] }));
 		assert.equal(changed.result[0]?.status, "failed");
+		assert.equal(changed.result[0]?.progress?.activity, "before owner loss");
 		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.progress?.activity, "before owner loss");
 		assert.equal(await exists(paths.primary), false);
 	});
 
-	it("removes abandoned atomic-write temp files before capacity accounting", async () => {
+	it("removes abandoned atomic-write temp files before later admission capacity accounting", async () => {
 		const { backend, store } = await makeStore("temp-cleanup");
 		const run = await createRunning(store);
 		const paths = backend.progress.paths({ id: run.id, incarnation_id: run.incarnation_id! });
 		const abandoned = `${paths.primary}.tmp-999-00000000-0000-4000-8000-000000000000`;
 		await fs.writeFile(abandoned, Buffer.alloc(MAX_PROGRESS_ENVELOPE_BYTES), { mode: 0o600 });
 
+		await createRunning(store, "admission removes abandoned temp");
 		await store.flushProgress(run, snapshot("after crash"));
 
 		assert.equal(await exists(abandoned), false);
@@ -299,6 +305,44 @@ describe("exact-incarnation progress sidecars", () => {
 		assert.equal(await exists(originalPaths.primary), true, "uncertain canonical state must not classify the original sidecar as stale");
 		assert.equal(await exists(replacementPaths.primary), true, "the newly admitted exact run still receives its own authority");
 		assert.notEqual(admitted.result.incarnation_id, original.incarnation_id);
+	});
+
+	it("rejects sidecar roots beneath writable shared parents", async () => {
+		if (process.platform === "win32") return;
+		const { dir, store } = await makeStore("unsafe-parent");
+		await fs.chmod(dir, 0o777);
+		await assert.rejects(() => store.mutate((ledger) => ledger.create({ objective: "unsafe parent" })), /unsafe parent/);
+	});
+
+	it("overlays active sidecars without cloning or sorting historical runs", async () => {
+		const { store } = await makeStore("overlay-refs");
+		const run = await createRunning(store);
+		await store.flushProgress(run, snapshot("overlay"));
+		const originalAll = LionLedger.prototype.all;
+		(LionLedger.prototype as any).all = () => { throw new Error("overlay must not call all"); };
+		try {
+			assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.progress?.activity, "overlay");
+		} finally { LionLedger.prototype.all = originalAll; }
+	});
+
+	it("reserves a backup slot when admitting a sidecar authority", async () => {
+		const { backend, store } = await makeStore("capacity-reservation");
+		(backend.progress as any).limits = { maxFiles: 2, maxBytes: MAX_PROGRESS_ENVELOPE_BYTES * 4 };
+		const first = await createRunning(store, "first");
+		await store.flushProgress(first, snapshot("first flush"));
+		await assert.rejects(() => createRunning(store, "second"), /capacity reached/);
+		const terminal = await store.finishRun(first.id, first.incarnation_id, { output: "done", report: null });
+		assert.equal(terminal.result.run?.status, "completed");
+	});
+
+	it("keeps high-cardinality flushes free of capacity directory scans", async () => {
+		const { store } = await makeStore("flush-scaling");
+		const runs = (await store.mutate((ledger) => Array.from({ length: 48 }, (_, index) => ledger.create({ objective: `active-${index}` })))).result;
+		store.resetIoCounters();
+		await Promise.all(runs.map((run, index) => store.flushProgress(run, snapshot(`flush-${index}`))));
+		const counters = store.ioCounters();
+		assert.equal(counters.sidecar_capacity_scans, 0);
+		assert.equal(counters.sidecar_capacity_entries, 0);
 	});
 
 	it("serializes concurrent workers under one namespace lock without cross-writing", async () => {
