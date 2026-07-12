@@ -152,7 +152,7 @@ describe("LION subprocess helpers", () => {
 			await waitForChildClose(proc);
 			assert.equal(isPidAlive(proc.pid!), false);
 		} finally {
-			if (proc.pid && isPidAlive(proc.pid)) {
+			if (proc.pid && proc.exitCode === null && proc.signalCode === null && isPidAlive(proc.pid)) {
 				try { signalProcessTree(proc.pid, "SIGKILL"); }
 				catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error; }
 			}

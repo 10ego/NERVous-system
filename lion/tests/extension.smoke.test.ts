@@ -62,7 +62,7 @@ describe("lion extension factory", () => {
 		}
 	});
 
-	it("does not use worker context as an implicit cancellation reason", async () => {
+	it("uses only the cancel action reason as the cancellation explanation", async () => {
 		const { pi, tools } = stubPi();
 		factory(pi);
 		const lion = tools.find((tool) => tool.name === "lion");
@@ -71,13 +71,18 @@ describe("lion extension factory", () => {
 		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
 		try {
 			const ctx = { cwd: dir, isProjectTrusted: () => false };
-			const dry = await lion.execute("queue", { action: "run", objective: "queued", context: "worker-only instructions", dry_run: true }, undefined, undefined, ctx);
-			const cancelled = await lion.execute("cancel", { action: "cancel", id: dry.details.run.id, context: "must not become a reason" }, undefined, undefined, ctx);
-			assert.equal(cancelled.details.run.control.cancel_reason, null);
-			assert.equal(cancelled.details.run.error, "Cancelled before start");
+			const contextOnly = await lion.execute("queue-context-only", { action: "run", objective: "queued", context: "worker-only instructions", dry_run: true }, undefined, undefined, ctx);
+			const contextOnlyCancellation = await lion.execute("cancel-context-only", { action: "cancel", id: contextOnly.details.run.id, context: "must not become a reason" }, undefined, undefined, ctx);
+			assert.equal(contextOnlyCancellation.details.run.control.cancel_reason, null);
+			assert.equal(contextOnlyCancellation.details.run.error, "Cancelled before start");
+
+			const withReason = await lion.execute("queue-with-reason", { action: "run", objective: "queued", context: "worker-only instructions", dry_run: true }, undefined, undefined, ctx);
+			const withReasonCancellation = await lion.execute("cancel-with-reason", { action: "cancel", id: withReason.details.run.id, reason: "explicit cancellation reason", context: "must not become a reason" }, undefined, undefined, ctx);
+			assert.equal(withReasonCancellation.details.run.control.cancel_reason, "explicit cancellation reason");
 		} finally {
 			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH;
 			else process.env.LION_RUNS_PATH = oldRunsPath;
+			await fs.rm(dir, { recursive: true, force: true });
 		}
 	});
 
