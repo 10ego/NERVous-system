@@ -1,10 +1,8 @@
 import * as assert from "node:assert";
 import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
-import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { describe, it } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
@@ -27,11 +25,10 @@ async function exists(filePath: string): Promise<boolean> { try { await fs.lstat
 const execFileAsync = promisify(execFile);
 
 async function flushInChild(runsPath: string, run: Pick<LionRun, "id" | "incarnation_id">, activityPrefix: string): Promise<void> {
-	const require = createRequire(import.meta.url);
 	const vitestCli = require.resolve("vitest/vitest.mjs");
-	const fixture = fileURLToPath(new URL("./progress-sidecar-process.fixture.test.ts", import.meta.url));
+	const fixture = path.join(__dirname, "progress-sidecar-process.fixture.test.ts");
 	await execFileAsync(process.execPath, [vitestCli, "run", fixture, "--reporter=dot"], {
-		cwd: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+		cwd: path.resolve(__dirname, ".."),
 		env: {
 			...process.env,
 			LION_PROGRESS_CHILD: "1",
