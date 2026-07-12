@@ -37,5 +37,5 @@ Pre-1.0 (`0.x`) state is not a supported migration source. In particular, CEREBE
 
 ### Known architectural limitations
 
-- RPC cleanup currently retains the foreground call and exact active ownership until an attached child is confirmed exited. A safe bounded foreground return requires a nonterminal cleanup-pending supervisor; a timeout alone would falsely release ownership. The design contract is tracked in [issue #12](https://github.com/10ego/NERVous-system/issues/12).
+- RPC cleanup can return the explicit nonterminal `cleanup_pending` result after an exact process-local supervisor handoff. The durable LION, CEREBEL assignment, and GANGLION capacity remain retained until attached-handle exit observation and exact-incarnation late settlement. Supervisor state is intentionally not recovered from persisted PID metadata after restart.
 - Live progress updates are throttled and batched, but each accepted batch still rewrites the canonical LION ledger. Moving high-frequency progress to an exact-incarnation sidecar/journal requires coordinated read, recovery, backup, and final-fold semantics tracked in [issue #13](https://github.com/10ego/NERVous-system/issues/13).

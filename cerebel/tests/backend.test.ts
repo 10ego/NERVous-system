@@ -72,6 +72,21 @@ describe("FileBackend", () => {
 		assert.equal((await fs.readdir(dir)).some((entry) => entry.startsWith("cerebel.json.corrupt-")), false);
 	});
 
+	it("fails closed without rewriting a malformed cleanup settlement obligation", async () => {
+		const { backend, store, dir } = await tmpStore();
+		const wave = (await store.mutate((ledger) => ledger.planWave({ assignments: [{ objective: "cleanup", ganglion_id: "ganglion-001", ganglion_allocation_id: "alloc-001" }] }))).result;
+		await store.mutate((ledger) => ledger.dispatch(wave.id, { links: [{ assignment_id: "assign-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001" }] }));
+		await store.mutate((ledger) => ledger.markCleanupPendingSettlementIfOwned(wave.id, "assign-001", "run-001", "inc-001"));
+		const raw = JSON.parse(await fs.readFile(backend.location.cerebelPath, "utf8"));
+		raw.waves[wave.id].assignments[0].cleanup_pending_settlement.observed_at = 123;
+		await fs.writeFile(backend.location.cerebelPath, JSON.stringify(raw), "utf8");
+		await assert.rejects(() => backend.load(), /no migration or automatic reset was performed/);
+		await assert.rejects(() => backend.mutate((ledger) => ledger.planWave({ tasks: [{ id: "task-002", title: "must not overwrite" }] })), /no migration or automatic reset was performed/);
+		const persisted = JSON.parse(await fs.readFile(backend.location.cerebelPath, "utf8"));
+		assert.equal(persisted.waves[wave.id].assignments[0].cleanup_pending_settlement.observed_at, 123);
+		assert.equal((await fs.readdir(dir)).some((entry) => entry.startsWith("cerebel.json.corrupt-")), false);
+	});
+
 	it("recovers corrupt files", async () => {
 		const { backend, dir } = await tmpStore();
 		await fs.writeFile(backend.location.cerebelPath, "{ broken", "utf8");

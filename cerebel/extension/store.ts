@@ -10,6 +10,7 @@ import {
 	type AxonTaskBrief,
 	type CerebelFile,
 	type CerebelSummary,
+	type CleanupPendingSettlement,
 	type DecisionReport,
 	type OrchestrationDecision,
 	type Priority,
@@ -86,6 +87,12 @@ export interface RecordIfOwnedResult {
 	assignment: Assignment;
 }
 
+export interface CleanupPendingSettlementRef {
+	wave_id: string;
+	assignment: Assignment;
+	settlement: CleanupPendingSettlement;
+}
+
 export class CerebelLedger {
 	readonly project?: string;
 	current_wave_id?: string;
@@ -130,6 +137,7 @@ export class CerebelLedger {
 			if (existingRef && incomingRef && !sameRunRef(existingRef, incomingRef)) {
 				throw new CerebelError("invalid_transition", `cannot replace LION provenance for ${a.id} from ${formatRunRef(existingRef)} to ${formatRunRef(incomingRef)}`);
 			}
+			assertFrozenGanglionProvenance(a, link.ganglion_id, link.ganglion_allocation_id, "dispatch");
 			a.status = "dispatched";
 			if (incomingRef && !existingRef) {
 				a.lion_run_id = incomingRef.run_id;
@@ -154,6 +162,10 @@ export class CerebelLedger {
 	}
 
 	record(waveId: string, input: RecordInput): Wave {
+		return this.recordInternal(waveId, input, false);
+	}
+
+	private recordInternal(waveId: string, input: RecordInput, allowCleanupPendingSettlement: boolean): Wave {
 		const w = this.require(waveId);
 		if (!ASSIGNMENT_STATUS_SET.has(input.outcome)) throw new CerebelError("invalid_arg", `invalid outcome ${input.outcome}`);
 		const a = selectAssignmentForRecord(w, input);
@@ -163,6 +175,10 @@ export class CerebelLedger {
 		const incomingRef = optionalRunRef(input.lion_run_id, input.lion_run_incarnation_id, `record link for ${a.id}`);
 		if (existingRef && incomingRef && !sameRunRef(existingRef, incomingRef)) {
 			throw new CerebelError("invalid_transition", `cannot replace LION provenance for ${a.id} from ${formatRunRef(existingRef)} to ${formatRunRef(incomingRef)}`);
+		}
+		assertFrozenGanglionProvenance(a, input.ganglion_id, input.ganglion_allocation_id, "record");
+		if (!allowCleanupPendingSettlement && a.cleanup_pending_settlement && isTerminalAssignmentStatus(input.outcome)) {
+			throw new CerebelError("invalid_transition", `cannot record terminal outcome for cleanup-pending assignment ${a.id}; exact supervisor or reconciler settlement must confirm process exit`);
 		}
 		a.status = input.outcome;
 		if (incomingRef && !existingRef) {
@@ -186,6 +202,58 @@ export class CerebelLedger {
 		return clone(w);
 	}
 
+	/** Durably marks the exact late-settlement obligation before cleanup authority is handed off. */
+	markCleanupPendingSettlementIfOwned(waveId: string, assignmentId: string, expectedLionRunId: string, expectedLionIncarnationId: string): RecordIfOwnedResult {
+		const wave = this.require(waveId);
+		const assignment = requireAssignment(wave, assignmentId);
+		const currentRef = assignmentRunRef(assignment);
+		if (isTerminalAssignmentStatus(assignment.status)
+			|| !currentRef
+			|| !sameRunRef(currentRef, { run_id: expectedLionRunId, incarnation_id: expectedLionIncarnationId })) {
+			return { committed: false, wave: clone(wave), assignment: clone(assignment) };
+		}
+		const existing = assignment.cleanup_pending_settlement;
+		if (existing && (existing.lion_run_id !== expectedLionRunId || existing.lion_run_incarnation_id !== expectedLionIncarnationId)) {
+			return { committed: false, wave: clone(wave), assignment: clone(assignment) };
+		}
+		assignment.cleanup_pending_settlement = existing ?? {
+			lion_run_id: expectedLionRunId,
+			lion_run_incarnation_id: expectedLionIncarnationId,
+			observed_at: now(),
+			ganglion_id: assignment.ganglion_id ?? null,
+			ganglion_allocation_id: assignment.ganglion_allocation_id ?? null,
+		};
+		assignment.updated_at = now();
+		wave.updated_at = assignment.updated_at;
+		return { committed: true, wave: clone(wave), assignment: clone(assignment) };
+	}
+
+	completeCleanupPendingSettlementIfOwned(waveId: string, assignmentId: string, expectedLionRunId: string, expectedLionIncarnationId: string): boolean {
+		const wave = this.require(waveId);
+		const assignment = requireAssignment(wave, assignmentId);
+		const pending = assignment.cleanup_pending_settlement;
+		if (!pending
+			|| pending.lion_run_id !== expectedLionRunId
+			|| pending.lion_run_incarnation_id !== expectedLionIncarnationId
+			|| assignment.lion_run_id !== expectedLionRunId
+			|| assignment.lion_run_incarnation_id !== expectedLionIncarnationId
+			|| assignment.ganglion_id !== pending.ganglion_id
+			|| assignment.ganglion_allocation_id !== pending.ganglion_allocation_id
+			|| !isTerminalAssignmentStatus(assignment.status)) return false;
+		assignment.cleanup_pending_settlement = null;
+		assignment.updated_at = now();
+		wave.updated_at = assignment.updated_at;
+		return true;
+	}
+
+	cleanupPendingSettlements(): CleanupPendingSettlementRef[] {
+		const out: CleanupPendingSettlementRef[] = [];
+		for (const wave of this.wavesById.values()) for (const assignment of wave.assignments) {
+			if (assignment.cleanup_pending_settlement) out.push({ wave_id: wave.id, assignment: clone(assignment), settlement: clone(assignment.cleanup_pending_settlement) });
+		}
+		return out;
+	}
+
 	/** Atomically records an outcome only while the assignment remains linked to the expected LION incarnation. */
 	recordIfOwned(waveId: string, expectedLionRunId: string, expectedLionIncarnationId: string, input: RecordInput & { assignment_id: string }): RecordIfOwnedResult {
 		if (!input.assignment_id) throw new CerebelError("invalid_arg", "guarded record requires assignment_id");
@@ -203,7 +271,7 @@ export class CerebelLedger {
 			|| !sameRunRef(currentRef, { run_id: expectedLionRunId, incarnation_id: expectedLionIncarnationId })) {
 			return { committed: false, wave: clone(wave), assignment: clone(current) };
 		}
-		const recorded = this.record(waveId, { ...input, lion_run_incarnation_id: expectedLionIncarnationId });
+		const recorded = this.recordInternal(waveId, { ...input, lion_run_incarnation_id: expectedLionIncarnationId }, true);
 		return { committed: true, wave: recorded, assignment: recorded.assignments.find((a) => a.id === current.id) ?? clone(current) };
 	}
 
@@ -367,6 +435,7 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			status: "planned",
 			ganglion_id: null,
 			ganglion_allocation_id: null,
+			cleanup_pending_settlement: null,
 			lion_run_id: null,
 			lion_run_incarnation_id: null,
 			outcome_summary: null,
@@ -385,6 +454,7 @@ function materializeAssignments(waveId: string, input: PlanWaveInput): Assignmen
 			status: "planned",
 			ganglion_id: a.ganglion_id ?? null,
 			ganglion_allocation_id: a.ganglion_allocation_id ?? null,
+			cleanup_pending_settlement: null,
 			lion_run_id: null,
 			lion_run_incarnation_id: null,
 			outcome_summary: null,
@@ -406,6 +476,23 @@ export function sameRunRef(left: ExactLionRunRef, right: ExactLionRunRef): boole
 
 function formatRunRef(ref: ExactLionRunRef): string {
 	return `${ref.run_id}/${ref.incarnation_id}`;
+}
+
+function assertFrozenGanglionProvenance(
+	assignment: Assignment,
+	incomingGanglionId: string | null | undefined,
+	incomingAllocationId: string | null | undefined,
+	operation: string,
+): void {
+	if (!assignmentRunRef(assignment) && !assignment.cleanup_pending_settlement) return;
+	const replacesGanglion = incomingGanglionId !== undefined && incomingGanglionId !== assignment.ganglion_id;
+	const replacesAllocation = incomingAllocationId !== undefined && incomingAllocationId !== assignment.ganglion_allocation_id;
+	if (replacesGanglion || replacesAllocation) {
+		throw new CerebelError(
+			"invalid_transition",
+			`cannot replace frozen GANGLION provenance for ${assignment.id} during ${operation}; exact LION linkage or cleanup settlement already exists`,
+		);
+	}
 }
 
 export function assignmentRunRef(assignment: Pick<Assignment, "id" | "lion_run_id" | "lion_run_incarnation_id">): ExactLionRunRef | undefined {
@@ -511,6 +598,7 @@ function coerceAssignment(value: unknown): Assignment | null {
 		status: typeof value.status === "string" && ASSIGNMENT_STATUS_SET.has(value.status) ? (value.status as AssignmentStatus) : "failed",
 		ganglion_id: typeof value.ganglion_id === "string" ? value.ganglion_id : null,
 		ganglion_allocation_id: typeof value.ganglion_allocation_id === "string" ? value.ganglion_allocation_id : null,
+		cleanup_pending_settlement: null,
 		outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null,
 		changed_files: strings(value.changed_files),
 		tests_run: strings(value.tests_run),
@@ -521,14 +609,58 @@ function coerceAssignment(value: unknown): Assignment | null {
 	};
 	const hasRunId = value.lion_run_id !== null && value.lion_run_id !== undefined;
 	const hasIncarnation = value.lion_run_incarnation_id !== null && value.lion_run_incarnation_id !== undefined;
+	const hasPendingSettlement = value.cleanup_pending_settlement !== null && value.cleanup_pending_settlement !== undefined;
 	if (hasRunId !== hasIncarnation) {
 		throw new CerebelError("invalid_arg", `assignment ${base.id} has invalid LION provenance; delete/reset this clean-slate record because migration and incarnation backfill are unsupported`);
 	}
-	if (!hasRunId) return { ...base, lion_run_id: null, lion_run_incarnation_id: null };
+	if (!hasRunId) {
+		if (hasPendingSettlement) throw malformedCleanupSettlement(base.id, "an exact LION link is required");
+		return { ...base, lion_run_id: null, lion_run_incarnation_id: null };
+	}
+	const lionRunId = requireNonEmpty(value.lion_run_id, `assignment ${base.id} lion_run_id`);
+	const lionIncarnationId = requireNonEmpty(value.lion_run_incarnation_id, `assignment ${base.id} lion_run_incarnation_id`);
+	const pending = hasPendingSettlement ? coerceCleanupPendingSettlement(value.cleanup_pending_settlement, base.id) : null;
+	if (pending && (pending.lion_run_id !== lionRunId
+		|| pending.lion_run_incarnation_id !== lionIncarnationId
+		|| pending.ganglion_id !== base.ganglion_id
+		|| pending.ganglion_allocation_id !== base.ganglion_allocation_id)) {
+		throw malformedCleanupSettlement(base.id, "settlement provenance differs from the assignment");
+	}
 	return {
 		...base,
-		lion_run_id: requireNonEmpty(value.lion_run_id, `assignment ${base.id} lion_run_id`),
-		lion_run_incarnation_id: requireNonEmpty(value.lion_run_incarnation_id, `assignment ${base.id} lion_run_incarnation_id`),
+		cleanup_pending_settlement: pending,
+		lion_run_id: lionRunId,
+		lion_run_incarnation_id: lionIncarnationId,
+	};
+}
+
+function malformedCleanupSettlement(assignmentId: string, reason: string): CerebelError {
+	return new CerebelError("invalid_arg", `assignment ${assignmentId} has malformed cleanup_pending_settlement (${reason}); delete/reset this clean-slate CEREBEL ledger because the settlement obligation cannot be safely migrated`);
+}
+
+function coerceCleanupPendingSettlement(value: unknown, assignmentId: string): CleanupPendingSettlement {
+	if (!isObject(value)) throw malformedCleanupSettlement(assignmentId, "required fields are invalid or missing");
+	const lionRunId = value.lion_run_id;
+	const lionRunIncarnationId = value.lion_run_incarnation_id;
+	const observedAt = value.observed_at;
+	const ganglionId = value.ganglion_id;
+	const ganglionAllocationId = value.ganglion_allocation_id;
+	if (typeof lionRunId !== "string"
+		|| !lionRunId.trim()
+		|| typeof lionRunIncarnationId !== "string"
+		|| !lionRunIncarnationId.trim()
+		|| typeof observedAt !== "string"
+		|| !observedAt
+		|| !(typeof ganglionId === "string" || ganglionId === null)
+		|| !(typeof ganglionAllocationId === "string" || ganglionAllocationId === null)) {
+		throw malformedCleanupSettlement(assignmentId, "required fields are invalid or missing");
+	}
+	return {
+		lion_run_id: lionRunId,
+		lion_run_incarnation_id: lionRunIncarnationId,
+		observed_at: observedAt,
+		ganglion_id: typeof ganglionId === "string" ? ganglionId : null,
+		ganglion_allocation_id: typeof ganglionAllocationId === "string" ? ganglionAllocationId : null,
 	};
 }
 

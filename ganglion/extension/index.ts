@@ -28,7 +28,7 @@ async function loadLionRunBriefs(cwd: string): Promise<LionRunBrief[]> {
 		const r = value as Record<string, unknown>;
 		if (typeof r.id !== "string" || typeof r.agent_id !== "string" || typeof r.status !== "string") return [];
 		const report = typeof r.report === "object" && r.report !== null ? r.report as { summary?: unknown } : undefined;
-		return [{ id: r.id, agent_id: r.agent_id, status: r.status, task_id: typeof r.task_id === "string" ? r.task_id : null, summary: typeof report?.summary === "string" ? report.summary : typeof r.error === "string" ? r.error : null, updated_at: typeof r.updated_at === "string" ? r.updated_at : undefined }];
+		return [{ id: r.id, incarnation_id: typeof r.incarnation_id === "string" ? r.incarnation_id : null, agent_id: r.agent_id, status: r.status, task_id: typeof r.task_id === "string" ? r.task_id : null, summary: typeof report?.summary === "string" ? report.summary : typeof r.error === "string" ? r.error : null, updated_at: typeof r.updated_at === "string" ? r.updated_at : undefined }];
 	});
 }
 
@@ -65,11 +65,11 @@ export default function (pi: ExtensionAPI) {
 				case "record": return runOp(store, action, (l) => {
 					const id = gid(l, p.ganglion_id); const status = p.allocation_status;
 					if (!id || !status) return fail(action, "record requires ganglion_id/current and allocation_status.");
-					const record = l.recordWithResult(id, { allocation_id: p.allocation_id, task_id: p.task_id, lion_run_id: p.lion_run_id, status: status as AllocationStatus, summary: p.summary });
+					const record = l.recordWithResult(id, { allocation_id: p.allocation_id, task_id: p.task_id, lion_run_id: p.lion_run_id, lion_run_incarnation_id: p.lion_run_incarnation_id, status: status as AllocationStatus, summary: p.summary });
 					const disposition = formatAllocationReleaseDisposition(record.release_disposition);
 					return ok(action, `Recorded allocation result in ${record.ganglion.id}; ${disposition}.`, { ganglion: record.ganglion, record });
 				});
-				case "release": return runOp(store, action, (l) => { const id = gid(l, p.ganglion_id); const target = p.allocation_id ?? p.member_id; if (!id || !target) return fail(action, "release requires ganglion_id/current and allocation_id or member_id."); const g = l.release(id, target); return ok(action, `Released ${target} in ${g.id}.`, { ganglion: g }); });
+				case "release": return runOp(store, action, (l) => { const id = gid(l, p.ganglion_id); const target = p.allocation_id ?? p.member_id; if (!id || !target) return fail(action, "release requires ganglion_id/current and allocation_id or member_id."); const g = l.release(id, target, p.lion_run_id, p.lion_run_incarnation_id); return ok(action, `Released ${target} in ${g.id}.`, { ganglion: g }); });
 				case "reconcile": {
 					let runs: LionRunBrief[];
 					try { runs = await loadLionRunBriefs(ctx.cwd); }

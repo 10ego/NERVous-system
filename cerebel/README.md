@@ -81,13 +81,14 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 - Joins every admitted batch with all-settled semantics before returning or propagating failure.
 - Records completed, partial, blocked, failed, and cancelled outcomes; terminal GANGLION updates are batched once per group.
 - Summarizes completed, partial, cancelled, blocked, failed, and still-planned assignment counts separately without changing their settlement semantics.
+- An RPC worker whose attached child survives bounded stop returns `cleanup_pending`. Before worker execution begins, CEREBEL freezes the exact LION run/incarnation on any GANGLION allocation; linking failure prevents worker start and cleanup handoff. Before handoff, CEREBEL persists the exact settlement obligation. Its LION remains running, its assignment remains dispatched, and its GANGLION allocation remains reserved. The process-local LION supervisor later performs exact-incarnation finalization, then idempotently records the CEREBEL result and GANGLION release. After registry/process loss, each fresh CEREBEL action reconciles only a proven terminal exact LION incarnation, ignores replacements, and settles the retained allocation at most once.
 - Returns grouped results plus a `/nervous:dashboard` hint. Failed batches retain structured partial `wave` and `run_wave.assignment_results` details, and the TUI renders them with the error.
 
 ### Abort and failure behavior
 
 - The exact host `AbortSignal` is checked before and after reservation, creation, launch, adapter completion, and progress drain.
 - Unlinked reservations are released when abort wins admission; a custom adapter's late success after abort is classified as LION `aborted` / CEREBEL `cancelled`.
-- A CEREBEL terminal result is committed only after LION finalization succeeds. Finalization or unlinked cleanup failure surfaces and does not release linked capacity.
+- A CEREBEL terminal result is committed only after LION finalization succeeds. Finalization or unlinked cleanup failure surfaces and does not release linked capacity. A `cleanup_pending` result is explicitly nonterminal and skips foreground `finishRun`.
 - Host abort does not manufacture a separate durable `lion cancel` request.
 - Terminal assignments are not rerun, terminal links cannot be replaced, missing/unparseable `WORKER_REPORT` output fails, and later batches stop after blocked/failed/cancelled outcomes.
 - Stale reservations that never received a LION link are recovered. When release or recovery leaves all pending assignments planned, the wave returns to coherent `planned` / `dispatch` state. Active ownership remains registered until LION finalization.
@@ -148,7 +149,7 @@ cerebel/
 - **SYNAPSE**: transient coordination notes.
 - **AMYGDALA**: future risk escalation target for blocked waves.
 
-CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. LION is declared as an optional peer and loaded through its scoped package path only for `run_wave` or linked cancellation; if unavailable, those actions fail clearly without affecting standalone CEREBEL actions.
+CEREBEL's normal plan/dispatch/record workflow deliberately has no hard runtime imports from AXON/LION/SYNAPSE. LION—including its process-local cleanup supervisor—is declared as an optional peer and loaded through scoped package paths for `run_wave`, linked cancellation, or reconciliation of an outstanding cleanup-pending settlement; if unavailable, those operations fail clearly without affecting standalone CEREBEL actions.
 
 CEREBEL provides whole-wave cancellation through `cerebel cancel reason="..."`. Every new CEREBEL→LION link stores both `lion_run_id` and immutable `lion_run_incarnation_id`; cancellation and settlement target that exact execution. CEREBEL waits for every verifiable exact linked LION—including links on assignments already recorded terminal—and for fresh unlinked reservations before terminalizing the wave or releasing capacity. Stale unlinked reservations are recovered before the cancellation gate. Incomplete pre-release links are unsupported and require operator delete/reset. Settlement uses one batched ledger snapshot with adaptive backoff. `CEREBEL_CANCEL_SETTLE_TIMEOUT_MS` defaults to 15,000 ms, accepts positive safe integers through 120,000 ms, and falls back to the default for invalid values. Steering remains per-run and RPC live steering remains explicit opt-in.
 

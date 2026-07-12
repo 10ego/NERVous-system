@@ -6,7 +6,7 @@
 
 - **Telemetry:** LION persists bounded progress snapshots and emits `nervous:lion:*` lifecycle and progress events; the dashboard displays linked LION and CEREBEL progress.
 - **Orchestration:** CEREBEL can optionally `run_wave` planned assignments through LION and records grouped outcomes while preserving partial results.
-- **Exact provenance:** CEREBEL links and settles exact immutable LION incarnations before cancellation releases GANGLION capacity. Incomplete pre-release links require operator delete/reset; provenance is never backfilled.
+- **Exact provenance:** CEREBEL links and settles exact immutable LION incarnations before cancellation releases GANGLION capacity. RPC `cleanup_pending` runs remain running/dispatched with capacity retained until their process-local owner observes exit and completes late settlement. Incomplete pre-release links require operator delete/reset; provenance is never backfilled.
 - **Control:** Cancellation is best-effort, pre-start steering is queued, and RPC live steering requires explicit `runner_mode="rpc"` opt-in. JSON remains the default and rejects running steering.
 
 ## Dashboard
@@ -30,7 +30,7 @@ NERVous runtime state is global but isolated by project and work context. By def
 - **Project namespace** prevents cross-repository contamination. It is derived from the git root path; set `NERVOUS_PROJECT=<name>` to override it.
 - **Context namespace** prevents stale completed work from bleeding into a new effort. It defaults to the current git branch, or `default` outside git; set `NERVOUS_CONTEXT=<work-id>` to intentionally start or resume a workstream.
 - Set `NERVOUS_STATE_ROOT=/path/to/root` to move all NERVous state elsewhere.
-- Existing explicit component paths still win, including `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, and `MAGI_HISTORY_PATH`. LION resolves a direct-file symlink override to one canonical operational target so atomic writes do not split its lock and active-owner namespace.
+- Existing explicit component paths still win, including `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, and `MAGI_HISTORY_PATH`. LION resolves a direct-file symlink override to one canonical operational target so atomic writes do not split its lock and active-owner namespace. Cleanup supervision is process-local only; after restart, persisted PID/PGID data is observational and never authorizes reattachment or signaling.
 
 Examples:
 

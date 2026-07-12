@@ -117,6 +117,29 @@ describe("FileBackend", () => {
 		assert.equal(JSON.parse(await fs.readFile(target, "utf8")).runs["run-001"].objective, "create target");
 	});
 
+	it("fails closed without rewriting malformed cleanup-pending observations", async () => {
+		const { backend, store, dir } = await tmpStore();
+		const run = (await store.mutate((ledger) => ledger.create({ objective: "cleanup load", runner_mode: "rpc" }))).result;
+		await store.mutate((ledger) => ledger.updateControl(run.id, {
+			pid: 6161,
+			cleanup_pending: {
+				observed_at: run.started_at,
+				incarnation_id: run.incarnation_id ?? null,
+				pid: 6161,
+				pgid: null,
+				process_identity: null,
+			},
+		}));
+		const raw = JSON.parse(await fs.readFile(backend.location.runsPath, "utf8"));
+		raw.runs[run.id].control.cleanup_pending.observed_at = 123;
+		await fs.writeFile(backend.location.runsPath, JSON.stringify(raw), "utf8");
+		await assert.rejects(() => backend.load(), /no migration or automatic reset was performed/);
+		await assert.rejects(() => backend.mutate((ledger) => ledger.create({ objective: "must not overwrite" })), /no migration or automatic reset was performed/);
+		const persisted = JSON.parse(await fs.readFile(backend.location.runsPath, "utf8"));
+		assert.equal(persisted.runs[run.id].control.cleanup_pending.observed_at, 123);
+		assert.equal((await fs.readdir(dir)).some((entry) => entry.startsWith("runs.json.corrupt-")), false);
+	});
+
 	it("recovers corrupt files", async () => {
 		const { backend, dir } = await tmpStore();
 		await fs.writeFile(backend.location.runsPath, "{ broken", "utf8");

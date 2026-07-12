@@ -10,7 +10,7 @@ import * as fsSync from "node:fs";
 import * as path from "node:path";
 import { resolveNervousStateFile } from "@nervous-system/state";
 import { LionLedger } from "./store.ts";
-import type { LionFile } from "./schema.ts";
+import { LionError, type LionFile } from "./schema.ts";
 
 const LOCK_STALE_TTL_MS = 30_000;
 const LOCK_MAX_ATTEMPTS = 200;
@@ -185,6 +185,9 @@ export class FileBackend {
 		try {
 			return { ledger: LionLedger.fromJSON(JSON.parse(raw) as LionFile), warnings: [], fresh: false };
 		} catch (err) {
+			if (err instanceof LionError) {
+				throw new LionError(err.code, `lion state at ${this.location.runsPath} was rejected: ${err.message}; no migration or automatic reset was performed`);
+			}
 			const stamp = Date.now();
 			try {
 				await fs.copyFile(this.location.runsPath, `${this.location.runsPath}.corrupt-${stamp}`);

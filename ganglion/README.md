@@ -64,6 +64,8 @@ The returned allocations can be passed to CEREBEL/LION:
 - allocation `objective`/`context` → LION objective/context
 - allocation `task_id` → AXON/LION task id
 
+Before CEREBEL starts a `run_wave` worker, GANGLION stores the immutable LION run and incarnation on the allocation. A failed exact link prevents worker start and cleanup handoff, so no cleanup obligation can expose unlinked capacity. Late and restart reconciliation use that exact provenance; legacy run-only allocations are not backfilled by inference, replacement incarnations are ignored, and repeated exact terminal settlement does not release capacity twice.
+
 ---
 
 ## Allocation logic

@@ -70,19 +70,52 @@ describe("GanglionLedger", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
 		l.allocate(g.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
-		const r = l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", status: "completed", summary: "done" });
+		const r = l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", lion_run_incarnation_id: "inc-001", status: "completed", summary: "done" });
 		assert.equal(r.allocations[0]?.status, "completed");
 		assert.equal(r.members[0]?.status, "available");
 		assert.equal(r.members[0]?.last_run_id, "run-001");
+	});
+
+	it("fences exact allocation settlement by immutable LION incarnation", () => {
+		const l = new GanglionLedger();
+		const g = l.create({ member_count: 1 });
+		l.allocate(g.id, { tasks: [{ id: "task-exact", title: "Exact" }] });
+		assert.equal(l.linkRunIfUnlinked(g.id, "alloc-001", "run-001", "inc-original").committed, true);
+		assert.equal(l.linkRunIfUnlinked(g.id, "alloc-001", "run-001", "inc-replacement").committed, false);
+		const replacement = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-replacement", { status: "completed" });
+		assert.equal(replacement.committed, false);
+		assert.equal(replacement.allocation.status, "assigned");
+		assert.throws(() => l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", status: "running" }), /requires matching lion_run_id and lion_run_incarnation_id/);
+		assert.throws(() => l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-001", status: "completed" }), /requires matching lion_run_id and lion_run_incarnation_id/);
+		assert.throws(() => l.release(g.id, "alloc-001", "run-001"), /requires matching lion_run_id and lion_run_incarnation_id/);
+		assert.equal(l.get(g.id)?.members[0]?.status, "busy");
+		const exact = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-original", { status: "completed", summary: "done" });
+		assert.equal(exact.committed, true);
+		assert.equal(exact.allocation.lion_run_incarnation_id, "inc-original");
+		assert.equal(exact.ganglion.members[0]?.status, "available");
+		const repeated = l.recordIfOwned(g.id, "alloc-001", "run-001", "inc-original", { status: "completed" });
+		assert.equal(repeated.committed, false);
+		assert.equal(repeated.allocation.status, "completed");
+	});
+
+	it("does not backfill incarnation provenance onto an in-memory legacy run-linked allocation", () => {
+		const source = new GanglionLedger();
+		const group = source.create({ member_count: 1 });
+		source.allocate(group.id, { tasks: [{ id: "task-legacy", title: "Legacy" }] });
+		const legacy = source.get(group.id)!;
+		legacy.allocations[0]!.lion_run_id = "run-legacy";
+		const ledger = new GanglionLedger(undefined, [legacy], group.id);
+		assert.equal(ledger.linkRunIfUnlinked(group.id, "alloc-001", "run-legacy", "inc-inferred").committed, false);
+		assert.equal(ledger.get(group.id)?.allocations[0]?.lion_run_incarnation_id, null);
 	});
 
 	it("does not release a newer member lease when an old allocation is recorded again", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
 		l.allocate(g.id, { tasks: [{ id: "task-old", title: "Old" }] });
-		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "completed" });
+		l.record(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", lion_run_incarnation_id: "inc-old", status: "completed" });
 		l.allocate(g.id, { tasks: [{ id: "task-new", title: "New" }] });
-		const stale = l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", status: "cancelled" });
+		const stale = l.recordWithResult(g.id, { allocation_id: "alloc-001", lion_run_id: "run-old", lion_run_incarnation_id: "inc-old", status: "cancelled" });
 		assert.equal(stale.release_disposition, "retained_by_newer_allocation");
 		assert.equal(stale.ganglion.allocations[0]?.status, "cancelled");
 		assert.equal(stale.ganglion.allocations[1]?.status, "assigned");
@@ -106,13 +139,49 @@ describe("GanglionLedger", () => {
 		const l = new GanglionLedger();
 		const g = l.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
 		l.allocate(g.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
-		const report = l.reconcile(g.id, [{ id: "run-001", agent_id: "lion-api", task_id: "task-api", status: "completed", summary: "done", updated_at: "2026-01-01T00:00:00.000Z" }]);
+		const report = l.reconcile(g.id, [{ id: "run-001", incarnation_id: "inc-001", agent_id: "lion-api", task_id: "task-api", status: "completed", summary: "done", updated_at: "2026-01-01T00:00:00.000Z" }]);
 		assert.equal(report.released.length, 1);
 		assert.equal(report.released[0]?.allocation_id, "alloc-001");
 		assert.equal(report.ganglion.allocations[0]?.status, "completed");
 		assert.equal(report.ganglion.allocations[0]?.lion_run_id, "run-001");
+		assert.equal(report.ganglion.allocations[0]?.lion_run_incarnation_id, "inc-001");
 		assert.equal(report.ganglion.members[0]?.status, "available");
 		assert.equal(report.ganglion.members[0]?.last_run_id, "run-001");
+	});
+
+	it("never reconciles partial provenance from unrelated LION runs", () => {
+		for (const partial of [
+			{ lion_run_id: null, lion_run_incarnation_id: "inc-orphan", run: { id: "run-unrelated", incarnation_id: "inc-unrelated" } },
+			{ lion_run_id: "run-reused", lion_run_incarnation_id: null, run: { id: "run-reused", incarnation_id: "inc-unrelated" } },
+		]) {
+			const source = new GanglionLedger();
+			const group = source.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+			source.allocate(group.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
+			const corrupted = source.get(group.id)!;
+			corrupted.allocations[0]!.lion_run_id = partial.lion_run_id;
+			corrupted.allocations[0]!.lion_run_incarnation_id = partial.lion_run_incarnation_id;
+			const ledger = new GanglionLedger(undefined, [corrupted], group.id);
+			const before = ledger.get(group.id);
+			const reconciled = ledger.reconcile(group.id, [{ ...partial.run, agent_id: "lion-api", task_id: "task-api", status: "completed" }]);
+			assert.deepEqual(reconciled.released, []);
+			assert.match(reconciled.inconsistencies[0] ?? "", /partial LION provenance/);
+			assert.deepEqual(ledger.get(group.id), before);
+		}
+	});
+
+	it("does not reconcile an exactly linked allocation from a reused run id", () => {
+		const ledger = new GanglionLedger();
+		const group = ledger.create({ members: [{ id: "lion-api", capabilities: ["api"] }] });
+		ledger.allocate(group.id, { tasks: [{ id: "task-api", title: "API", required_capabilities: ["api"] }] });
+		ledger.linkRunIfUnlinked(group.id, "alloc-001", "run-001", "inc-original");
+		const replacement = ledger.reconcile(group.id, [{ id: "run-001", incarnation_id: "inc-replacement", agent_id: "lion-api", task_id: "task-api", status: "completed" }]);
+		assert.equal(replacement.released.length, 0);
+		assert.equal(replacement.ganglion.allocations[0]?.status, "assigned");
+		assert.equal(replacement.ganglion.members[0]?.status, "busy");
+		const original = ledger.reconcile(group.id, [{ id: "run-001", incarnation_id: "inc-original", agent_id: "lion-api", task_id: "task-api", status: "completed" }]);
+		assert.equal(original.released.length, 1);
+		assert.equal(original.ganglion.allocations[0]?.lion_run_incarnation_id, "inc-original");
+		assert.equal(original.ganglion.members[0]?.status, "available");
 	});
 
 	it("release cancels active allocation", () => {
@@ -167,6 +236,20 @@ describe("GanglionLedger", () => {
 		assert.equal(original.id, "ganglion-001");
 		assert.equal(replacement.id, "ganglion-002");
 		assert.equal(allocatedReplacement.allocations[0]?.id, "alloc-001");
+	});
+
+	it("rejects partial LION provenance while loading clean-slate state", () => {
+		for (const provenance of [
+			{ lion_run_id: null, lion_run_incarnation_id: "inc-orphan" },
+			{ lion_run_id: "run-orphan", lion_run_incarnation_id: null },
+		]) {
+			const ledger = new GanglionLedger();
+			const group = ledger.create({ member_count: 1 });
+			ledger.allocate(group.id, { tasks: [{ id: "task-001", title: "Task" }] });
+			const raw = ledger.toJSON();
+			Object.assign(raw.ganglions[group.id]!.allocations[0]!, provenance);
+			assert.throws(() => GanglionLedger.fromJSON(raw), /partial LION provenance.*clean-slate/i);
+		}
 	});
 
 	it("coerces bad JSON safely", () => {

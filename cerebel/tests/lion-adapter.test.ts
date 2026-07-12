@@ -6,6 +6,7 @@ import { afterEach, describe, it, vi } from "vitest";
 import { createLionAdapter } from "../extension/index.ts";
 import { LionLedger } from "../../lion/extension/store.ts";
 import * as activeRuns from "../../lion/extension/active-runs.ts";
+import * as cleanupSupervisor from "../../lion/extension/cleanup-supervisor.ts";
 import * as lifecycle from "../../lion/extension/lifecycle.ts";
 import * as options from "../../lion/extension/options.ts";
 import type { Assignment } from "../extension/schema.ts";
@@ -15,6 +16,7 @@ import type { LionRunRequest } from "../../lion/extension/subprocess.ts";
 const report: LionReport = { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] };
 
 afterEach(() => {
+	cleanupSupervisor.clearLionCleanupSupervisorsForTests();
 	activeRuns.clearActiveRunsForTests();
 	vi.restoreAllMocks();
 });
@@ -167,6 +169,146 @@ describe("createLionAdapter", () => {
 		assert.ok(!activeRuns.getActiveRunIds(lionStore.namespaceId).includes(run.id), "owner should be released after finishRun persists final state");
 		assert.equal(ledger.get(run.id)?.status, "completed");
 		activeRuns.clearActiveRunsForTests();
+	});
+
+	it("uses cancellation-aware exact finalization for direct run_wave settlement", async () => {
+		const ledger = new LionLedger();
+		let injectCancellation = false;
+		const lionStore = {
+			namespaceId: "run-wave-direct-cancel-race",
+			async mutate<T>(fn: (l: LionLedger) => T) {
+				if (injectCancellation) {
+					injectCancellation = false;
+					const current = ledger.all().find((candidate) => candidate.status === "running");
+					if (current) ledger.requestCancel(current.id, "direct settlement commit race");
+				}
+				return { result: fn(ledger) };
+			},
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const runner = () => async () => ({ text: "success", report });
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns, cleanupSupervisor },
+		);
+		const run = await adapter.createRun(assignment());
+		await adapter.run(run, assignment(), () => undefined);
+		injectCancellation = true;
+		const finished = await adapter.finishRun(run.id, { output: "success", report });
+		assert.equal(finished.status, "aborted");
+		assert.equal(finished.output, "");
+		assert.match(finished.error ?? "", /direct settlement commit race/);
+	});
+
+	it("persists exact LION cleanup evidence before a crash after the CEREBEL obligation write", async () => {
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "run-wave-cleanup-ordering",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const writes: string[] = [];
+		const processInfo = { pid: 405, pgid: 405, process_identity: "boot-a:cleanup-405", isAlive: () => true, cancel: () => true };
+		const rpcFactory = () => async (request: LionRunRequest) => {
+			request.onProcessStart?.(processInfo);
+			await request.registerCleanupSupervisor?.({
+				namespaceId: request.cleanupOwner!.namespaceId,
+				runId: request.run.id,
+				incarnationId: request.run.incarnation_id ?? null,
+				ownerId: request.cleanupOwner!.ownerId,
+				process: processInfo,
+				isAlive: () => true,
+				waitForExit: async () => undefined,
+				cleanup: async () => undefined,
+				terminalIntent: { kind: "result", output: { text: "done", report } },
+			});
+			return { settlement: "cleanup_pending" as const, run_id: request.run.id, incarnation_id: request.run.incarnation_id ?? null, owner_id: request.cleanupOwner!.ownerId };
+		};
+		const orderedCleanupSupervisor = {
+			...cleanupSupervisor,
+			async persistCleanupPendingObservation(...args: Parameters<typeof cleanupSupervisor.persistCleanupPendingObservation>) {
+				writes.push("lion-observation");
+				return cleanupSupervisor.persistCleanupPendingObservation(...args);
+			},
+			registerLionCleanupSupervisor() { return true; },
+		};
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave", runner_mode: "rpc" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: rpcFactory, createLionRpcRunner: rpcFactory, activeRuns, cleanupSupervisor: orderedCleanupSupervisor },
+		);
+		const run = await adapter.createRun(assignment());
+		await assert.rejects(() => adapter.run(run, assignment(), () => undefined, undefined, undefined, async () => {
+			writes.push("cerebel-obligation");
+			throw new Error("simulated crash after CEREBEL obligation commit");
+		}), /simulated crash/);
+		assert.deepEqual(writes, ["lion-observation", "cerebel-obligation"]);
+		assert.deepEqual(ledger.get(run.id)?.control?.cleanup_pending, {
+			observed_at: ledger.get(run.id)?.control?.cleanup_pending?.observed_at,
+			incarnation_id: run.incarnation_id,
+			pid: 405,
+			pgid: 405,
+			process_identity: "boot-a:cleanup-405",
+		});
+	});
+
+	it("honors durable run_wave cancellation requested after cleanup handoff", async () => {
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "run-wave-cleanup-pending",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const controller = new AbortController();
+		let alive = true;
+		let resolveExit!: () => void;
+		const exited = new Promise<void>((resolve) => { resolveExit = resolve; });
+		const rpcFactory = () => async (request: LionRunRequest) => {
+			const processInfo = { pid: 404, pgid: null, isAlive: () => alive, cancel: () => true };
+			request.onProcessStart?.(processInfo);
+			const accepted = await request.registerCleanupSupervisor?.({
+				namespaceId: request.cleanupOwner!.namespaceId,
+				runId: request.run.id,
+				incarnationId: request.run.incarnation_id ?? null,
+				ownerId: request.cleanupOwner!.ownerId,
+				process: processInfo,
+				isAlive: () => alive,
+				waitForExit: () => exited,
+				cleanup: async () => undefined,
+				terminalIntent: { kind: "result", output: { text: "done", report } },
+			});
+			assert.equal(accepted, true);
+			return { settlement: "cleanup_pending" as const, run_id: request.run.id, incarnation_id: request.run.incarnation_id ?? null, owner_id: request.cleanupOwner!.ownerId };
+		};
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave", runner_mode: "rpc" } as never,
+			controller.signal,
+			undefined,
+			{ lionStore, createLionRunner: rpcFactory, createLionRpcRunner: rpcFactory, activeRuns, cleanupSupervisor },
+		);
+		const run = await adapter.createRun(assignment());
+		let lateSettlements = 0;
+		const outcome = await adapter.run(run, assignment(), () => undefined, undefined, async (settlement) => {
+			assert.equal(settlement.disposition, "terminal");
+			lateSettlements++;
+		});
+		assert.equal("settlement" in outcome ? outcome.settlement : "settled", "cleanup_pending");
+		assert.equal(ledger.get(run.id)?.status, "running");
+		assert.deepEqual(activeRuns.getActiveRunIds(lionStore.namespaceId), [run.id]);
+		ledger.requestCancel(run.id, "late run_wave cancellation");
+		alive = false;
+		resolveExit();
+		for (let index = 0; index < 100 && ledger.get(run.id)?.status === "running"; index++) await new Promise((resolve) => setTimeout(resolve, 2));
+		assert.equal(ledger.get(run.id)?.status, "aborted");
+		assert.match(ledger.get(run.id)?.error ?? "", /late run_wave cancellation/);
+		assert.equal(lateSettlements, 1);
+		assert.deepEqual(activeRuns.getActiveRunIds(lionStore.namespaceId), []);
 	});
 
 	it("emits started progress and terminal LION telemetry for run_wave workers", async () => {

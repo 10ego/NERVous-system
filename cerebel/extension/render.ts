@@ -84,7 +84,8 @@ export function summarizeRunWaveResult(result: RunWaveResult): string {
 	];
 	if (!result.assignment_results.length) lines.push("_(no assignments ran)_");
 	for (const r of result.assignment_results) {
-		lines.push(`- ${r.outcome === "skipped" ? "◇" : ASSIGN_ICON[r.outcome]} \`${r.assignment_id}\`${r.lion_run_id ? ` / \`${r.lion_run_id}\`` : ""} _${r.outcome}_ — ${r.summary}`);
+		const icon = r.outcome === "skipped" ? "◇" : r.outcome === "cleanup_pending" ? "◌" : ASSIGN_ICON[r.outcome];
+		lines.push(`- ${icon} \`${r.assignment_id}\`${r.lion_run_id ? ` / \`${r.lion_run_id}\`` : ""} _${r.outcome}_ — ${r.summary}`);
 		if (r.blockers.length) lines.push(...r.blockers.map((b) => `  - blocker: ${b}`));
 	}
 	return lines.join("\n");

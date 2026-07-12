@@ -100,6 +100,22 @@ describe("LionLedger", () => {
 		assert.equal(stale.some((r) => r.id === fresh.id && r.status === "failed"), true);
 	});
 
+	it("reconciles only explicitly targeted exact incarnations", () => {
+		const ledger = new LionLedger();
+		const target = ledger.create({ objective: "target" });
+		const unrelated = ledger.create({ objective: "unrelated" });
+		ledger.updateControl(target.id, { pid: 111, last_seen_at: target.started_at });
+		ledger.updateControl(unrelated.id, { pid: 222, last_seen_at: unrelated.started_at });
+		const changed = ledger.reconcileControls(() => false, {
+			target_run_refs: [{ id: target.id, incarnation_id: target.incarnation_id }],
+			now_ms: Date.parse(target.started_at) + 60_000,
+			stale_after_ms: 1,
+		});
+		assert.deepEqual(changed.map((run) => run.id), [target.id]);
+		assert.equal(ledger.get(target.id)?.status, "failed");
+		assert.equal(ledger.get(unrelated.id)?.status, "running");
+	});
+
 	it("does not let an active reference for an old incarnation protect a replacement", () => {
 		const l = new LionLedger();
 		const replacement = l.create({ objective: "replacement" });
@@ -129,6 +145,33 @@ describe("LionLedger", () => {
 		const legacy = l.create({ objective: "legacy unverifiable" });
 		l.updateControl(legacy.id, { pid: 4444, last_seen_at: legacy.started_at });
 		assert.equal(l.reconcileControls(() => true, { now_ms: Date.parse(legacy.started_at) + 60_000, stale_after_ms: 1, get_process_identity: (pid) => pid === 4343 ? "boot-a:start-3" : "boot-a:start-other" }).length, 0);
+	});
+
+	it("fails closed for a cleanup-pending observation after registry loss until exit is proven", () => {
+		const l = new LionLedger();
+		const run = l.create({ objective: "cleanup pending restart", runner_mode: "rpc" });
+		l.updateControl(run.id, {
+			pid: 4545,
+			process_identity: "boot-a:start-cleanup",
+			last_seen_at: run.started_at,
+			cleanup_pending: {
+				observed_at: run.started_at,
+				incarnation_id: run.incarnation_id ?? null,
+				pid: 4545,
+				pgid: null,
+				process_identity: "boot-a:start-cleanup",
+			},
+		});
+		const afterRestart = Date.parse(run.started_at) + 60_000;
+		assert.equal(l.reconcileControls(() => true, {
+			now_ms: afterRestart,
+			stale_after_ms: 1,
+			active_run_refs: [],
+			get_process_identity: () => null,
+		}).length, 0);
+		assert.equal(l.get(run.id)?.status, "running");
+		const exited = l.reconcileControls(() => false, { now_ms: afterRestart, stale_after_ms: 1, active_run_refs: [] });
+		assert.equal(exited[0]?.status, "failed");
 	});
 
 	it("reconciles a stale ownerless running run without process metadata", () => {
@@ -179,13 +222,25 @@ describe("LionLedger", () => {
 		assert.equal(stale.run.control, null);
 	});
 
+	it("atomically gives committed cancellation precedence over exact success finalization", () => {
+		const ledger = new LionLedger();
+		const run = ledger.create({ objective: "late cancellation" });
+		ledger.requestCancel(run.id, "cancel won the commit race");
+		const finalization = ledger.finalizeIfCurrent(run.id, run.incarnation_id, { output: "success", report: null });
+		assert.equal(finalization.committed, true);
+		assert.equal(finalization.run?.status, "aborted");
+		assert.equal(finalization.run?.output, "");
+		assert.equal(finalization.run?.report, null);
+		assert.match(finalization.run?.error ?? "", /cancel won the commit race/);
+	});
+
 	it("does not finalize or attach control metadata to a replacement incarnation", () => {
 		const ledger = new LionLedger();
 		const original = ledger.create({ objective: "original" });
 		ledger.finish(original.id, { output: "old", report: null, status: "failed" });
 		ledger.delete(original.id);
 		const replacement = ledger.create({ objective: "replacement" });
-		const finalization = ledger.finishIfCurrent(original.id, original.incarnation_id, { output: "stale", report: null });
+		const finalization = ledger.finalizeIfCurrent(original.id, original.incarnation_id, { output: "stale", report: null });
 		const control = ledger.updateControlIfCurrent(original.id, original.incarnation_id, { pid: 123 });
 		assert.equal(finalization.committed, false);
 		assert.equal(control.committed, false);
@@ -312,6 +367,25 @@ describe("LionLedger", () => {
 		assert.equal(messages[0]?.id, "terminal-0");
 		assert.equal(messages.at(-1)?.id, "open-99");
 		assert.equal(messages.every((message) => message.message.length <= 4_000), true);
+	});
+
+	it("rejects malformed cleanup-pending observations instead of erasing liveness state", () => {
+		const ledger = new LionLedger();
+		const run = ledger.create({ objective: "cleanup load", runner_mode: "rpc" });
+		ledger.updateControl(run.id, {
+			pid: 5151,
+			cleanup_pending: {
+				observed_at: run.started_at,
+				incarnation_id: run.incarnation_id ?? null,
+				pid: 5151,
+				pgid: null,
+				process_identity: null,
+			},
+		});
+		const raw = ledger.toJSON() as any;
+		raw.runs[run.id].control.cleanup_pending.observed_at = 123;
+		raw.runs[run.id].control.pid = null;
+		assert.throws(() => LionLedger.fromJSON(raw), /malformed cleanup_pending observation.*delete\/reset this clean-slate LION ledger/);
 	});
 
 	it("round-trips through JSON and coerces bad values", () => {

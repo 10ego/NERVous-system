@@ -48,10 +48,11 @@ export interface CreateGanglionInput {
 	member_count?: number;
 }
 export interface AllocateInput { tasks: WorkItemBrief[]; context?: string }
-export interface RecordInput { allocation_id?: string; task_id?: string; lion_run_id?: string; status: AllocationStatus; summary?: string }
+export interface RecordInput { allocation_id?: string; task_id?: string; lion_run_id?: string; lion_run_incarnation_id?: string; status: AllocationStatus; summary?: string }
+export interface AllocationIfOwnedResult { committed: boolean; ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
 export type AllocationReleaseDisposition = "released" | "already_free" | "member_unavailable" | "retained_by_newer_allocation" | "not_terminal";
 export interface GanglionRecordResult { ganglion: Ganglion; allocation: Allocation; release_disposition: AllocationReleaseDisposition }
-export interface LionRunBrief { id: string; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
+export interface LionRunBrief { id: string; incarnation_id?: string | null; agent_id: string; status: string; task_id?: string | null; summary?: string | null; updated_at?: string }
 
 export class GanglionLedger {
 	readonly project?: string;
@@ -159,6 +160,38 @@ export class GanglionLedger {
 		return clone(g);
 	}
 
+	linkRunIfUnlinked(ganglionId: string, allocationId: string, lionRunId: string, lionRunIncarnationId: string): { committed: boolean; ganglion: Ganglion; allocation: Allocation } {
+		const g = this.require(ganglionId);
+		const allocation = requireAllocation(g, allocationId);
+		const hasRunId = Boolean(allocation.lion_run_id);
+		const hasIncarnation = Boolean(allocation.lion_run_incarnation_id);
+		if (hasRunId || hasIncarnation) {
+			const exact = allocation.lion_run_id === lionRunId && allocation.lion_run_incarnation_id === lionRunIncarnationId;
+			return { committed: exact, ganglion: clone(g), allocation: clone(allocation) };
+		}
+		if (["completed", "blocked", "failed", "cancelled"].includes(allocation.status)) {
+			return { committed: false, ganglion: clone(g), allocation: clone(allocation) };
+		}
+		allocation.lion_run_id = lionRunId;
+		allocation.lion_run_incarnation_id = lionRunIncarnationId;
+		allocation.updated_at = now();
+		g.updated_at = allocation.updated_at;
+		return { committed: true, ganglion: clone(g), allocation: clone(allocation) };
+	}
+
+	recordIfOwned(ganglionId: string, allocationId: string, lionRunId: string, lionRunIncarnationId: string, input: Omit<RecordInput, "allocation_id" | "task_id" | "lion_run_id" | "lion_run_incarnation_id">): AllocationIfOwnedResult {
+		const g = this.require(ganglionId);
+		const allocation = requireAllocation(g, allocationId);
+		if (allocation.lion_run_id !== lionRunId || allocation.lion_run_incarnation_id !== lionRunIncarnationId) {
+			return { committed: false, ganglion: clone(g), allocation: clone(allocation), release_disposition: "not_terminal" };
+		}
+		if (["completed", "blocked", "failed", "cancelled"].includes(allocation.status)) {
+			return { committed: false, ganglion: clone(g), allocation: clone(allocation), release_disposition: "already_free" };
+		}
+		const result = this.recordWithResult(ganglionId, { ...input, allocation_id: allocationId, lion_run_id: lionRunId, lion_run_incarnation_id: lionRunIncarnationId });
+		return { committed: true, ...result };
+	}
+
 	record(ganglionId: string, input: RecordInput): Ganglion {
 		return this.recordWithResult(ganglionId, input).ganglion;
 	}
@@ -168,8 +201,26 @@ export class GanglionLedger {
 		if (!A_STATUS.has(input.status)) throw new GanglionError("invalid_arg", `invalid allocation status ${input.status}`);
 		const a = input.allocation_id ? requireAllocation(g, input.allocation_id) : findAllocation(g, input.task_id);
 		if (!a) throw new GanglionError("not_found", "allocation not found");
+		if ((input.lion_run_id === undefined) !== (input.lion_run_incarnation_id === undefined)) {
+			throw new GanglionError("invalid_arg", "allocation LION provenance requires matching lion_run_id and lion_run_incarnation_id");
+		}
+		if (a.lion_run_incarnation_id && input.lion_run_id && !input.lion_run_incarnation_id) {
+			assertExactAllocationProvenance(a, input.lion_run_id, input.lion_run_incarnation_id, "run-linked record");
+		}
+		if (isTerminalAllocationStatus(input.status)) assertExactAllocationProvenance(a, input.lion_run_id, input.lion_run_incarnation_id, "terminal record");
+		if (input.lion_run_id && input.lion_run_incarnation_id) {
+			const existingRunId = a.lion_run_id;
+			const existingIncarnationId = a.lion_run_incarnation_id;
+			if ((existingRunId || existingIncarnationId)
+				&& (existingRunId !== input.lion_run_id || existingIncarnationId !== input.lion_run_incarnation_id)) {
+				throw new GanglionError("invalid_transition", `cannot replace allocation provenance for ${a.id}`);
+			}
+			a.lion_run_id = input.lion_run_id;
+			a.lion_run_incarnation_id = input.lion_run_incarnation_id;
+		} else if (input.lion_run_id && !a.lion_run_id) {
+			a.lion_run_id = input.lion_run_id;
+		}
 		a.status = input.status;
-		if (input.lion_run_id) a.lion_run_id = input.lion_run_id;
 		a.outcome_summary = input.summary ?? null;
 		a.updated_at = now();
 		const m = requireMember(g, a.member_id);
@@ -191,13 +242,15 @@ export class GanglionLedger {
 		return { ganglion: clone(g), allocation: clone(a), release_disposition: releaseDisposition };
 	}
 
-	release(ganglionId: string, memberOrAllocationId: string): Ganglion {
+	release(ganglionId: string, memberOrAllocationId: string, lionRunId?: string, lionRunIncarnationId?: string): Ganglion {
 		const g = this.require(ganglionId);
 		const a = g.allocations.find((x) => x.id === memberOrAllocationId);
 		const memberId = a?.member_id ?? memberOrAllocationId;
 		const m = requireMember(g, memberId);
-		releaseMember(m, a?.lion_run_id ?? undefined);
-		if (a && !["completed", "blocked", "failed", "cancelled"].includes(a.status)) {
+		const current = m.current_allocation_id ? g.allocations.find((candidate) => candidate.id === m.current_allocation_id) : undefined;
+		assertExactAllocationProvenance(a ?? current, lionRunId, lionRunIncarnationId, "release");
+		if (!a || m.current_allocation_id === a.id) releaseMember(m, a?.lion_run_id ?? lionRunId);
+		if (a && !isTerminalAllocationStatus(a.status)) {
 			a.status = "cancelled";
 			a.updated_at = now();
 		}
@@ -214,7 +267,12 @@ export class GanglionLedger {
 			if (!m.current_allocation_id) { inconsistencies.push(`${m.id} is busy without current_allocation_id`); continue; }
 			const a = g.allocations.find((x) => x.id === m.current_allocation_id);
 			if (!a) { inconsistencies.push(`${m.id} references missing allocation ${m.current_allocation_id}`); continue; }
-			if (["completed", "blocked", "failed", "cancelled"].includes(a.status)) {
+			if (hasPartialLionProvenance(a)) {
+				inconsistencies.push(`${a.id} has partial LION provenance; reconciliation requires an exact run id/incarnation pair and retained capacity`);
+				continue;
+			}
+			if (isTerminalAllocationStatus(a.status)) {
+				if (a.lion_run_incarnation_id && !findTerminalRunForAllocation(a, m, runs)) continue;
 				releaseMember(m, a.lion_run_id ?? undefined);
 				released.push({ member_id: m.id, allocation_id: a.id, lion_run_id: a.lion_run_id ?? null, status: a.status });
 				continue;
@@ -224,12 +282,13 @@ export class GanglionLedger {
 			const status = allocationStatusFromLionRun(run.status);
 			a.status = status;
 			a.lion_run_id = run.id;
+			a.lion_run_incarnation_id = run.incarnation_id!;
 			a.outcome_summary = run.summary ?? a.outcome_summary ?? null;
 			a.updated_at = now();
 			releaseMember(m, run.id);
 			released.push({ member_id: m.id, allocation_id: a.id, lion_run_id: run.id, status });
 		}
-		if (released.length || inconsistencies.length) g.updated_at = now();
+		if (released.length) g.updated_at = now();
 		return { ganglion: clone(g), released, inconsistencies };
 	}
 
@@ -297,15 +356,28 @@ function makeAllocation(g: Ganglion, task: WorkItemBrief, m: Member, context: st
 	const ts = now();
 	const id = `alloc-${String(g.allocations.length + 1).padStart(3, "0")}`;
 	const required = (task.required_capabilities ?? []).map(normalizeCap).filter(Boolean);
-	return { id, task_id: task.id, member_id: m.id, objective: `${task.title}${task.description ? `\n\n${task.description}` : ""}`, context, priority: priorityOf(task.priority), required_capabilities: required, status: "assigned", lion_run_id: null, outcome_summary: null, reason: allocationReason(m, required), created_at: ts, updated_at: ts };
+	return { id, task_id: task.id, member_id: m.id, objective: `${task.title}${task.description ? `\n\n${task.description}` : ""}`, context, priority: priorityOf(task.priority), required_capabilities: required, status: "assigned", lion_run_id: null, lion_run_incarnation_id: null, outcome_summary: null, reason: allocationReason(m, required), created_at: ts, updated_at: ts };
 }
 function allocationReason(m: Member, required: string[]): string { return required.length ? `matched ${required.filter((r) => m.capabilities.includes(r)).join(", ") || "available member"}` : "no specific capability required"; }
 function releaseMember(m: Member, runId?: string): void { m.status = "available"; m.current_task_id = null; m.current_allocation_id = null; if (runId) m.last_run_id = runId; m.updated_at = now(); }
+function isTerminalAllocationStatus(status: AllocationStatus): boolean { return ["completed", "blocked", "failed", "cancelled"].includes(status); }
+function assertExactAllocationProvenance(a: Allocation | undefined, lionRunId: string | undefined, lionRunIncarnationId: string | undefined, operation: string): void {
+	if (!a?.lion_run_incarnation_id) return;
+	if (a.lion_run_id !== lionRunId || a.lion_run_incarnation_id !== lionRunIncarnationId) {
+		throw new GanglionError("invalid_transition", `${operation} for exactly linked allocation ${a.id} requires matching lion_run_id and lion_run_incarnation_id`);
+	}
+}
+function hasPartialLionProvenance(a: Pick<Allocation, "lion_run_id" | "lion_run_incarnation_id">): boolean {
+	const hasRunId = typeof a.lion_run_id === "string" && a.lion_run_id.length > 0;
+	const hasIncarnation = typeof a.lion_run_incarnation_id === "string" && a.lion_run_incarnation_id.length > 0;
+	return hasRunId !== hasIncarnation;
+}
 function findTerminalRunForAllocation(a: Allocation, m: Member, runs: LionRunBrief[]): LionRunBrief | undefined {
+	if (hasPartialLionProvenance(a)) return undefined;
 	const terminal = runs.filter((r) => ["completed", "blocked", "failed", "aborted"].includes(r.status));
-	if (a.lion_run_id) return terminal.find((r) => r.id === a.lion_run_id);
+	if (a.lion_run_id && a.lion_run_incarnation_id) return terminal.find((r) => r.id === a.lion_run_id && r.incarnation_id === a.lion_run_incarnation_id);
 	return terminal
-		.filter((r) => r.agent_id === m.id && r.task_id === a.task_id)
+		.filter((r) => r.agent_id === m.id && r.task_id === a.task_id && typeof r.incarnation_id === "string" && r.incarnation_id.length > 0)
 		.sort((x, y) => (y.updated_at ?? "").localeCompare(x.updated_at ?? ""))[0];
 }
 function allocationStatusFromLionRun(status: string): AllocationStatus { return status === "completed" ? "completed" : status === "blocked" ? "blocked" : "failed"; }
@@ -324,7 +396,16 @@ function coerceMember(value: unknown): Member | null {
 	return { id: typeof value.id === "string" ? value.id : "lion-unknown", role: typeof value.role === "string" ? value.role : "generalist", capabilities: strings(value.capabilities), model: typeof value.model === "string" ? value.model : null, tools: Array.isArray(value.tools) ? strings(value.tools) : null, status: typeof value.status === "string" && M_STATUS.has(value.status) ? (value.status as MemberStatus) : "offline", current_task_id: typeof value.current_task_id === "string" ? value.current_task_id : null, current_allocation_id: typeof value.current_allocation_id === "string" ? value.current_allocation_id : null, last_run_id: typeof value.last_run_id === "string" ? value.last_run_id : null, created_at: created, updated_at: typeof value.updated_at === "string" ? value.updated_at : created };
 }
 function coerceAllocation(value: unknown): Allocation | null {
-	if (!isObject(value)) return null; const created = typeof value.created_at === "string" ? value.created_at : now();
-	return { id: typeof value.id === "string" ? value.id : "alloc-unknown", task_id: typeof value.task_id === "string" ? value.task_id : "", member_id: typeof value.member_id === "string" ? value.member_id : "lion-unknown", objective: typeof value.objective === "string" ? value.objective : "", context: typeof value.context === "string" ? value.context : "", priority: priorityOf(value.priority), required_capabilities: strings(value.required_capabilities), status: typeof value.status === "string" && A_STATUS.has(value.status) ? (value.status as AllocationStatus) : "failed", lion_run_id: typeof value.lion_run_id === "string" ? value.lion_run_id : null, outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null, reason: typeof value.reason === "string" ? value.reason : "", created_at: created, updated_at: typeof value.updated_at === "string" ? value.updated_at : created };
+	if (!isObject(value)) return null;
+	const id = typeof value.id === "string" ? value.id : "alloc-unknown";
+	const hasRunId = value.lion_run_id !== null && value.lion_run_id !== undefined;
+	const hasIncarnation = value.lion_run_incarnation_id !== null && value.lion_run_incarnation_id !== undefined;
+	if (hasRunId !== hasIncarnation
+		|| (hasRunId && (typeof value.lion_run_id !== "string" || !value.lion_run_id.trim()
+			|| typeof value.lion_run_incarnation_id !== "string" || !value.lion_run_incarnation_id.trim()))) {
+		throw new GanglionError("invalid_arg", `allocation ${id} has partial LION provenance; delete/reset this clean-slate GANGLION ledger because exact incarnation migration is unsupported`);
+	}
+	const created = typeof value.created_at === "string" ? value.created_at : now();
+	return { id, task_id: typeof value.task_id === "string" ? value.task_id : "", member_id: typeof value.member_id === "string" ? value.member_id : "lion-unknown", objective: typeof value.objective === "string" ? value.objective : "", context: typeof value.context === "string" ? value.context : "", priority: priorityOf(value.priority), required_capabilities: strings(value.required_capabilities), status: typeof value.status === "string" && A_STATUS.has(value.status) ? (value.status as AllocationStatus) : "failed", lion_run_id: typeof value.lion_run_id === "string" ? value.lion_run_id : null, lion_run_incarnation_id: typeof value.lion_run_incarnation_id === "string" ? value.lion_run_incarnation_id : null, outcome_summary: typeof value.outcome_summary === "string" ? value.outcome_summary : null, reason: typeof value.reason === "string" ? value.reason : "", created_at: created, updated_at: typeof value.updated_at === "string" ? value.updated_at : created };
 }
 function isObject(x: unknown): x is Record<string, unknown> { return typeof x === "object" && x !== null; }

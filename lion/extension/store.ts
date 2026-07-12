@@ -110,6 +110,8 @@ export interface CancelRunResult {
 
 export interface ReconcileControlsOptions {
 	active_run_refs?: Iterable<Pick<LionRun, "id" | "incarnation_id">>;
+	/** Restrict reconciliation to these exact run incarnations. */
+	target_run_refs?: Iterable<Pick<LionRun, "id" | "incarnation_id">>;
 	/** Run ids protected by a different exact process-local owner during a fenced operation. */
 	protected_run_ids?: Iterable<string>;
 	now_ms?: number;
@@ -208,12 +210,24 @@ export class LionLedger {
 		return clone(r);
 	}
 
-	finishIfCurrent(id: string, incarnationId: string | null | undefined, input: FinishRunInput): { run: LionRun | undefined; committed: boolean } {
+	/**
+	 * The sole exact-incarnation terminal commit primitive. Cancellation is read
+	 * and applied inside the same ledger mutation as finalization, so a success
+	 * result can never overwrite a cancellation that committed first.
+	 */
+	finalizeIfCurrent(id: string, incarnationId: string | null | undefined, input: FinishRunInput): { run: LionRun | undefined; committed: boolean } {
 		const current = this.runsById.get(id);
 		if (!current || (current.incarnation_id ?? null) !== (incarnationId ?? null) || isTerminalLionStatus(current.status)) {
 			return { run: current ? clone(current) : undefined, committed: false };
 		}
-		return { run: this.finish(id, input), committed: true };
+		const cancellation = current.control?.cancel_requested_at;
+		const finalInput = cancellation ? {
+			output: "",
+			report: null,
+			status: "aborted" as const,
+			error: current.control?.cancel_reason ? `Cancelled: ${current.control.cancel_reason}` : "Cancelled",
+		} : input;
+		return { run: this.finish(id, finalInput), committed: true };
 	}
 
 	updateProgress(id: string, input: UpdateProgressInput): LionRun {
@@ -452,14 +466,28 @@ export class LionLedger {
 	reconcileControls(isAlive: (pid: number) => boolean, options: ReconcileControlsOptions = {}): LionRun[] {
 		const changed: LionRun[] = [];
 		const active = new Set(Array.from(options.active_run_refs ?? [], (ref) => JSON.stringify([ref.id, ref.incarnation_id ?? null])));
+		const targets = options.target_run_refs
+			? new Set(Array.from(options.target_run_refs, (ref) => JSON.stringify([ref.id, ref.incarnation_id ?? null])))
+			: undefined;
 		const protectedRunIds = new Set(options.protected_run_ids ?? []);
 		const nowMs = options.now_ms ?? Date.now();
 		const staleAfterMs = options.stale_after_ms ?? DEFAULT_RECONCILE_GRACE_MS;
 		for (const r of this.runsById.values()) {
 			if (r.status !== "running" || protectedRunIds.has(r.id)) continue;
+			if (targets && !targets.has(JSON.stringify([r.id, r.incarnation_id ?? null]))) continue;
 			if (active.has(JSON.stringify([r.id, r.incarnation_id ?? null]))) continue;
 			if (!isReconcileStale(r, nowMs, staleAfterMs)) continue;
 			const pid = r.control?.pid;
+			const pending = r.control?.cleanup_pending;
+			if (pending) {
+				// A cleanup handoff was durably observed. Any missing or inconsistent
+				// observation fails closed; persisted metadata grants no authority to
+				// signal or reattach, and absence of proof is never proof of exit.
+				if ((pending.incarnation_id ?? null) !== (r.incarnation_id ?? null)
+					|| typeof pid !== "number"
+					|| pending.pid !== pid
+					|| (pending.process_identity ?? null) !== (r.control?.process_identity ?? null)) continue;
+			}
 			if (typeof pid === "number" && isAlive(pid)) {
 				const expectedIdentity = r.control?.process_identity;
 				const observedIdentity = expectedIdentity && options.get_process_identity ? options.get_process_identity(pid) : null;
@@ -672,7 +700,7 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 		output: typeof value.output === "string" ? value.output : null,
 		report: coerceReport(value.report),
 		progress: coerceProgress(value.progress),
-		control: coerceControl(value.control),
+		control: coerceControl(value.control, typeof value.id === "string" ? value.id : id),
 		steering_messages: coerceSteeringMessages(value.steering_messages),
 		error: typeof value.error === "string" ? value.error : null,
 	};
@@ -708,7 +736,7 @@ function coerceProgress(value: unknown): LionProgressSnapshot | null {
 	};
 }
 
-function coerceControl(value: unknown): LionControlState | null {
+function coerceControl(value: unknown, runId: string): LionControlState | null {
 	if (!isObject(value)) return null;
 	return {
 		pid: typeof value.pid === "number" ? Math.floor(value.pid) : null,
@@ -723,6 +751,35 @@ function coerceControl(value: unknown): LionControlState | null {
 		cancel_delivered_at: typeof value.cancel_delivered_at === "string" ? value.cancel_delivered_at : null,
 		cancel_delivery_error: typeof value.cancel_delivery_error === "string" ? value.cancel_delivery_error : null,
 		reconciled_at: typeof value.reconciled_at === "string" ? value.reconciled_at : null,
+		cleanup_pending: coerceCleanupPendingObservation(value.cleanup_pending, runId),
+	};
+}
+
+function coerceCleanupPendingObservation(value: unknown, runId: string): import("./schema.ts").LionCleanupPendingObservation | null {
+	if (value === null || value === undefined) return null;
+	const malformed = () => new LionError("invalid_arg", `run ${runId} has malformed cleanup_pending observation; delete/reset this clean-slate LION ledger because cleanup liveness cannot be proven and migration is unsupported`);
+	if (!isObject(value)) throw malformed();
+	const observedAt = value.observed_at;
+	const incarnationId = value.incarnation_id;
+	const pid = value.pid;
+	const pgid = value.pgid;
+	const processIdentity = value.process_identity;
+	if (typeof observedAt !== "string"
+		|| !observedAt
+		|| !(typeof incarnationId === "string" || incarnationId === null)
+		|| typeof pid !== "number"
+		|| !Number.isSafeInteger(pid)
+		|| pid <= 0
+		|| !(typeof pgid === "number" || pgid === null)
+		|| !(typeof processIdentity === "string" || processIdentity === null)) {
+		throw malformed();
+	}
+	return {
+		observed_at: observedAt,
+		incarnation_id: typeof incarnationId === "string" ? incarnationId : null,
+		pid,
+		pgid: typeof pgid === "number" ? Math.floor(pgid) : null,
+		process_identity: typeof processIdentity === "string" ? processIdentity : null,
 	};
 }
 

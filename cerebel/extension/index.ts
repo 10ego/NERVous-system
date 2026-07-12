@@ -7,11 +7,13 @@ import { isTerminalAssignmentStatus } from "./store.ts";
 import { renderCerebelCall, renderCerebelResult, RUN_WAVE_DASHBOARD_HINT, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
 import { RunWaveBatchError, runWave, type RunWaveLionAdapter, type RunWaveResult } from "./run-wave.ts";
 import type { LionModelRole, LionProgressSnapshot, LionRun } from "@nervous-system/lion/extension/schema.ts";
+import type { LionRunnerOutcome } from "@nervous-system/lion/extension/subprocess.ts";
+import type { LionTerminalIntent } from "@nervous-system/lion/extension/cleanup-supervisor.ts";
 
 interface CerebelDetails { action: string; wave?: Wave; waves?: Wave[]; summary?: CerebelSummary; run_wave?: import("./run-wave.ts").RunWaveResult; error?: string }
 type ToolResult = { content: Array<{ type: "text"; text: string }>; details: CerebelDetails; isError?: boolean };
 
-type LionRunner = (req: import("@nervous-system/lion/extension/subprocess.ts").LionRunRequest) => Promise<{ text: string; report: import("@nervous-system/lion/extension/schema.ts").LionReport | null }>;
+type LionRunner = (req: import("@nervous-system/lion/extension/subprocess.ts").LionRunRequest) => Promise<LionRunnerOutcome | { text: string; report: import("@nervous-system/lion/extension/schema.ts").LionReport | null }>;
 interface LionAdapterDeps {
 	lionStore?: { namespaceId: string; mutate<T>(fn: (ledger: import("@nervous-system/lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }>; query<T>(fn: (ledger: import("@nervous-system/lion/extension/store.ts").LionLedger) => T): Promise<{ result: T }> };
 	createLionRunner?: (opts: { cwd: string }) => LionRunner;
@@ -20,6 +22,7 @@ interface LionAdapterDeps {
 	lifecycle?: typeof import("@nervous-system/lion/extension/lifecycle.ts");
 	options?: typeof import("@nervous-system/lion/extension/options.ts");
 	progressBatcher?: typeof import("@nervous-system/lion/extension/progress-batcher.ts");
+	cleanupSupervisor?: typeof import("@nervous-system/lion/extension/cleanup-supervisor.ts");
 }
 
 function ok(action: string, text: string, details: Omit<CerebelDetails, "action"> = {}): ToolResult {
@@ -76,6 +79,7 @@ function formatGanglionRecordMessage(
 
 async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefined, p: CerebelToolInput, outcome: AssignmentStatus): Promise<string | null> {
 	if (!assignment || !isTerminalAssignmentStatus(outcome)) return null;
+	if (assignment.cleanup_pending_settlement) return `GANGLION capacity retained for cleanup-pending assignment ${assignment.id}.`;
 	const ganglionId = p.ganglion_id ?? assignment.ganglion_id;
 	const allocationId = p.ganglion_allocation_id ?? assignment.ganglion_allocation_id;
 	if (!allocationId) return null;
@@ -85,7 +89,7 @@ async function recordLinkedGanglion(cwd: string, assignment: Assignment | undefi
 			import("../../ganglion/extension/backend.ts"),
 			import("../../ganglion/extension/disposition.ts"),
 		]);
-		const { result } = await GanglionStore.fromCwd(cwd).mutate((l) => l.recordWithResult(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
+		const { result } = await GanglionStore.fromCwd(cwd).mutate((l) => l.recordWithResult(ganglionId, { allocation_id: allocationId, lion_run_id: p.lion_run_id ?? assignment.lion_run_id ?? undefined, lion_run_incarnation_id: p.lion_run_incarnation_id ?? assignment.lion_run_incarnation_id ?? undefined, status: ganglionStatusFromAssignment(outcome), summary: p.summary }));
 		return formatGanglionRecordMessage(ganglionId, allocationId, result.release_disposition, formatAllocationReleaseDisposition);
 	} catch (e) {
 		return `GANGLION release failed for ${ganglionId}/${allocationId}: ${e instanceof Error ? e.message : String(e)}`;
@@ -97,6 +101,7 @@ interface GroupedGanglionRecord {
 	ganglionId?: string | null;
 	allocationId: string;
 	lionRunId?: string;
+	lionRunIncarnationId?: string;
 	outcome: AssignmentStatus;
 	summary: string;
 }
@@ -104,14 +109,15 @@ interface GroupedGanglionRecord {
 function* runWaveGanglionRecords(result: RunWaveResult): Generator<GroupedGanglionRecord> {
 	const assignments = new Map(result.wave.assignments.map((assignment) => [assignment.id, assignment]));
 	for (const assignmentResult of result.assignment_results) {
-		if (assignmentResult.outcome === "skipped") continue;
+		if (assignmentResult.outcome === "skipped" || assignmentResult.outcome === "cleanup_pending") continue;
 		const assignment = assignments.get(assignmentResult.assignment_id);
-		if (!assignment?.ganglion_allocation_id) continue;
+		if (!assignment || assignment.cleanup_pending_settlement || !assignment.ganglion_allocation_id) continue;
 		yield {
 			assignmentId: assignment.id,
 			ganglionId: assignment.ganglion_id,
 			allocationId: assignment.ganglion_allocation_id,
 			lionRunId: assignmentResult.lion_run_id,
+			lionRunIncarnationId: assignmentResult.lion_run_incarnation_id,
 			outcome: assignmentResult.outcome,
 			summary: assignmentResult.summary,
 		};
@@ -126,6 +132,7 @@ function* cancelledWaveGanglionRecords(wave: Wave): Generator<GroupedGanglionRec
 			ganglionId: assignment.ganglion_id,
 			allocationId: assignment.ganglion_allocation_id,
 			lionRunId: assignment.lion_run_id ?? undefined,
+			lionRunIncarnationId: assignment.lion_run_incarnation_id ?? undefined,
 			outcome: assignment.status,
 			summary: `CEREBEL cancellation reconciled terminal assignment ${assignment.status}`,
 		};
@@ -159,7 +166,11 @@ async function recordGroupedGanglion(cwd: string, entries: Iterable<GroupedGangl
 					const allocationIds = new Set(ganglion.allocations.map((allocation) => allocation.id));
 					return group.map((entry) => {
 						if (!allocationIds.has(entry.allocationId)) return { entry, errorMessage: `allocation ${entry.allocationId} not found` };
-						return { entry, releaseDisposition: ledger.recordWithResult(ganglionId, { allocation_id: entry.allocationId, lion_run_id: entry.lionRunId, status: ganglionStatusFromAssignment(entry.outcome), summary: entry.summary }).release_disposition };
+						try {
+							return { entry, releaseDisposition: ledger.recordWithResult(ganglionId, { allocation_id: entry.allocationId, lion_run_id: entry.lionRunId, lion_run_incarnation_id: entry.lionRunIncarnationId, status: ganglionStatusFromAssignment(entry.outcome), summary: entry.summary }).release_disposition };
+						} catch (error) {
+							return { entry, errorMessage: error instanceof Error ? error.message : String(error) };
+						}
 					});
 				});
 				for (const record of records) {
@@ -182,6 +193,32 @@ export async function recordRunWaveGanglion(cwd: string, result: RunWaveResult):
 
 async function reconcileCancelledWaveGanglion(cwd: string, wave: Wave): Promise<string[]> {
 	return recordGroupedGanglion(cwd, cancelledWaveGanglionRecords(wave));
+}
+
+async function settleCleanupGanglion(cwd: string, assignment: Assignment, runId: string, incarnationId: string, summary: string): Promise<void> {
+	if (!assignment.ganglion_allocation_id) return;
+	if (!assignment.ganglion_id) throw new Error(`cleanup-pending assignment ${assignment.id} has allocation ${assignment.ganglion_allocation_id} but no ganglion_id`);
+	const { GanglionStore } = await import("../../ganglion/extension/backend.ts");
+	const { result } = await GanglionStore.fromCwd(cwd).mutate((ledger) => ledger.recordIfOwned(
+		assignment.ganglion_id!,
+		assignment.ganglion_allocation_id!,
+		runId,
+		incarnationId,
+		{ status: ganglionStatusFromAssignment(assignment.status), summary },
+	));
+	const exactTerminal = result.allocation.lion_run_id === runId
+		&& result.allocation.lion_run_incarnation_id === incarnationId
+		&& ["completed", "blocked", "failed", "cancelled"].includes(result.allocation.status);
+	if (!result.committed && !exactTerminal) throw new Error(`GANGLION allocation settlement was superseded for ${assignment.ganglion_id}/${assignment.ganglion_allocation_id}/${runId}/${incarnationId}`);
+}
+
+async function linkRunWaveGanglion(cwd: string, assignment: Assignment, run: Pick<LionRun, "id" | "incarnation_id">): Promise<void> {
+	if (!assignment.ganglion_allocation_id) return;
+	if (!assignment.ganglion_id) throw new Error(`run_wave assignment ${assignment.id} has allocation ${assignment.ganglion_allocation_id} but no ganglion_id`);
+	if (!run.incarnation_id) throw new Error(`run_wave LION ${run.id} has no incarnation provenance`);
+	const { GanglionStore } = await import("../../ganglion/extension/backend.ts");
+	const { result } = await GanglionStore.fromCwd(cwd).mutate((ledger) => ledger.linkRunIfUnlinked(assignment.ganglion_id!, assignment.ganglion_allocation_id!, run.id, run.incarnation_id!));
+	if (!result.committed) throw new Error(`GANGLION allocation provenance was superseded for ${assignment.ganglion_id}/${assignment.ganglion_allocation_id}/${run.id}/${run.incarnation_id}`);
 }
 
 export interface LinkedLionSettlement {
@@ -267,10 +304,25 @@ export async function settleLinkedLionsBeforeCancel(
 	return assignments.map((assignment) => results.get(assignment.id)!);
 }
 
+function lateTerminalFinishInput(
+	intent: LionTerminalIntent,
+	cleanupError?: Error,
+	hostAborted = false,
+): import("@nervous-system/lion/extension/store.ts").FinishRunInput {
+	if (intent.kind === "result" && !cleanupError && !hostAborted) return { output: intent.output.text, report: intent.output.report };
+	const error = intent.kind === "error" ? intent.error : cleanupError ?? new Error("Host aborted run_wave during cleanup");
+	return {
+		output: "",
+		report: null,
+		status: hostAborted ? "aborted" : "failed",
+		error: hostAborted ? "Cancelled" : error.message,
+	};
+}
+
 export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInput, signal: AbortSignal | undefined, onUpdate: ((update: { content: Array<{ type: "text"; text: string }>; details: unknown }) => void) | undefined, deps: LionAdapterDeps = {}, pi?: ExtensionAPI): Promise<RunWaveLionAdapter> {
 	const timeoutMs = validateRunWaveTimeoutMs(p.timeout_ms);
 	try {
-		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod, optionsMod, progressBatcherMod] = await Promise.all([
+		const [{ LionStore }, jsonRunnerMod, rpcRunnerMod, activeRunsMod, lifecycleMod, optionsMod, progressBatcherMod, cleanupSupervisorMod] = await Promise.all([
 			deps.lionStore ? Promise.resolve({ LionStore: { fromCwd: () => deps.lionStore! as never } }) : import("@nervous-system/lion/extension/backend.ts"),
 			deps.createLionRunner ? Promise.resolve({ createLionRunner: deps.createLionRunner }) : import("@nervous-system/lion/extension/subprocess.ts"),
 			deps.createLionRpcRunner ? Promise.resolve({ createLionRpcRunner: deps.createLionRpcRunner }) : import("@nervous-system/lion/extension/rpc-runner.ts"),
@@ -278,6 +330,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 			deps.lifecycle ? Promise.resolve(deps.lifecycle) : import("@nervous-system/lion/extension/lifecycle.ts"),
 			deps.options ? Promise.resolve(deps.options) : import("@nervous-system/lion/extension/options.ts"),
 			deps.progressBatcher ? Promise.resolve(deps.progressBatcher) : import("@nervous-system/lion/extension/progress-batcher.ts"),
+			deps.cleanupSupervisor ? Promise.resolve(deps.cleanupSupervisor) : import("@nervous-system/lion/extension/cleanup-supervisor.ts"),
 		]);
 		const { createLionRunner } = jsonRunnerMod;
 		const { createLionRpcRunner } = rpcRunnerMod;
@@ -320,11 +373,39 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					throw err;
 				}
 			},
-			async run(run: LionRun, _assignment, onProgress, runSignal) {
+			async run(run: LionRun, _assignment, onProgress, runSignal, onCleanupSettled, prepareCleanupHandoff, beforeCleanupFinalize) {
 				const activeOwner = activeOwners.get(run.id);
 				if (!activeOwner) throw new Error(`active LION ownership missing for ${run.id}`);
 				return runner({
 					run,
+					cleanupOwner: activeOwner,
+					registerCleanupSupervisor: async (handoff) => {
+						// The exact LION observation must commit before the cross-store
+						// CEREBEL obligation becomes actionable. A crash between these
+						// writes may retain capacity, but can never release it without proof.
+						await cleanupSupervisorMod.persistCleanupPendingObservation(lionStore, activeOwner, handoff);
+						await prepareCleanupHandoff?.();
+						return cleanupSupervisorMod.registerLionCleanupSupervisor({
+							owner: activeOwner,
+							handoff,
+							finalize: async (intent, cleanupError) => {
+								await beforeCleanupFinalize?.();
+								return cleanupSupervisorMod.finalizeExactLionRun(
+									lionStore,
+									activeOwner,
+									lateTerminalFinishInput(intent, cleanupError, Boolean((runSignal ?? signal)?.aborted)),
+								);
+							},
+							emitTerminal: (settlement) => {
+								if (settlement.disposition === "terminal") lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(settlement.run.status as import("@nervous-system/lion/extension/schema.ts").TerminalLionRunStatus), settlement.run);
+							},
+							onSettled: async (settlement) => { await onCleanupSettled?.(settlement); },
+							releaseOwner: () => {
+								activeRuns.finishActiveRun(activeOwner);
+								activeOwners.delete(run.id);
+							},
+						});
+					},
 					signal: runSignal ?? signal,
 					timeout_ms: timeoutMs,
 					onProcessStart: (info) => {
@@ -349,12 +430,11 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 				const owner = activeOwners.get(runId);
 				if (!owner) throw new Error(`active LION ownership missing while finalizing ${runId}`);
 				try {
-					const outcome = (await lionStore.mutate((l) => l.finishIfCurrent(runId, owner.incarnationId, result))).result;
-					if (!outcome.committed) {
-						if (outcome.run && (outcome.run.incarnation_id ?? null) === (owner.incarnationId ?? null) && outcome.run.status !== "queued" && outcome.run.status !== "running") return outcome.run;
+					const outcome = await cleanupSupervisorMod.finalizeExactLionRun(lionStore, owner, result);
+					if (outcome.disposition !== "terminal") {
 						throw new Error(`LION finalization superseded for run_id=${runId} incarnation_id=${owner.incarnationId ?? "null"}`);
 					}
-					const finished = outcome.run!;
+					const finished = outcome.run;
 					if (finished.status === "queued" || finished.status === "running") throw new Error(`LION ${runId} remained nonterminal after finish`);
 					lifecycle.emitLionEvent(pi, lifecycle.terminalEventKind(finished.status), finished);
 					return finished;
@@ -497,7 +577,25 @@ export default function (pi: ExtensionAPI) {
 					try {
 						const adapter = await createLionAdapter(ctx, p, signal, onUpdate, {}, pi);
 						try { onUpdate?.({ content: [{ type: "text", text: RUN_WAVE_DASHBOARD_HINT.replace(/`/g, "") }], details: { action: "run_wave", hint: "dashboard" } }); } catch { /* dashboard hint is best-effort */ }
-						const result = await runWave(store, adapter, { wave_id: p.wave_id, max_parallel: p.max_parallel, signal });
+						const result = await runWave(store, adapter, {
+							wave_id: p.wave_id,
+							max_parallel: p.max_parallel,
+							signal,
+							onRunLinked: async (assignment, run) => linkRunWaveGanglion(ctx.cwd, assignment, run),
+							onLateSettlement: async (lateResult, lateWaveId) => {
+								if (lateResult.outcome === "skipped" || lateResult.outcome === "cleanup_pending") return;
+								const { result: latestWave } = await store.query((ledger) => ledger.get(lateWaveId));
+								const assignment = latestWave?.assignments.find((candidate) => candidate.id === lateResult.assignment_id);
+								if (!assignment || !isTerminalAssignmentStatus(assignment.status)) return;
+								const message = await recordLinkedGanglion(ctx.cwd, assignment, {
+									action: "record",
+									lion_run_id: lateResult.lion_run_id,
+									lion_run_incarnation_id: lateResult.lion_run_incarnation_id,
+									summary: lateResult.summary,
+								} as CerebelToolInput, assignment.status);
+								if (message?.startsWith("GANGLION release failed")) throw new Error(message);
+							},
+						});
 						const ganglionMessages = await recordRunWaveGanglion(ctx.cwd, result);
 						const suffix = ganglionMessages.length ? ` ${ganglionMessages.join(" ")}` : "";
 						return ok(action, `Ran ${result.summary}.${suffix}`, { wave: result.wave, run_wave: result });

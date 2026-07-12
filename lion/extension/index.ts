@@ -13,6 +13,7 @@ import { createProgressUpdater, emitLionEvent, startedProgress, terminalEventKin
 import { resolveConfiguredLionModel, resolveLionRunnerMode } from "./options.ts";
 import { createLionRunner, getProcessIdentity, isPidAlive } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
+import { finalizeExactLionRun, persistCleanupPendingObservation, registerLionCleanupSupervisor, type LionTerminalIntent } from "./cleanup-supervisor.ts";
 import { persistBatchedProgress } from "./progress-batcher.ts";
 import { attachActiveRunProcess, beginActiveRun, finishActiveRun, getActiveRunRefs, isActiveRunAttached, isActiveRunOwner, markActiveRunControlClosed, markActiveRunExited, replayPendingCancellation, requestRunCancellation, type ActiveRunOwner, type ActiveRunScope } from "./active-runs.ts";
 
@@ -74,7 +75,7 @@ async function reconcileStore(store: LionStore): Promise<void> {
 	} catch { /* best-effort read reconciliation */ }
 }
 
-async function executeRun(args: {
+export async function executeRun(args: {
 	pi: ExtensionAPI;
 	ctx: ExtensionContext;
 	store: LionStore;
@@ -85,11 +86,13 @@ async function executeRun(args: {
 	timeout_ms?: number;
 	include_progress_text?: boolean;
 	activeOwner: ActiveRunOwner;
+	runner?: (request: import("./subprocess.ts").LionRunRequest) => Promise<import("./subprocess.ts").LionRunnerOutcome>;
 }): Promise<ToolResult> {
 	let run = args.run;
 	const runId = args.run.id;
 	const runIncarnationId = args.run.incarnation_id;
 	const activeOwner = args.activeOwner;
+	let ownershipTransferred = false;
 	const progressUpdater = createProgressUpdater(async (progress) => {
 		const updated = await persistBatchedProgress(args.store, { id: runId, incarnation_id: runIncarnationId }, progress);
 		if (!updated) return;
@@ -111,11 +114,27 @@ async function executeRun(args: {
 	enqueueProgress(initialProgress);
 
 	try {
-		const runner = run.runner_mode === "rpc"
+		const runner = args.runner ?? (run.runner_mode === "rpc"
 			? createLionRpcRunner({ cwd: args.ctx.cwd, store: args.store })
-			: createLionRunner({ cwd: args.ctx.cwd });
+			: createLionRunner({ cwd: args.ctx.cwd }));
 		const out = await runner({
 			run,
+			cleanupOwner: activeOwner,
+			registerCleanupSupervisor: async (handoff) => {
+				run = await persistCleanupPendingObservation(args.store, activeOwner, handoff);
+				return registerLionCleanupSupervisor({
+					owner: activeOwner,
+					handoff,
+					finalize: async (intent, cleanupError) => {
+						await progressUpdater.drain();
+						return finalizeExactLionRun(args.store, activeOwner, terminalFinishInput(intent, cleanupError, args.signal?.aborted));
+					},
+					emitTerminal: (settlement) => {
+						if (settlement.disposition === "terminal") emitLionEvent(args.pi, terminalEventKind(settlement.run.status as import("./schema.ts").TerminalLionRunStatus), settlement.run);
+					},
+					releaseOwner: () => finishActiveRun(activeOwner),
+				});
+			},
 			signal: args.signal,
 			timeout_ms: args.timeout_ms ?? DEFAULT_TIMEOUT_MS,
 			include_progress_text: args.include_progress_text,
@@ -134,31 +153,56 @@ async function executeRun(args: {
 			onProcessExit: () => markActiveRunExited(activeOwner),
 		});
 		await progressUpdater.drain();
-		const finished = await args.store.mutate((l) => l.finishIfCurrent(runId, runIncarnationId, { output: out.text, report: out.report }));
-		if (!finished.result.committed || !finished.result.run) {
-			return fail(args.action, `LION finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, finished.result.run ? { run: finished.result.run } : {});
+		if (out.settlement === "cleanup_pending") {
+			ownershipTransferred = true;
+			const current = await args.store.query((l) => l.get(runId)).then(({ result }) => result, () => undefined);
+			return ok(args.action, `LION run_id=${runId} incarnation_id=${runIncarnationId} cleanup_pending: attached RPC child is still exiting; run ownership and orchestration capacity remain retained.`, current ? { run: current } : {});
 		}
-		run = finished.result.run;
+		const finished = await finalizeExactLionRun(args.store, activeOwner, { output: out.text, report: out.report });
+		if (finished.disposition !== "terminal") {
+			return fail(args.action, `LION finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, finished.run ? { run: finished.run } : {});
+		}
+		run = finished.run;
 		if (isActiveLionStatus(run.status)) throw new Error(`LION ${run.id} remained nonterminal after finish`);
 		emitLionEvent(args.pi, terminalEventKind(run.status), run);
+		if (run.status === "aborted") {
+			return fail(args.action, `LION ${modelVisibleRunRef(run)} status=aborted: ${run.error ?? "Cancelled"}`, { run });
+		}
 		const reportHint = run.report ? `${run.report.outcome}: ${run.report.summary}` : "completed with unparsed report";
 		return ok(args.action, `LION ${modelVisibleRunRef(run)} status=${run.status}: ${reportHint}`, { run });
 	} catch (err) {
 		await progressUpdater.drain();
 		const msg = err instanceof Error ? err.message : String(err);
-		const current = (await args.store.query((l) => l.get(runId))).result;
-		const exactCurrent = current && (current.incarnation_id ?? null) === (runIncarnationId ?? null) ? current : undefined;
-		const wasCancelled = Boolean(exactCurrent?.control?.cancel_requested_at || args.signal?.aborted);
-		const failed = await args.store.mutate((l) => l.finishIfCurrent(runId, runIncarnationId, { output: "", report: null, status: wasCancelled ? "aborted" : "failed", error: wasCancelled ? (exactCurrent?.control?.cancel_reason ? `Cancelled: ${exactCurrent.control.cancel_reason}` : "Cancelled") : msg }));
-		if (!failed.result.committed || !failed.result.run) {
-			return fail(args.action, `LION failure finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, failed.result.run ? { run: failed.result.run } : {});
+		const failed = await finalizeExactLionRun(args.store, activeOwner, {
+			output: "",
+			report: null,
+			status: args.signal?.aborted ? "aborted" : "failed",
+			error: args.signal?.aborted ? "Cancelled" : msg,
+		});
+		if (failed.disposition !== "terminal") {
+			return fail(args.action, `LION failure finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, failed.run ? { run: failed.run } : {});
 		}
-		run = failed.result.run;
+		run = failed.run;
 		emitLionEvent(args.pi, "failed", run);
 		return fail(args.action, `LION ${modelVisibleRunRef(run)} status=${run.status}: ${run.error ?? msg}`, { run });
 	} finally {
-		finishActiveRun(activeOwner);
+		if (!ownershipTransferred) finishActiveRun(activeOwner);
 	}
+}
+
+function terminalFinishInput(
+	intent: LionTerminalIntent,
+	cleanupError?: Error,
+	hostAborted = false,
+): import("./store.ts").FinishRunInput {
+	if (intent.kind === "result" && !cleanupError && !hostAborted) return { output: intent.output.text, report: intent.output.report };
+	const error = intent.kind === "error" ? intent.error : cleanupError ?? new Error("LION run host aborted during cleanup");
+	return {
+		output: "",
+		report: null,
+		status: hostAborted ? "aborted" : "failed",
+		error: hostAborted ? "Cancelled" : error.message,
+	};
 }
 
 export default function (pi: ExtensionAPI) {

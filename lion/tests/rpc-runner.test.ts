@@ -2,9 +2,10 @@ import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { EventEmitter } from "node:events";
 import { afterEach, describe, it, vi } from "vitest";
 import { FileBackend, LionStore } from "../extension/backend.ts";
-import { AdaptivePoller, createLionRpcRunner, formatPersistedRpcFailure, MAX_PERSISTED_RPC_ERROR_CHARS, sanitizeRpcError, type LionRpcClient } from "../extension/rpc-runner.ts";
+import { AdaptivePoller, createLionRpcRunner, formatPersistedRpcFailure, MAX_PERSISTED_RPC_ERROR_CHARS, sanitizeRpcError, waitForChildExit, type LionRpcClient } from "../extension/rpc-runner.ts";
 
 class FakeRpcClient implements LionRpcClient {
 	started = false;
@@ -72,7 +73,7 @@ class FakeRpcClient implements LionRpcClient {
 		this.listeners.push(listener);
 		return () => { this.listeners = this.listeners.filter((l) => l !== listener); };
 	}
-	getProcessInfo() {
+	getProcessInfo(): import("../extension/subprocess.ts").LionProcessInfo {
 		return {
 			pid: process.pid,
 			pgid: null,
@@ -164,6 +165,7 @@ describe("createLionRpcRunner", () => {
 		await until(() => fake.prompted !== null);
 		await store.mutate((l) => l.steer(run.id, "Please adjust course", { liveDeliveryAvailable: true }));
 		const out = await promise;
+		if (out.settlement !== "settled") assert.fail("successful RPC run unexpectedly remained cleanup_pending");
 		assert.equal(out.report?.outcome, "completed");
 		assert.deepEqual(fake.steered, ["Please adjust course"]);
 		const final = (await store.query((l) => l.get(run.id))).result!;
@@ -268,6 +270,166 @@ describe("createLionRpcRunner", () => {
 		assert.equal(exits, 1);
 	});
 
+	it("returns an explicit cleanup_pending outcome after an exact live-child handoff", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		const run = (await store.mutate((l) => l.create({ objective: "bounded cleanup", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-exact" };
+		let handoff: import("../extension/cleanup-supervisor.ts").LionCleanupHandoff | undefined;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: owner,
+			registerCleanupSupervisor: (candidate) => { handoff = candidate; return true; },
+		});
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		const outcome = await promise;
+		if (outcome.settlement !== "cleanup_pending") assert.fail("live child handoff unexpectedly settled");
+		assert.equal(outcome.owner_id, owner.ownerId);
+		assert.equal(fake.alive, true);
+		assert.equal(handoff?.process.pid, process.pid);
+		fake.exit();
+		await handoff?.waitForExit();
+		await handoff?.cleanup();
+	});
+
+	it("does not confirm child death from an error event while the attached child remains alive", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		const processEvents = new EventEmitter();
+		fake.throwOnStop = true;
+		fake.waitForExit = () => waitForChildExit(processEvents);
+		const baseExit = fake.exit.bind(fake);
+		fake.exit = () => { baseExit(); processEvents.emit("exit", 0, null); };
+		const run = (await store.mutate((ledger) => ledger.create({ objective: "live child error", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-error-event" };
+		let handoff: import("../extension/cleanup-supervisor.ts").LionCleanupHandoff | undefined;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const outcomePromise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: owner,
+			registerCleanupSupervisor: (candidate) => { handoff = candidate; return true; },
+		});
+		await until(() => fake.prompted !== null);
+		processEvents.emit("error", new Error("spawn channel error"));
+		fake.finish();
+		const outcome = await outcomePromise;
+		if (outcome.settlement !== "cleanup_pending") assert.fail("live child error incorrectly bypassed cleanup supervision");
+		assert.equal(fake.alive, true);
+		assert.ok(handoff);
+		let exitConfirmed = false;
+		const waiting = handoff.waitForExit().then(() => { exitConfirmed = true; });
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(exitConfirmed, false);
+		fake.exit();
+		await waiting;
+		assert.equal(exitConfirmed, true);
+	});
+
+	it("bounds a hanging hard-stop attempt before transferring cleanup", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		fake.getProcessInfo = () => ({
+			pid: process.pid,
+			pgid: null,
+			isAlive: () => fake.alive,
+			cancel: (signal = "SIGTERM") => signal === "SIGKILL" ? new Promise<boolean>(() => undefined) : false,
+		});
+		const run = (await store.mutate((l) => l.create({ objective: "bounded hard stop", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-hard-stop" };
+		let handoff: import("../extension/cleanup-supervisor.ts").LionCleanupHandoff | undefined;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, abortGraceMs: 5, clientFactory: () => fake });
+		const promise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: owner,
+			registerCleanupSupervisor: (candidate) => { handoff = candidate; return true; },
+		});
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		const outcome = await promise;
+		if (outcome.settlement !== "cleanup_pending") assert.fail("hanging hard stop did not transfer cleanup");
+		assert.equal(fake.alive, true);
+		fake.exit();
+		await handoff?.waitForExit();
+		await handoff?.cleanup();
+	});
+
+	it("does not offer cleanup transfer to a mismatched namespace/run/incarnation owner", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		const run = (await store.mutate((l) => l.create({ objective: "mismatched owner", runner_mode: "rpc" }))).result;
+		let registrations = 0;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: { namespaceId: `${store.namespaceId}-replacement`, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-mismatch" },
+			registerCleanupSupervisor: () => { registrations++; return true; },
+		});
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await until(() => fake.stopCalls === 1);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(registrations, 0);
+		fake.exit();
+		await assert.rejects(() => promise, /stop boom/);
+	});
+
+	it("retains the foreground wait when cleanup supervisor registration fails", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		const run = (await store.mutate((l) => l.create({ objective: "registration fallback", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-fallback" };
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, timeout_ms: 1000, cleanupOwner: owner, registerCleanupSupervisor: () => false });
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await until(() => fake.stopCalls === 1);
+		let settled = false;
+		void promise.finally(() => { settled = true; }).catch(() => undefined);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(settled, false);
+		fake.exit();
+		await assert.rejects(() => promise, /stop boom/);
+	});
+
+	it("retains foreground supervision when durable cleanup observation persistence fails", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.throwOnStop = true;
+		const run = (await store.mutate((ledger) => ledger.create({ objective: "handoff persistence failure", runner_mode: "rpc" }))).result;
+		const owner = { namespaceId: store.namespaceId, runId: run.id, incarnationId: run.incarnation_id, ownerId: "owner-persistence-failure" };
+		let registrations = 0;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({
+			run,
+			timeout_ms: 1000,
+			cleanupOwner: owner,
+			registerCleanupSupervisor: async () => {
+				registrations++;
+				throw new Error("durable cleanup marker write failed");
+			},
+		});
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		await until(() => registrations === 1);
+		let settled = false;
+		void promise.finally(() => { settled = true; }).catch(() => undefined);
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		assert.equal(settled, false);
+		assert.equal(fake.alive, true);
+		fake.exit();
+		await assert.rejects(() => promise, /stop boom/);
+	});
+
 	it("bounds a prompt that never acknowledges by the session timeout", async () => {
 		const store = await makeStore();
 		const fake = new FakeRpcClient();
@@ -342,6 +504,7 @@ describe("createLionRpcRunner", () => {
 		const run = (await store.mutate((l) => l.create({ objective: "immediate idle", runner_mode: "rpc" }))).result;
 		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
 		const output = await runner({ run, timeout_ms: 1000 });
+		if (output.settlement !== "settled") assert.fail("idle RPC run unexpectedly remained cleanup_pending");
 		assert.equal(output.report?.outcome, "completed");
 		assert.equal(fake.waitForIdleCalls, 0);
 	});
@@ -417,6 +580,7 @@ describe("createLionRpcRunner", () => {
 		await until(() => fake.prompted !== null);
 		fake.finish();
 		const output = await promise;
+		if (output.settlement !== "settled") assert.fail("graceful RPC stop unexpectedly remained cleanup_pending");
 		assert.equal(output.report?.outcome, "completed");
 		assert.equal(fake.stopCalls, 1);
 	});
