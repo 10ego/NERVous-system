@@ -114,7 +114,7 @@ describe("createLionAdapter", () => {
 			namespaceId: "control-diagnostics",
 			async mutate<T>(fn: (l: LionLedger) => T) {
 				mutations++;
-				if (mutations === 2) throw new Error("metadata unavailable");
+				if (mutations === 3) throw new Error("metadata unavailable");
 				return { result: fn(ledger) };
 			},
 			async query<T>(_fn: (l: LionLedger) => T): Promise<{ result: T }> { throw new Error("replay unavailable"); },
@@ -364,6 +364,45 @@ describe("createLionAdapter", () => {
 		}
 	});
 
+	it("persists started progress with a legacy LionStore fallback", async () => {
+		const ledger = new LionLedger();
+		const lionStore = {
+			namespaceId: "legacy-start-progress",
+			async mutate<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
+		};
+		const runner = () => async () => ({ text: "ok", report });
+		const adapter = await createLionAdapter(
+			{ cwd: process.cwd(), isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns, lifecycle },
+		);
+		const run = await adapter.createRun(assignment());
+		assert.equal(ledger.get(run.id)?.progress?.activity, run.progress?.activity);
+		await adapter.finishRun(run.id, { output: "ok", report });
+	});
+
+	it("terminalizes a run when its initial sidecar flush fails", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-lion-startup-flush-"));
+		const lionStore = new LionStore(new FileBackend({ runsPath: path.join(dir, "runs.json"), dir }));
+		(lionStore as any).flushProgress = async () => { throw new Error("sidecar unavailable"); };
+		const runner = () => async () => ({ text: "ok", report });
+		const adapter = await createLionAdapter(
+			{ cwd: dir, isProjectTrusted: () => false } as never,
+			{ action: "run_wave" } as never,
+			undefined,
+			undefined,
+			{ lionStore, createLionRunner: runner, createLionRpcRunner: runner, activeRuns, lifecycle },
+		);
+		await assert.rejects(() => adapter.createRun(assignment()), /sidecar unavailable/);
+		const terminal = (await lionStore.query((ledger) => ledger.all())).result[0];
+		assert.equal(terminal?.status, "failed");
+		assert.match(terminal?.error ?? "", /startup progress failed: sidecar unavailable/);
+		assert.equal(activeRuns.getActiveRunIds(lionStore.namespaceId).length, 0);
+	});
+
 	it("does not finalize a replacement LION incarnation", async () => {
 		const ledger = new LionLedger();
 		const lionStore = {
@@ -400,7 +439,7 @@ describe("createLionAdapter", () => {
 			namespaceId: path.join(dir, "lion-runs.json"),
 			async mutate<T>(fn: (l: LionLedger) => T) {
 				mutationCount++;
-				if (mutationCount === 2) await metadataHeld;
+				if (mutationCount === 3) await metadataHeld;
 				return { result: fn(ledger) };
 			},
 			async query<T>(fn: (l: LionLedger) => T) { return { result: fn(ledger) }; },
