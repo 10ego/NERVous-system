@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/10ego/NERVous-system/compare/v1.1.0...v1.1.1) (2026-07-12)
+
+
+### Tests
+
+* **cerebel:** clean up timeout test state ([#28](https://github.com/10ego/NERVous-system/issues/28)) ([3e5e6e1](https://github.com/10ego/NERVous-system/commit/3e5e6e15c6261b9ff19a0bde020106bcd5c36820))
+
 ## [1.1.0](https://github.com/10ego/NERVous-system/compare/v1.0.5...v1.1.0) (2026-07-12)
 
 
