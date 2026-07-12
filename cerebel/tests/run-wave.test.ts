@@ -4,11 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, describe, it, vi } from "vitest";
 import { CerebelStore, FileBackend } from "../extension/backend.ts";
-import { RunWaveBatchError, runWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
+import { RunWaveBatchError, runWave, summarizeRunWave, type RunWaveLionAdapter } from "../extension/run-wave.ts";
 import { createProgressUpdater } from "../../lion/extension/lifecycle.ts";
 import type { LionReport, LionRun } from "../../lion/extension/schema.ts";
 import type { Assignment, Wave } from "../extension/schema.ts";
 import { summarizeAssignmentGroup, summarizeRunWaveResult } from "../extension/render.ts";
+import { CerebelLedger } from "../extension/store.ts";
 
 async function tmpStore(): Promise<CerebelStore> {
 	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-run-wave-"));
@@ -100,7 +101,24 @@ describe("runWave", () => {
 		assert.deepEqual(adapter.created, ["assign-001:run-001", "assign-002:run-002"]);
 		assert.equal(result.wave.assignments[0]?.lion_run_id, "run-001");
 		assert.equal(result.wave.assignments[1]?.lion_run_id, "run-002");
-		assert.match(result.summary, /completed 2\/2/);
+		assert.match(result.summary, /completed 2; partial 0; cancelled 0/);
+	});
+
+	it("summarizes terminal outcomes distinctly without changing assignment settlement", () => {
+		const wave = new CerebelLedger().planWave({ assignments: [
+			{ agent_id: "lion-completed", objective: "completed" },
+			{ agent_id: "lion-partial", objective: "partial" },
+			{ agent_id: "lion-cancelled", objective: "cancelled" },
+			{ agent_id: "lion-blocked", objective: "blocked" },
+			{ agent_id: "lion-failed", objective: "failed" },
+			{ agent_id: "lion-planned", objective: "planned" },
+		] });
+		for (const [index, status] of (["completed", "partial", "cancelled", "blocked", "failed", "planned"] as const).entries()) wave.assignments[index]!.status = status;
+
+		assert.equal(
+			summarizeRunWave(wave, []),
+			"wave-001: planned; ran 0; completed 1; partial 1; cancelled 1; blocked 1; failed 1; planned 1",
+		);
 	});
 
 	it("reserves assignments before creating LION runs", async () => {

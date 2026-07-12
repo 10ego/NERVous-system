@@ -336,10 +336,9 @@ function assignmentStatusFromReport(report: LionReport | null, fallback: LionRun
 }
 
 export function summarizeRunWave(wave: Wave, results: RunWaveAssignmentResult[]): string {
-	const completed = wave.assignments.filter((a) => a.status === "completed" || a.status === "partial").length;
-	const blocked = wave.assignments.filter((a) => a.status === "blocked").length;
-	const failed = wave.assignments.filter((a) => a.status === "failed").length;
-	const planned = wave.assignments.filter((a) => a.status === "planned").length;
-	const ran = results.filter((r) => r.outcome !== "skipped").length;
-	return `${wave.id}: ${wave.status}; ran ${ran}; completed ${completed}/${wave.assignments.length}; blocked ${blocked}; failed ${failed}; planned ${planned}`;
+	const counts: Partial<Record<AssignmentStatus, number>> = {};
+	for (const assignment of wave.assignments) counts[assignment.status] = (counts[assignment.status] ?? 0) + 1;
+	const count = (status: AssignmentStatus) => counts[status] ?? 0;
+	const ran = results.filter((result) => result.outcome !== "skipped").length;
+	return `${wave.id}: ${wave.status}; ran ${ran}; completed ${count("completed")}; partial ${count("partial")}; cancelled ${count("cancelled")}; blocked ${count("blocked")}; failed ${count("failed")}; planned ${count("planned")}`;
 }

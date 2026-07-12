@@ -33,7 +33,7 @@ Package surfaces:
 | `record` | Record a LION outcome for one assignment |
 | `decide` | Compute next controller decision |
 | `complete_wave` | Finish a successful wave |
-| `cancel` | Request cancellation for every linked LION, wait for confirmed settlement, then cancel the wave and release only still-owned GANGLION allocations; unsettled workers retain wave state and capacity |
+| `cancel` | Request cancellation for every linked LION, wait for confirmed settlement, then cancel the wave and reconcile terminal GANGLION allocations once per group; unsettled workers retain wave state and capacity |
 | `run_wave` | Actively launch planned assignments through LION, dispatch links, and record grouped outcomes |
 | `get` | Show one wave/current wave |
 | `list` | List waves |
@@ -80,6 +80,7 @@ cerebel run_wave wave_id="current" max_parallel=2 timeout_ms=600000
 - Time-throttles durable progress writes while sending UI progress immediately and forcing the final snapshot before terminalization.
 - Joins every admitted batch with all-settled semantics before returning or propagating failure.
 - Records completed, partial, blocked, failed, and cancelled outcomes; terminal GANGLION updates are batched once per group.
+- Summarizes completed, partial, cancelled, blocked, failed, and still-planned assignment counts separately without changing their settlement semantics.
 - Returns grouped results plus a `/nervous:dashboard` hint. Failed batches retain structured partial `wave` and `run_wave.assignment_results` details, and the TUI renders them with the error.
 
 ### Abort and failure behavior
