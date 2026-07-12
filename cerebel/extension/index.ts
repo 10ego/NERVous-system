@@ -254,7 +254,8 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 					}));
 					if (!started) throw new Error("LION start did not return a run");
 					if ("flushProgress" in lionStore && typeof lionStore.flushProgress === "function") {
-						await lionStore.flushProgress(started, initialProgress);
+						const accepted = await lionStore.flushProgress(started, initialProgress);
+						if (!accepted) throw new Error(`LION start progress was rejected for run_id=${started.id}`);
 					} else {
 						const persisted = await lionStore.mutate((ledger) => ledger.updateProgressIfCurrent(started!.id, started!.incarnation_id, initialProgress));
 						if (!persisted.result.committed || !persisted.result.run) throw new Error(`LION start progress was superseded for run_id=${started.id}`);
