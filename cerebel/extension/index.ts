@@ -391,7 +391,7 @@ export async function createLionAdapter(ctx: ExtensionContext, p: CerebelToolInp
 						const message = err instanceof Error ? err.message : String(err);
 						try {
 							if ("finishRun" in lionStore && typeof lionStore.finishRun === "function") await lionStore.finishRun(started.id, activeOwner.incarnationId, { output: "", report: null, status: "failed", error: `LION startup progress failed: ${message}` });
-							else await lionStore.mutate((ledger) => ledger.finishIfCurrent(started!.id, activeOwner!.incarnationId, { output: "", report: null, status: "failed", error: `LION startup progress failed: ${message}` }));
+							else await lionStore.mutate((ledger) => ledger.finalizeIfCurrent(started!.id, activeOwner!.incarnationId, { output: "", report: null, status: "failed", error: `LION startup progress failed: ${message}` }));
 						} catch (cleanupError) { console.warn(`[nervous-system/cerebel] failed to terminalize startup error for ${started.id}:`, cleanupError); }
 					}
 					if (activeOwner) activeRuns.finishActiveRun(activeOwner);

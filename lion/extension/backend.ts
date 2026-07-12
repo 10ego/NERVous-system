@@ -179,7 +179,7 @@ export class FileBackend {
 
 	async finishExact(id: string, incarnationId: string | null | undefined, input: FinishRunInput): Promise<{ result: { run: LionRun | undefined; committed: boolean }; warnings: string[] }> {
 		await fs.mkdir(this.location.dir, { recursive: true });
-		if (!incarnationId) return this.mutate((ledger) => ledger.finishIfCurrent(id, incarnationId, input));
+		if (!incarnationId) return this.mutate((ledger) => ledger.finalizeIfCurrent(id, incarnationId, input));
 		return withLock(this.lockPath, async () => {
 			const initial = await this.loadUnlocked(false);
 			const current = initial.ledger.get(id);
@@ -194,7 +194,7 @@ export class FileBackend {
 				return { result: { run: exact, committed: false }, warnings: [...initial.warnings, ...closed.warnings, ...reloaded.warnings] };
 			}
 			if (closed.progress) reloaded.ledger.foldProgressIfCurrent(id, incarnationId, closed.progress);
-			const result = reloaded.ledger.finishIfCurrent(id, incarnationId, input);
+			const result = reloaded.ledger.finalizeIfCurrent(id, incarnationId, input);
 			const saveWarnings = await this.saveUnlocked(reloaded.ledger, reloaded.raw);
 			// A crash/failure after save leaves canonical terminal truth; retain a bounded
 			// warning so later classification cleanup can recover the ignorable orphan.
