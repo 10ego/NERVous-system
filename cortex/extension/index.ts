@@ -95,20 +95,28 @@ function resolveGoalId(s: import("./store.ts").GoalStore, id: string | undefined
 	return id;
 }
 
-const ROOT_CONTROL_PLANE_APIS = Symbol.for("nervous-system.root-control-plane-apis");
-type RootControlPlaneRegistry = typeof globalThis & { [ROOT_CONTROL_PLANE_APIS]?: WeakSet<object> };
+const ROOT_CONTROL_PLANE_SCOPES = Symbol.for("nervous-system.root-control-plane-scopes");
+type RootControlPlaneRegistry = typeof globalThis & { [ROOT_CONTROL_PLANE_SCOPES]?: WeakSet<object> };
 
 function rootControlPlaneRegistry(): WeakSet<object> {
 	const root = globalThis as RootControlPlaneRegistry;
-	return root[ROOT_CONTROL_PLANE_APIS] ??= new WeakSet<object>();
+	return root[ROOT_CONTROL_PLANE_SCOPES] ??= new WeakSet<object>();
 }
 
-export function markNervousRootControlPlane(pi: ExtensionAPI): void {
-	rootControlPlaneRegistry().add(pi);
+function extensionRuntimeScope(pi: ExtensionAPI): object {
+	// Pi creates a separate ExtensionAPI wrapper for each extension, while the
+	// event bus is shared by every extension loaded into the same runtime.
+	return pi.events;
+}
+
+export function markNervousRootControlPlane(pi: ExtensionAPI): () => void {
+	const scope = extensionRuntimeScope(pi);
+	rootControlPlaneRegistry().add(scope);
+	return () => rootControlPlaneRegistry().delete(scope);
 }
 
 function hasNervousRootControlPlane(pi: ExtensionAPI): boolean {
-	return rootControlPlaneRegistry().has(pi);
+	return rootControlPlaneRegistry().has(extensionRuntimeScope(pi));
 }
 
 export function registerCortexExtension(pi: ExtensionAPI): void {

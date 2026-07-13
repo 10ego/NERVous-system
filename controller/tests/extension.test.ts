@@ -13,9 +13,9 @@ interface Captured {
 	handlers: Map<string, Array<(event: unknown, ctx: any) => unknown>>;
 }
 
-function stubPi(): { pi: any; captured: Captured } {
-	const captured: Captured = { commands: [], handlers: new Map() };
+function stubPi(captured: Captured = { commands: [], handlers: new Map() }, events: object = {}): { pi: any; captured: Captured } {
 	const pi: any = {
+		events,
 		registerTool() {},
 		registerCommand(name: string, options: Record<string, unknown>) {
 			captured.commands.push({ name, options });
@@ -178,11 +178,36 @@ describe("NERVous root-package enablement", () => {
 		});
 	});
 
-	it("does not duplicate the config command when the root CORTEX extension loads", () => {
-		const { pi, captured } = stubPi();
-		factory(pi);
-		cortexExtension(pi);
+	it("does not duplicate the config command when root extensions receive distinct Pi API wrappers", () => {
+		const { pi: controllerPi, captured } = stubPi();
+		const { pi: cortexPi } = stubPi(captured, controllerPi.events);
+		factory(controllerPi);
+		cortexExtension(cortexPi);
+		const registrations = captured.commands.filter((command) => command.name === "nervous:config");
+		assert.deepEqual(registrations.map((command) => command.name), ["nervous:config"]);
+		const complete = registrations[0]?.options.getArgumentCompletions as (prefix: string) => Array<{ value: string }> | null;
+		assert.deepEqual((complete("enabled=") ?? []).map((item) => item.value), ["enabled=true", "enabled=false"]);
+	});
+
+	it("does not suppress standalone CORTEX in a separate Pi runtime", () => {
+		const { pi: controllerPi } = stubPi();
+		factory(controllerPi);
+		const { pi: standalonePi, captured } = stubPi();
+		cortexExtension(standalonePi);
 		assert.deepEqual(captured.commands.filter((command) => command.name === "nervous:config").map((command) => command.name), ["nervous:config"]);
+	});
+
+	it("releases config command ownership before reloading resources on the same event bus", async () => {
+		const { pi: controllerPi, captured: firstGeneration } = stubPi();
+		factory(controllerPi);
+		for (const handler of firstGeneration.handlers.get("session_shutdown") ?? []) {
+			await handler({ type: "session_shutdown", reason: "reload" }, {});
+		}
+
+		const { pi: reloadedCortexPi, captured: secondGeneration } = stubPi(undefined, controllerPi.events);
+		cortexExtension(reloadedCortexPi);
+		const registrations = secondGeneration.commands.filter((command) => command.name === "nervous:config");
+		assert.deepEqual(registrations.map((command) => command.name), ["nervous:config"]);
 	});
 
 	it("does not register a session_start reload handler", () => {
