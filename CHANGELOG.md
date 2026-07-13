@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.2](https://github.com/10ego/NERVous-system/compare/v1.2.1...v1.2.2) (2026-07-13)
+
+
+### Bug Fixes
+
+* **config:** dedupe root config command ([#36](https://github.com/10ego/NERVous-system/issues/36)) ([debdd68](https://github.com/10ego/NERVous-system/commit/debdd689a246e42fe24219e01760fa509fbe0a65))
+
 ## [1.2.1](https://github.com/10ego/NERVous-system/compare/v1.2.0...v1.2.1) (2026-07-13)
 
 
