@@ -37,15 +37,7 @@ export interface NervousModelConfig {
 
 export interface NervousConfig {
 	version: number;
-	/** User-level root-suite setting. Omitted defaults to enabled and project overlays cannot change it. */
-	enabled?: boolean;
 	models: NervousModelConfig;
-}
-
-export interface NervousEnablement {
-	enabled: boolean;
-	source: "user" | "default";
-	path?: string;
 }
 
 export interface NervousConfigResolution {
@@ -153,7 +145,6 @@ export function normalizeNervousConfig(raw: unknown): NervousConfig {
 	const out = emptyNervousConfig();
 	if (!isPlainObject(raw)) return out;
 	if (typeof raw.version === "number" && Number.isFinite(raw.version)) out.version = Math.floor(raw.version);
-	if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
 	const models = isPlainObject(raw.models) ? raw.models : {};
 	for (const key of NERVOUS_MODEL_KEYS) {
 		const value = readModelValue(models, key);
@@ -171,29 +162,6 @@ export function mergeNervousConfigs(base: NervousConfig, overlay: NervousConfig)
 		if (typeof value === "string") setModelValue(next.models, key, value);
 		else clearModelValue(next.models, key);
 	}
-	return next;
-}
-
-export function getNervousEnabled(config: NervousConfig): boolean | undefined {
-	const normalized = normalizeNervousConfig(config);
-	return hasEnabledSetting(normalized) ? normalized.enabled : undefined;
-}
-
-/**
- * Suite enablement is a user-level installation setting. Unlike model defaults,
- * it never accepts a project overlay because Pi package resources are resolved
- * before project extension code can safely change them.
- */
-export function resolveNervousEnabled(resolution: NervousConfigResolution): NervousEnablement {
-	if (hasEnabledSetting(resolution.user)) {
-		return { enabled: resolution.user.enabled!, source: "user", path: resolution.userPath };
-	}
-	return { enabled: true, source: "default" };
-}
-
-export function applyNervousEnabledPatch(base: NervousConfig, enabled: boolean): NervousConfig {
-	const next = normalizeNervousConfig(base);
-	next.enabled = enabled;
 	return next;
 }
 
@@ -289,10 +257,6 @@ function readModelValue(models: NervousModelConfig | Record<string, unknown>, ke
 		case "magi.synthesisDefault":
 			return modelValue(isPlainObject(models.magi) ? models.magi.synthesisDefault : undefined);
 	}
-}
-
-function hasEnabledSetting(config: NervousConfig): boolean {
-	return Object.prototype.hasOwnProperty.call(config, "enabled") && typeof config.enabled === "boolean";
 }
 
 function hasModelKey(models: NervousModelConfig, key: NervousModelKey): boolean {

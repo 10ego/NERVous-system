@@ -79,6 +79,27 @@ describe("NERVous root-package enablement", () => {
 		});
 	});
 
+	it("restores a shifted disabled source without overwriting an unrelated package", async () => {
+		await withAgent({ version: 1 }, { packages: ["npm:nervous-system", "npm:unrelated"] }, async (_dir, agentDir) => {
+			assert.equal(setRootPackageEnabled(false), true);
+			const disabled = readSettings(agentDir).packages[0];
+			fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:unrelated", disabled] }));
+
+			assert.equal(setRootPackageEnabled(true), true);
+			assert.deepEqual(readSettings(agentDir).packages, ["npm:unrelated", "npm:nervous-system"]);
+		});
+	});
+
+	it("adds a removed source back without replacing its new array occupant", async () => {
+		await withAgent({ version: 1 }, { packages: ["npm:nervous-system"] }, async (_dir, agentDir) => {
+			assert.equal(setRootPackageEnabled(false), true);
+			fs.writeFileSync(path.join(agentDir, "settings.json"), JSON.stringify({ packages: ["npm:unrelated"] }));
+
+			assert.equal(setRootPackageEnabled(true), true);
+			assert.deepEqual(readSettings(agentDir).packages, ["npm:unrelated", "npm:nervous-system"]);
+		});
+	});
+
 	it("updates Pi package resources through /nervous:config before reloading", async () => {
 		await withAgent({ version: 1 }, { packages: ["npm:nervous-system"] }, async (dir, agentDir) => {
 			const { pi, captured } = stubPi();

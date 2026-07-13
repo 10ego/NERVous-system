@@ -17,7 +17,8 @@
 import * as path from "node:path";
 import { getSelectListTheme, getSettingsListTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, getKeybindings, Input, Key, matchesKey, type SelectItem, SelectList, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
-import { applyNervousEnabledPatch, applyNervousModelPatch, getNervousModel, loadNervousConfig, readUserNervousConfig, resolveNervousEnabled, resolveNervousModel, writeUserNervousConfig, type NervousConfigResolution, type NervousModelKey } from "@nervous-system/state";
+import { getNervousModel, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
+import { applyNervousEnabledPatch, applyNervousModelPatch, loadNervousConfig, readUserNervousConfig, resolveNervousEnabled, writeUserNervousConfig, type NervousConfigResolution } from "./enablement.ts";
 import { CortexStore } from "./backend.ts";
 import {
 	type CortexAction,

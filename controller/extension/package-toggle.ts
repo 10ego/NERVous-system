@@ -147,12 +147,28 @@ function writeLocations(locations: Iterable<SettingsLocation>): void {
 	for (const location of locations) writeJson(location.configPath, location.settings);
 }
 
+function isDisabledSavedSource(candidate: PackageSource | undefined, saved: PackageSource): boolean {
+	return candidate !== undefined && isDisabledSource(candidate) && sourceOf(candidate) === sourceOf(saved);
+}
+
 function restoreEntry(entry: SnapshotEntry, cwd: string | undefined, projectTrusted: boolean): boolean {
 	if (entry.scope === "project" && (!cwd || !projectTrusted || path.resolve(path.dirname(entry.configPath)) !== path.resolve(path.join(cwd, ".pi")))) return false;
 	const settings = readJson<Settings>(entry.configPath, {});
 	const packages = settings.packages ?? [];
-	if (entry.index >= 0 && entry.index < packages.length) packages[entry.index] = entry.source;
-	else packages.push(entry.source);
+	const atSavedIndex = entry.index >= 0 && entry.index < packages.length ? packages[entry.index] : undefined;
+	if (isDisabledSavedSource(atSavedIndex, entry.source)) {
+		packages[entry.index] = entry.source;
+	} else {
+		const disabledIndex = packages.findIndex((candidate) => isDisabledSavedSource(candidate, entry.source));
+		if (disabledIndex >= 0) {
+			packages[disabledIndex] = entry.source;
+		} else if (packages.some((candidate) => sourceOf(candidate) === sourceOf(entry.source))) {
+			// Pi config changed this source while disabled; preserve the newer selection.
+			return false;
+		} else {
+			packages.push(entry.source);
+		}
+	}
 	settings.packages = packages;
 	writeJson(entry.configPath, settings);
 	return true;

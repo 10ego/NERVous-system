@@ -5,13 +5,10 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "vitest";
 import {
-	applyNervousEnabledPatch,
 	applyNervousModelPatch,
-	getNervousEnabled,
 	getNervousModel,
 	loadNervousConfig,
 	readUserNervousConfig,
-	resolveNervousEnabled,
 	resolveNervousModel,
 	resolveNervousStateFile,
 	resolveProjectSlug,
@@ -56,30 +53,6 @@ describe("NERVous state resolver", () => {
 			assert.equal(resolveProjectSlug("/tmp/proj"), "project-a");
 			assert.equal(resolveContextSlug("/tmp/proj"), "branch-one");
 		});
-	});
-});
-
-describe("NERVous enablement config", () => {
-	it("defaults to enabled without writing an enablement setting", () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-config-test-"));
-		const resolution = loadNervousConfig({ cwd: dir, agentDir: path.join(dir, "agent"), isProjectTrusted: true });
-		assert.equal(getNervousEnabled(resolution.effective), undefined);
-		assert.deepEqual(resolveNervousEnabled(resolution), { enabled: true, source: "default" });
-	});
-
-	it("persists a user enablement setting without accepting a project override", () => {
-		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-config-test-"));
-		const agentDir = path.join(dir, "agent");
-		writeUserNervousConfig(applyNervousEnabledPatch(readUserNervousConfig(agentDir), false), agentDir);
-		const userOnly = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: false });
-		assert.equal(resolveNervousEnabled(userOnly).enabled, false);
-		assert.equal(resolveNervousEnabled(userOnly).source, "user");
-
-		fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
-		fs.writeFileSync(path.join(dir, ".pi", "nervous.json"), JSON.stringify({ version: 1, enabled: true }));
-		const trusted = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: true });
-		assert.equal(resolveNervousEnabled(trusted).enabled, false);
-		assert.equal(resolveNervousEnabled(trusted).source, "user");
 	});
 });
 
