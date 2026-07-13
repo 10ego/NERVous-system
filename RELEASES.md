@@ -8,7 +8,9 @@ The 1.x compatibility commitment covers documented tool actions, extension entry
 
 ## Automated releases
 
-[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version changes, `CHANGELOG.md`, and release manifest. The generated PR title—and therefore its squash commit—uses `release(main): release <version>`. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `nervous-system` to npm with provenance.
+[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version changes, `CHANGELOG.md`, and release manifest. Its root Node strategy is the sole version writer: the generated PR normalizes `package.json`, both root `package-lock.json` version fields, and `.release-please-manifest.json`. The generated PR title—and therefore its squash commit—uses `release(main): release <version>`. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `nervous-system` to npm with provenance.
+
+Pull-request CI verifies those four fields remain equal. The publish job repeats that read-only check against the version emitted by Release Please, so an inconsistent release commit cannot publish; no feature PR should manually set a release version.
 
 Semver is selected from the merged commit (normally the squash-merged PR title):
 

@@ -71,6 +71,7 @@
   },
   "scripts": {
     "test": "vitest run",
+    "verify:release-version": "node scripts/verify-release-version.mjs",
     "test:watch": "vitest",
     "test:magi": "vitest run --dir magi",
     "test:axon": "vitest run --dir axon",
