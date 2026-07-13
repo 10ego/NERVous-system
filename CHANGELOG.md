@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/10ego/NERVous-system/compare/v1.2.0...v1.2.1) (2026-07-13)
+
+
+### Bug Fixes
+
+* **release:** verify root version metadata ([#34](https://github.com/10ego/NERVous-system/issues/34)) ([16e1c89](https://github.com/10ego/NERVous-system/commit/16e1c8982013e74904fca52e125364302abec6c2))
+
 ## [1.2.0](https://github.com/10ego/NERVous-system/compare/v1.1.2...v1.2.0) (2026-07-13)
 
 
