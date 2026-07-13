@@ -11,7 +11,10 @@ import { markNervousRootControlPlane, registerNervousConfigCommand } from "../..
 import { setRootPackageEnabled } from "./package-toggle.ts";
 
 export default function nervousControlPlane(pi: ExtensionAPI): void {
-	markNervousRootControlPlane(pi);
+	const releaseRootControlPlane = markNervousRootControlPlane(pi);
+	// Pi keeps its event bus across resource reloads, so release this generation's
+	// ownership before the next extension set is loaded.
+	pi.on("session_shutdown", releaseRootControlPlane);
 	// Do not reconcile settings from session_start: that lifecycle context cannot
 	// reload resources. The user-invoked command updates filters before its own
 	// command-capable ctx.reload() call.

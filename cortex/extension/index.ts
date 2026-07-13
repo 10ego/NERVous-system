@@ -109,8 +109,10 @@ function extensionRuntimeScope(pi: ExtensionAPI): object {
 	return pi.events;
 }
 
-export function markNervousRootControlPlane(pi: ExtensionAPI): void {
-	rootControlPlaneRegistry().add(extensionRuntimeScope(pi));
+export function markNervousRootControlPlane(pi: ExtensionAPI): () => void {
+	const scope = extensionRuntimeScope(pi);
+	rootControlPlaneRegistry().add(scope);
+	return () => rootControlPlaneRegistry().delete(scope);
 }
 
 function hasNervousRootControlPlane(pi: ExtensionAPI): boolean {

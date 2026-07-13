@@ -197,6 +197,19 @@ describe("NERVous root-package enablement", () => {
 		assert.deepEqual(captured.commands.filter((command) => command.name === "nervous:config").map((command) => command.name), ["nervous:config"]);
 	});
 
+	it("releases config command ownership before reloading resources on the same event bus", async () => {
+		const { pi: controllerPi, captured: firstGeneration } = stubPi();
+		factory(controllerPi);
+		for (const handler of firstGeneration.handlers.get("session_shutdown") ?? []) {
+			await handler({ type: "session_shutdown", reason: "reload" }, {});
+		}
+
+		const { pi: reloadedCortexPi, captured: secondGeneration } = stubPi(undefined, controllerPi.events);
+		cortexExtension(reloadedCortexPi);
+		const registrations = secondGeneration.commands.filter((command) => command.name === "nervous:config");
+		assert.deepEqual(registrations.map((command) => command.name), ["nervous:config"]);
+	});
+
 	it("does not register a session_start reload handler", () => {
 		const { pi, captured } = stubPi();
 		factory(pi);
