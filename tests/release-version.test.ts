@@ -49,6 +49,16 @@ describe("root release-version invariant", () => {
 		assert.throws(() => verifyRootReleaseVersion(writeVersionFiles({ packageJson: "not-a-version" })), /valid semantic version/);
 	});
 
+	it("rejects leading zeroes in numeric prerelease identifiers even when every field agrees", () => {
+		const invalidVersion = "1.2.3-01";
+		assert.throws(() => verifyRootReleaseVersion(writeVersionFiles({
+			manifest: invalidVersion,
+			packageJson: invalidVersion,
+			lockfile: invalidVersion,
+			lockfileRoot: invalidVersion,
+		})), /valid semantic version/);
+	});
+
 	it("binds publish verification to Release Please's emitted version", () => {
 		const dir = writeVersionFiles();
 		assert.equal(verifyRootReleaseVersion(dir, "1.2.3"), "1.2.3");
