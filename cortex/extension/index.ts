@@ -506,6 +506,10 @@ export function registerNervousConfigCommand(pi: ExtensionAPI, options: NervousC
 				ctx.ui.notify(`Invalid NERVous config: ${parsed.errors.join("; ")}`, "error");
 				return;
 			}
+			if (parsed.hasEnablementChange && !options.onEnablementChange) {
+				ctx.ui.notify("Suite enablement is available only through the installed nervous-system root package.", "error");
+				return;
+			}
 			try {
 				let config: CortexConfig;
 				if (parsed.hasCortexChanges) {
@@ -547,7 +551,9 @@ export function registerNervousConfigCommand(pi: ExtensionAPI, options: NervousC
 		},
 		getArgumentCompletions(prefix: string) {
 			const normalized = prefix.toLowerCase();
-			const filtered = CONFIG_COMPLETIONS.filter((item) => item.value.toLowerCase().startsWith(normalized));
+			const filtered = CONFIG_COMPLETIONS
+				.filter((item) => options.onEnablementChange || !item.value.startsWith("enabled="))
+				.filter((item) => item.value.toLowerCase().startsWith(normalized));
 			return filtered.length ? filtered : null;
 		},
 	});
@@ -825,7 +831,7 @@ async function showNervousConfigMenu(
 			};
 
 			settingsList = new SettingsList(
-				configMenuItems(current, availableModels),
+				configMenuItems(current, availableModels, Boolean(onEnablementChange)),
 				9,
 				getSettingsListTheme(),
 				(id, newValue) => applyChange(id, newValue),
@@ -862,7 +868,7 @@ async function showNervousConfigMenu(
 	return { kind: "closed" };
 }
 
-function configMenuItems(current: ConfigDraft, availableModels: string[]): SettingItem[] {
+function configMenuItems(current: ConfigDraft, availableModels: string[], canChangeEnablement: boolean): SettingItem[] {
 	const modelItems: SettingItem[] = MODEL_SETTING_IDS.map((id) => ({
 		id,
 		label: modelLabel(id),
@@ -871,13 +877,13 @@ function configMenuItems(current: ConfigDraft, availableModels: string[]): Setti
 		...(availableModels.length ? { submenu: buildModelSubmenu(availableModels, current.models[id]) } : {}),
 	}));
 	return [
-		{
+		...(canChangeEnablement ? [{
 			id: "enabled",
 			label: "NERVous suite",
 			description: "Turn the installed NERVous suite on or off. The session reloads; when off, only /nervous:config remains available to turn it back on.",
 			currentValue: configValueForId(current, "enabled"),
 			values: ["true", "false"],
-		},
+		} satisfies SettingItem] : []),
 		{
 			id: "drain_mode",
 			label: "Drain mode",
@@ -1199,17 +1205,17 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 		"## Usage",
 		"- Open the TUI menu: `/nervous:config`",
 		"- Print this help: `/nervous:config show`",
-		"- Turn the installed suite off: `/nervous:config enabled=false` (reloads this session; the config command stays available)",
-		"- Turn the suite back on: `/nervous:config enabled=true`",
+		"- Root NERVous System package only: turn the installed suite off with `/nervous:config enabled=false` (reloads this session; the config command stays available)",
+		"- Root NERVous System package only: turn the suite back on with `/nervous:config enabled=true`",
 		"- Set CORTEX defaults: `/nervous:config drain=always risk=auto_deliberate policy=default`",
 		"- Set model defaults: `/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong magi_model=provider/model`",
 		"- Clear a model default: `/nervous:config lion_review_model=unset`",
 		"",
 		"## Options",
 		"",
-		"### Suite enablement",
+		"### Root-package suite enablement",
 		"Aliases: `enabled`, `enable`, `nervous_enabled`",
-		"`true` loads the complete suite. `false` unloads all NERVous tools, workflow commands, skills, and prompts after reload, while preserving `/nervous:config` so it can be re-enabled.",
+		"Available only through the installed root NERVous System package. `true` loads the complete suite. `false` unloads all NERVous tools, workflow commands, skills, and prompts after reload, while preserving `/nervous:config` so it can be re-enabled.",
 		"",
 		"### Drain mode",
 		"Aliases: `drain`, `drain_mode`",

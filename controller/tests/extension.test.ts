@@ -85,6 +85,8 @@ describe("NERVous root-package enablement", () => {
 			factory(pi);
 			const command = captured.commands.find((entry) => entry.name === "nervous:config");
 			assert.ok(command);
+			const complete = command!.options.getArgumentCompletions as (prefix: string) => Array<{ value: string }> | null;
+			assert.deepEqual((complete("enabled=") ?? []).map((item) => item.value), ["enabled=true", "enabled=false"]);
 			let reloads = 0;
 			const oldCortexPath = process.env.CORTEX_PATH;
 			process.env.CORTEX_PATH = path.join(dir, "cortex.json");
@@ -111,6 +113,50 @@ describe("NERVous root-package enablement", () => {
 		});
 	});
 
+	it("filters every active global and trusted project source, then restores both selections", async () => {
+		await withAgent({ version: 1 }, { packages: ["npm:nervous-system"] }, async (dir, agentDir) => {
+			const projectDir = path.join(dir, ".pi");
+			fs.mkdirSync(projectDir, { recursive: true });
+			const projectSelection = { source: "npm:nervous-system@1.1.1", extensions: ["magi/extension/index.ts"], skills: [], prompts: [] };
+			fs.writeFileSync(path.join(projectDir, "settings.json"), JSON.stringify({ packages: [projectSelection] }));
+
+			assert.equal(setRootPackageEnabled(false, undefined, dir, true), true);
+			assert.deepEqual(readSettings(agentDir).packages[0], {
+				source: "npm:nervous-system",
+				extensions: [CONTROL_EXTENSION],
+				skills: [],
+				prompts: [],
+			});
+			assert.deepEqual(readSettings(projectDir).packages[0], {
+				source: "npm:nervous-system@1.1.1",
+				extensions: [CONTROL_EXTENSION],
+				skills: [],
+				prompts: [],
+			});
+
+			assert.equal(setRootPackageEnabled(true, undefined, dir, true), true);
+			assert.deepEqual(readSettings(agentDir).packages, ["npm:nervous-system"]);
+			assert.deepEqual(readSettings(projectDir).packages, [projectSelection]);
+		});
+	});
+
+	it("ignores untrusted project settings during package selection", async () => {
+		await withAgent({ version: 1 }, { packages: ["npm:nervous-system"] }, async (dir, agentDir) => {
+			const projectDir = path.join(dir, ".pi");
+			fs.mkdirSync(projectDir, { recursive: true });
+			fs.writeFileSync(path.join(projectDir, "settings.json"), JSON.stringify({ packages: ["npm:nervous-system@1.1.1"] }));
+
+			assert.equal(setRootPackageEnabled(false, undefined, dir, false), true);
+			assert.deepEqual(readSettings(agentDir).packages[0], {
+				source: "npm:nervous-system",
+				extensions: [CONTROL_EXTENSION],
+				skills: [],
+				prompts: [],
+			});
+			assert.deepEqual(readSettings(projectDir).packages, ["npm:nervous-system@1.1.1"]);
+		});
+	});
+
 	it("does not duplicate the config command when the root CORTEX extension loads", () => {
 		const { pi, captured } = stubPi();
 		factory(pi);
@@ -118,26 +164,9 @@ describe("NERVous root-package enablement", () => {
 		assert.deepEqual(captured.commands.filter((command) => command.name === "nervous:config").map((command) => command.name), ["nervous:config"]);
 	});
 
-	it("reloads only the root control extension when config disables the suite", async () => {
-		await withAgent(
-			{ version: 1, enabled: false },
-			{ packages: ["npm:nervous-system"] },
-			async (dir, agentDir) => {
-				const { pi, captured } = stubPi();
-				factory(pi);
-				assert.deepEqual(captured.commands.map((command) => command.name), ["nervous:config"]);
-				let reloads = 0;
-				for (const handler of captured.handlers.get("session_start") ?? []) {
-					await handler({ type: "session_start" }, { cwd: dir, isProjectTrusted: () => true, reload: async () => { reloads++; } });
-				}
-				assert.equal(reloads, 1);
-				assert.deepEqual(readSettings(agentDir).packages[0], {
-					source: "npm:nervous-system",
-					extensions: [CONTROL_EXTENSION],
-					skills: [],
-					prompts: [],
-				});
-			},
-		);
+	it("does not register a session_start reload handler", () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		assert.equal(captured.handlers.get("session_start")?.length ?? 0, 0);
 	});
 });

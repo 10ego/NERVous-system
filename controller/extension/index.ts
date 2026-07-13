@@ -6,21 +6,18 @@
  * restores Pi's normal package-resource selection and then reloads Pi.
  */
 
-import { loadNervousConfig, resolveNervousEnabled } from "@nervous-system/state";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { markNervousRootControlPlane, registerNervousConfigCommand } from "../../cortex/extension/index.ts";
 import { setRootPackageEnabled } from "./package-toggle.ts";
 
 export default function nervousControlPlane(pi: ExtensionAPI): void {
 	markNervousRootControlPlane(pi);
+	// Do not reconcile settings from session_start: that lifecycle context cannot
+	// reload resources. The user-invoked command updates filters before its own
+	// command-capable ctx.reload() call.
 	registerNervousConfigCommand(pi, {
 		onEnablementChange: async (enabled, ctx) => {
-			setRootPackageEnabled(enabled, undefined, ctx.cwd);
+			setRootPackageEnabled(enabled, undefined, ctx.cwd, ctx.isProjectTrusted());
 		},
-	});
-
-	pi.on("session_start", async (_event, ctx) => {
-		const resolution = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted() });
-		if (setRootPackageEnabled(resolveNervousEnabled(resolution).enabled, undefined, ctx.cwd)) await ctx.reload();
 	});
 }

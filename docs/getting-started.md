@@ -21,7 +21,7 @@ Keep the package installed and use the persistent control command:
 /nervous:config enabled=true   # reload it with the suite enabled again
 ```
 
-When disabled, NERVous removes its tools, workflow commands, skills, and prompt templates. It leaves only `/nervous:config` available so you can turn it back on. The setting is stored in `~/.pi/agent/nervous.json`; a trusted project can override it with `.pi/nervous.json`.
+When disabled, NERVous removes its tools, workflow commands, skills, and prompt templates. It leaves only `/nervous:config` available so you can turn it back on. The user-level setting is stored in `~/.pi/agent/nervous.json`; Pi's existing trusted project package settings continue to control which package resources are available per repository.
 
 `pi config` remains an alternative for enabling or disabling individual package resources across any installed pi package.
 

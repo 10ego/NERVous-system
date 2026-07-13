@@ -67,7 +67,7 @@ describe("NERVous enablement config", () => {
 		assert.deepEqual(resolveNervousEnabled(resolution), { enabled: true, source: "default" });
 	});
 
-	it("persists a user enablement setting and lets a trusted project override it", () => {
+	it("persists a user enablement setting without accepting a project override", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-config-test-"));
 		const agentDir = path.join(dir, "agent");
 		writeUserNervousConfig(applyNervousEnabledPatch(readUserNervousConfig(agentDir), false), agentDir);
@@ -78,8 +78,8 @@ describe("NERVous enablement config", () => {
 		fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
 		fs.writeFileSync(path.join(dir, ".pi", "nervous.json"), JSON.stringify({ version: 1, enabled: true }));
 		const trusted = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: true });
-		assert.equal(resolveNervousEnabled(trusted).enabled, true);
-		assert.equal(resolveNervousEnabled(trusted).source, "project");
+		assert.equal(resolveNervousEnabled(trusted).enabled, false);
+		assert.equal(resolveNervousEnabled(trusted).source, "user");
 	});
 });
 

@@ -37,14 +37,14 @@ export interface NervousModelConfig {
 
 export interface NervousConfig {
 	version: number;
-	/** Whether the complete NERVous suite is active. Omitted defaults to enabled. */
+	/** User-level root-suite setting. Omitted defaults to enabled and project overlays cannot change it. */
 	enabled?: boolean;
 	models: NervousModelConfig;
 }
 
 export interface NervousEnablement {
 	enabled: boolean;
-	source: "project" | "user" | "default";
+	source: "user" | "default";
 	path?: string;
 }
 
@@ -165,7 +165,6 @@ export function normalizeNervousConfig(raw: unknown): NervousConfig {
 export function mergeNervousConfigs(base: NervousConfig, overlay: NervousConfig): NervousConfig {
 	const next = normalizeNervousConfig(base);
 	const o = normalizeNervousConfig(overlay);
-	if (hasEnabledSetting(o)) next.enabled = o.enabled;
 	for (const key of NERVOUS_MODEL_KEYS) {
 		if (!hasModelKey(o.models, key)) continue;
 		const value = readModelValue(o.models, key);
@@ -180,10 +179,12 @@ export function getNervousEnabled(config: NervousConfig): boolean | undefined {
 	return hasEnabledSetting(normalized) ? normalized.enabled : undefined;
 }
 
+/**
+ * Suite enablement is a user-level installation setting. Unlike model defaults,
+ * it never accepts a project overlay because Pi package resources are resolved
+ * before project extension code can safely change them.
+ */
 export function resolveNervousEnabled(resolution: NervousConfigResolution): NervousEnablement {
-	if (resolution.projectLoaded && hasEnabledSetting(resolution.project)) {
-		return { enabled: resolution.project.enabled!, source: "project", path: resolution.projectPath };
-	}
 	if (hasEnabledSetting(resolution.user)) {
 		return { enabled: resolution.user.enabled!, source: "user", path: resolution.userPath };
 	}

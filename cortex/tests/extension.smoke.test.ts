@@ -135,8 +135,7 @@ describe("cortex extension factory", () => {
 		const command = nervousConfigCommand(captured);
 
 		const complete = command.getArgumentCompletions as (prefix: string) => Array<{ value: string; label: string }> | null;
-		const enablementCompletions = complete("enabled=") ?? [];
-		assert.deepEqual(enablementCompletions.map((item) => item.value), ["enabled=true", "enabled=false"]);
+		assert.equal(complete("enabled="), null, "standalone CORTEX does not advertise root-suite enablement");
 		const completions = complete("risk=auto") ?? [];
 		assert.deepEqual(completions.map((item) => item.value), ["risk=auto_deliberate"]);
 		assert.match(completions[0]?.label ?? "", /MAGI\/AMYGDALA approval evidence/);
@@ -179,7 +178,7 @@ describe("cortex extension factory", () => {
 							openedMenu = true;
 							const component = factoryFn({ requestRender() {} }, testTheme, {}, () => undefined);
 							rendered = component.render(120).join("\n");
-							component.handleInput(" "); // NERVous suite: true -> false, then reload.
+							component.handleInput(" "); // Drain mode: on_explicit_nervous -> always.
 							await settleUiWork();
 							return undefined;
 						},
@@ -193,21 +192,26 @@ describe("cortex extension factory", () => {
 		assert.doesNotMatch(rendered, /Save and close/);
 		assert.doesNotMatch(rendered, /Cancel/);
 		const output = String(captured.messages[0]?.content ?? "");
-		assert.match(output, /\| `enabled` \| `false` \| user \|/);
+		assert.match(output, /\| `drain_mode` \| `always` \|/);
 	});
 
-	it("persists suite enablement and reloads after a command toggle", async () => {
+	it("rejects suite enablement outside the root control plane", async () => {
 		const { pi, captured } = stubPi();
 		factory(pi);
 		const command = nervousConfigCommand(captured);
+		const notifications: string[] = [];
 		let reloads = 0;
 
 		await withTempCortex(async (dir) => {
-			await command.handler("enabled=false", commandCtx(dir, { reload: async () => { reloads++; } }));
+			await command.handler("enabled=false", commandCtx(dir, {
+				reload: async () => { reloads++; },
+				ui: { notify(message: string) { notifications.push(message); } },
+			}));
 		});
 
-		assert.equal(reloads, 1);
-		assert.match(String(captured.messages[0]?.content ?? ""), /\| `enabled` \| `false` \| user \|/);
+		assert.equal(reloads, 0);
+		assert.match(notifications.join("\n"), /available only through the installed nervous-system root package/);
+		assert.equal(captured.messages.length, 0);
 	});
 
 	it("falls back to markdown when the TUI menu is unavailable", async () => {

@@ -53,7 +53,7 @@ NERVous does not automatically migrate or delete old repository-local `.pi/` sta
 
 ## Suite enablement, drain, risk gates, and model defaults
 
-Keep NERVous installed while disabling its runtime surface with `/nervous:config enabled=false`. Pi reloads the current session with every NERVous tool, workflow command, skill, and prompt removed, except for `/nervous:config` itself. Run `enabled=true` to reload with the full suite again. The setting is persistent and defaults to enabled; trusted project config can override user config.
+Keep NERVous installed while disabling its runtime surface with `/nervous:config enabled=false`. Pi reloads the current session with every NERVous tool, workflow command, skill, and prompt removed, except for `/nervous:config` itself. Run `enabled=true` to reload with the full suite again. The user-level setting is persistent and defaults to enabled; Pi's trusted project package settings still determine which package resources apply in that repository.
 
 CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized, and optionally set default models for NERVous subprocess systems:
 
@@ -70,7 +70,7 @@ CORTEX drain mode can keep progressing through the active context while preservi
 
 `auto_deliberate` is the default and proceeds only with recorded MAGI or AMYGDALA approval evidence. `strict` always blocks hard-stop risk for review, `user_accepted` requires scoped user acceptance evidence, and `disabled` requires an explicit dangerous opt-in plus audit evidence.
 
-Suite enablement and model defaults are stored in `~/.pi/agent/nervous.json` with the trusted project overlay `.pi/nervous.json`. A missing `enabled` value defaults to `true`. Unset model keys preserve the current behavior: NERVous passes no `--model`, so pi uses the session or default model.
+Suite enablement is stored at user scope in `~/.pi/agent/nervous.json`; a missing `enabled` value defaults to `true`. Model defaults use that same file with the trusted project overlay `.pi/nervous.json`. Unset model keys preserve the current behavior: NERVous passes no `--model`, so pi uses the session or default model.
 
 Failed work is recorded with retryability through `cortex record_failure`. Skipped or blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.
 
