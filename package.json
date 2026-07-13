@@ -39,6 +39,7 @@
   ],
   "pi": {
     "extensions": [
+      "controller/extension/index.ts",
       "magi/extension/index.ts",
       "axon/extension/index.ts",
       "synapse/extension/index.ts",
@@ -102,6 +103,7 @@
     "README.md",
     "RELEASES.md",
     "docs/",
+    "controller/extension/",
     "magi/README.md",
     "magi/config/",
     "magi/extension/",

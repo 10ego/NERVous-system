@@ -1,0 +1,23 @@
+/**
+ * NERVous System's always-loaded control plane.
+ *
+ * The root manifest keeps this extension enabled even while the rest of the
+ * package is disabled. It owns `/nervous:config`, which safely restricts or
+ * restores Pi's normal package-resource selection and then reloads Pi.
+ */
+
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { markNervousRootControlPlane, registerNervousConfigCommand } from "../../cortex/extension/index.ts";
+import { setRootPackageEnabled } from "./package-toggle.ts";
+
+export default function nervousControlPlane(pi: ExtensionAPI): void {
+	markNervousRootControlPlane(pi);
+	// Do not reconcile settings from session_start: that lifecycle context cannot
+	// reload resources. The user-invoked command updates filters before its own
+	// command-capable ctx.reload() call.
+	registerNervousConfigCommand(pi, {
+		onEnablementChange: async (enabled, ctx) => {
+			setRootPackageEnabled(enabled, undefined, ctx.cwd, ctx.isProjectTrusted());
+		},
+	});
+}

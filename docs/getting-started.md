@@ -12,6 +12,19 @@ pi install npm:nervous-system
 
 This installs the root pi package and enables all NERVous extensions, skills, and prompt templates: MAGI, AXON, SYNAPSE, CORTEX, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard.
 
+## Turn the suite on or off
+
+Keep the package installed and use the persistent control command:
+
+```text
+/nervous:config enabled=false  # unload the suite and reload the current session
+/nervous:config enabled=true   # reload it with the suite enabled again
+```
+
+When disabled, NERVous removes its tools, workflow commands, skills, and prompt templates. It leaves only `/nervous:config` available so you can turn it back on. The user-level setting is stored in `~/.pi/agent/nervous.json`; Pi's existing trusted project package settings continue to control which package resources are available per repository.
+
+`pi config` remains an alternative for enabling or disabling individual package resources across any installed pi package.
+
 Verify that pi can see the package:
 
 ```bash

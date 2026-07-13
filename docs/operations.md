@@ -51,12 +51,16 @@ NERVous does not automatically migrate or delete old repository-local `.pi/` sta
 
 `lion/runs.json` is the only lifecycle and identity authority. A progress envelope is visible only when its full namespace/run/incarnation matches an active canonical run. Closed envelopes represent an interrupted terminal fold and remain retryable; terminal canonical records ignore post-commit cleanup orphans. Malformed progress files produce bounded warnings/quarantine and never trigger canonical reset. Cleanup is classification-based: active and unclassifiable files are never removed merely because they are old or storage pressure exists. Run `npm run benchmark:lion-progress` in a source checkout to verify the zero-canonical-I/O flush gate.
 
-## Drain, risk gates, and model defaults
+## Suite enablement, drain, risk gates, and model defaults
+
+Keep NERVous installed while disabling its runtime surface with `/nervous:config enabled=false`. Pi reloads the current session with every NERVous tool, workflow command, skill, and prompt removed, except for `/nervous:config` itself. Run `enabled=true` to reload with the full suite again. The user-level setting is persistent and defaults to enabled; Pi's trusted project package settings still determine which package resources apply in that repository.
 
 CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized, and optionally set default models for NERVous subprocess systems:
 
 ```text
 /nervous:config                                                       # open TUI settings menu; selected values apply immediately
+/nervous:config enabled=false                                         # disable the suite and reload; config command remains available
+/nervous:config enabled=true                                          # enable the suite and reload
 /nervous:config show                                                  # show persistent defaults as markdown
 /nervous:config drain=always risk=auto_deliberate                     # set defaults used by /nervous
 /nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong # set LION role model defaults
@@ -66,7 +70,7 @@ CORTEX drain mode can keep progressing through the active context while preservi
 
 `auto_deliberate` is the default and proceeds only with recorded MAGI or AMYGDALA approval evidence. `strict` always blocks hard-stop risk for review, `user_accepted` requires scoped user acceptance evidence, and `disabled` requires an explicit dangerous opt-in plus audit evidence.
 
-Model defaults are stored in `~/.pi/agent/nervous.json` with the trusted project overlay `.pi/nervous.json`. Unset model keys preserve the current behavior: NERVous passes no `--model`, so pi uses the session or default model.
+Suite enablement is stored at user scope in `~/.pi/agent/nervous.json`; a missing `enabled` value defaults to `true`. Model defaults use that same file with the trusted project overlay `.pi/nervous.json`. Unset model keys preserve the current behavior: NERVous passes no `--model`, so pi uses the session or default model.
 
 Failed work is recorded with retryability through `cortex record_failure`. Skipped or blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.
 

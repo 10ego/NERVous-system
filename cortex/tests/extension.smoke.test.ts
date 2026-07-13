@@ -61,6 +61,7 @@ function commandCtx(dir: string, overrides: Record<string, unknown> = {}): any {
 			confirm: async () => false,
 			input: async () => undefined,
 		},
+		reload: async () => {},
 		...overrides,
 	};
 }
@@ -109,6 +110,8 @@ describe("cortex extension factory", () => {
 		);
 
 		assert.match(output, /## Current CORTEX defaults/);
+		assert.match(output, /## NERVous suite/);
+		assert.match(output, /\| `enabled` \| `true` \| default \|/);
 		assert.match(output, /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 		assert.match(output, /## Usage/);
 		assert.match(output, /## Options/);
@@ -132,6 +135,7 @@ describe("cortex extension factory", () => {
 		const command = nervousConfigCommand(captured);
 
 		const complete = command.getArgumentCompletions as (prefix: string) => Array<{ value: string; label: string }> | null;
+		assert.equal(complete("enabled="), null, "standalone CORTEX does not advertise root-suite enablement");
 		const completions = complete("risk=auto") ?? [];
 		assert.deepEqual(completions.map((item) => item.value), ["risk=auto_deliberate"]);
 		assert.match(completions[0]?.label ?? "", /MAGI\/AMYGDALA approval evidence/);
@@ -189,6 +193,25 @@ describe("cortex extension factory", () => {
 		assert.doesNotMatch(rendered, /Cancel/);
 		const output = String(captured.messages[0]?.content ?? "");
 		assert.match(output, /\| `drain_mode` \| `always` \|/);
+	});
+
+	it("rejects suite enablement outside the root control plane", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+		const notifications: string[] = [];
+		let reloads = 0;
+
+		await withTempCortex(async (dir) => {
+			await command.handler("enabled=false", commandCtx(dir, {
+				reload: async () => { reloads++; },
+				ui: { notify(message: string) { notifications.push(message); } },
+			}));
+		});
+
+		assert.equal(reloads, 0);
+		assert.match(notifications.join("\n"), /available only through the installed nervous-system root package/);
+		assert.equal(captured.messages.length, 0);
 	});
 
 	it("falls back to markdown when the TUI menu is unavailable", async () => {

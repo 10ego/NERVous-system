@@ -74,7 +74,7 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `
 - **`/cortex`** — current goal.
 - **`/cortex:goals`** — all goals.
 - **`/cortex:resume`** — current goal + a "what's next" hint.
-- **`/nervous:config`** — open a TUI menu or show/set persistent drain/risk defaults and shared NERVous model defaults.
+- **`/nervous:config`** — open a TUI menu or show/set persistent drain/risk defaults and shared NERVous model defaults. When CORTEX is loaded through the root NERVous System package, it also controls suite enablement: `enabled=false` reloads with the suite disabled, while the config command remains so `enabled=true` can turn it back on.
 
 ### Skill + prompt template
 
@@ -127,6 +127,8 @@ Drain mode is togglable with persistent CORTEX config. `/nervous:config` also ma
 ```text
 /nervous:config
 /nervous:config show
+/nervous:config enabled=false
+/nervous:config enabled=true
 /nervous:config drain=on_explicit_nervous risk=auto_deliberate policy=default
 /nervous:config drain=always risk=strict policy=conservative
 /nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"
@@ -137,7 +139,7 @@ cortex get_config
 cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="auto_deliberate"
 ```
 
-In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, drain policy, and model defaults. When pi's model registry is available, model rows open a searchable picker. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
+In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, drain policy, and model defaults. When CORTEX is loaded through the root NERVous System package, the menu also includes suite enablement: `enabled=false` unloads NERVous tools, workflow commands, skills, and prompts while retaining `/nervous:config`; `enabled=true` reloads the complete suite. Standalone CORTEX keeps its own configuration surface and rejects suite toggles. When pi's model registry is available, model rows open a searchable picker. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
 
 For one-off prompt invocation, include config tokens in `/nervous` arguments; the prompt instructs the agent to apply them first:
 
@@ -163,7 +165,7 @@ Risk gate modes:
 
 Model defaults:
 
-- Stored in `~/.pi/agent/nervous.json`, with trusted project overlay from `<repo>/.pi/nervous.json`.
+- Model defaults are stored in `~/.pi/agent/nervous.json`, with trusted project overlay from `<repo>/.pi/nervous.json`. Root-package suite `enabled` is user-scoped and defaults to `true` when omitted.
 - Keys: `models.lion.default`, `models.lion.implementationDefault`, `models.lion.reviewDefault`, `models.magi.councillorDefault`, `models.magi.synthesisDefault`.
 - Runtime precedence preserves explicit choices: `lion run model=...` beats configured LION defaults; then `model_role="implementation"` uses `lion.implementationDefault`, `model_role="review"` uses `lion.reviewDefault`, and either falls back to `lion.default`. MAGI council `model` / `synthesis_model` beats configured MAGI defaults. If only `magi.councillorDefault` is set, synthesis follows MAGI's existing synthesizer-model fallback.
 - Unset keys preserve the previous behavior: NERVous passes no `--model`, so the subprocess uses pi's current/default model.
