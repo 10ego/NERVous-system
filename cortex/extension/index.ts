@@ -94,14 +94,20 @@ function resolveGoalId(s: import("./store.ts").GoalStore, id: string | undefined
 	return id;
 }
 
-const ROOT_CONTROL_PLANE_APIS = new WeakSet<object>();
+const ROOT_CONTROL_PLANE_APIS = Symbol.for("nervous-system.root-control-plane-apis");
+type RootControlPlaneRegistry = typeof globalThis & { [ROOT_CONTROL_PLANE_APIS]?: WeakSet<object> };
+
+function rootControlPlaneRegistry(): WeakSet<object> {
+	const root = globalThis as RootControlPlaneRegistry;
+	return root[ROOT_CONTROL_PLANE_APIS] ??= new WeakSet<object>();
+}
 
 export function markNervousRootControlPlane(pi: ExtensionAPI): void {
-	ROOT_CONTROL_PLANE_APIS.add(pi);
+	rootControlPlaneRegistry().add(pi);
 }
 
 function hasNervousRootControlPlane(pi: ExtensionAPI): boolean {
-	return ROOT_CONTROL_PLANE_APIS.has(pi);
+	return rootControlPlaneRegistry().has(pi);
 }
 
 export function registerCortexExtension(pi: ExtensionAPI): void {
