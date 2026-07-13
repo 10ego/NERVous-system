@@ -37,7 +37,15 @@ export interface NervousModelConfig {
 
 export interface NervousConfig {
 	version: number;
+	/** Whether the complete NERVous suite is active. Omitted defaults to enabled. */
+	enabled?: boolean;
 	models: NervousModelConfig;
+}
+
+export interface NervousEnablement {
+	enabled: boolean;
+	source: "project" | "user" | "default";
+	path?: string;
 }
 
 export interface NervousConfigResolution {
@@ -145,6 +153,7 @@ export function normalizeNervousConfig(raw: unknown): NervousConfig {
 	const out = emptyNervousConfig();
 	if (!isPlainObject(raw)) return out;
 	if (typeof raw.version === "number" && Number.isFinite(raw.version)) out.version = Math.floor(raw.version);
+	if (typeof raw.enabled === "boolean") out.enabled = raw.enabled;
 	const models = isPlainObject(raw.models) ? raw.models : {};
 	for (const key of NERVOUS_MODEL_KEYS) {
 		const value = readModelValue(models, key);
@@ -156,12 +165,34 @@ export function normalizeNervousConfig(raw: unknown): NervousConfig {
 export function mergeNervousConfigs(base: NervousConfig, overlay: NervousConfig): NervousConfig {
 	const next = normalizeNervousConfig(base);
 	const o = normalizeNervousConfig(overlay);
+	if (hasEnabledSetting(o)) next.enabled = o.enabled;
 	for (const key of NERVOUS_MODEL_KEYS) {
 		if (!hasModelKey(o.models, key)) continue;
 		const value = readModelValue(o.models, key);
 		if (typeof value === "string") setModelValue(next.models, key, value);
 		else clearModelValue(next.models, key);
 	}
+	return next;
+}
+
+export function getNervousEnabled(config: NervousConfig): boolean | undefined {
+	const normalized = normalizeNervousConfig(config);
+	return hasEnabledSetting(normalized) ? normalized.enabled : undefined;
+}
+
+export function resolveNervousEnabled(resolution: NervousConfigResolution): NervousEnablement {
+	if (resolution.projectLoaded && hasEnabledSetting(resolution.project)) {
+		return { enabled: resolution.project.enabled!, source: "project", path: resolution.projectPath };
+	}
+	if (hasEnabledSetting(resolution.user)) {
+		return { enabled: resolution.user.enabled!, source: "user", path: resolution.userPath };
+	}
+	return { enabled: true, source: "default" };
+}
+
+export function applyNervousEnabledPatch(base: NervousConfig, enabled: boolean): NervousConfig {
+	const next = normalizeNervousConfig(base);
+	next.enabled = enabled;
 	return next;
 }
 
@@ -257,6 +288,10 @@ function readModelValue(models: NervousModelConfig | Record<string, unknown>, ke
 		case "magi.synthesisDefault":
 			return modelValue(isPlainObject(models.magi) ? models.magi.synthesisDefault : undefined);
 	}
+}
+
+function hasEnabledSetting(config: NervousConfig): boolean {
+	return Object.prototype.hasOwnProperty.call(config, "enabled") && typeof config.enabled === "boolean";
 }
 
 function hasModelKey(models: NervousModelConfig, key: NervousModelKey): boolean {

@@ -61,6 +61,7 @@ function commandCtx(dir: string, overrides: Record<string, unknown> = {}): any {
 			confirm: async () => false,
 			input: async () => undefined,
 		},
+		reload: async () => {},
 		...overrides,
 	};
 }
@@ -109,6 +110,8 @@ describe("cortex extension factory", () => {
 		);
 
 		assert.match(output, /## Current CORTEX defaults/);
+		assert.match(output, /## NERVous suite/);
+		assert.match(output, /\| `enabled` \| `true` \| default \|/);
 		assert.match(output, /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 		assert.match(output, /## Usage/);
 		assert.match(output, /## Options/);
@@ -132,6 +135,8 @@ describe("cortex extension factory", () => {
 		const command = nervousConfigCommand(captured);
 
 		const complete = command.getArgumentCompletions as (prefix: string) => Array<{ value: string; label: string }> | null;
+		const enablementCompletions = complete("enabled=") ?? [];
+		assert.deepEqual(enablementCompletions.map((item) => item.value), ["enabled=true", "enabled=false"]);
 		const completions = complete("risk=auto") ?? [];
 		assert.deepEqual(completions.map((item) => item.value), ["risk=auto_deliberate"]);
 		assert.match(completions[0]?.label ?? "", /MAGI\/AMYGDALA approval evidence/);
@@ -174,7 +179,7 @@ describe("cortex extension factory", () => {
 							openedMenu = true;
 							const component = factoryFn({ requestRender() {} }, testTheme, {}, () => undefined);
 							rendered = component.render(120).join("\n");
-							component.handleInput(" "); // Drain mode: on_explicit_nervous -> always.
+							component.handleInput(" "); // NERVous suite: true -> false, then reload.
 							await settleUiWork();
 							return undefined;
 						},
@@ -188,7 +193,21 @@ describe("cortex extension factory", () => {
 		assert.doesNotMatch(rendered, /Save and close/);
 		assert.doesNotMatch(rendered, /Cancel/);
 		const output = String(captured.messages[0]?.content ?? "");
-		assert.match(output, /\| `drain_mode` \| `always` \|/);
+		assert.match(output, /\| `enabled` \| `false` \| user \|/);
+	});
+
+	it("persists suite enablement and reloads after a command toggle", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+		let reloads = 0;
+
+		await withTempCortex(async (dir) => {
+			await command.handler("enabled=false", commandCtx(dir, { reload: async () => { reloads++; } }));
+		});
+
+		assert.equal(reloads, 1);
+		assert.match(String(captured.messages[0]?.content ?? ""), /\| `enabled` \| `false` \| user \|/);
 	});
 
 	it("falls back to markdown when the TUI menu is unavailable", async () => {

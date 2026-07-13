@@ -15,9 +15,9 @@
  */
 
 import * as path from "node:path";
-import { getSelectListTheme, getSettingsListTheme, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { getSelectListTheme, getSettingsListTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, getKeybindings, Input, Key, matchesKey, type SelectItem, SelectList, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
-import { applyNervousModelPatch, getNervousModel, loadNervousConfig, readUserNervousConfig, resolveNervousModel, writeUserNervousConfig, type NervousConfigResolution, type NervousModelKey } from "@nervous-system/state";
+import { applyNervousEnabledPatch, applyNervousModelPatch, getNervousModel, loadNervousConfig, readUserNervousConfig, resolveNervousEnabled, resolveNervousModel, writeUserNervousConfig, type NervousConfigResolution, type NervousModelKey } from "@nervous-system/state";
 import { CortexStore } from "./backend.ts";
 import {
 	type CortexAction,
@@ -94,7 +94,17 @@ function resolveGoalId(s: import("./store.ts").GoalStore, id: string | undefined
 	return id;
 }
 
-export default function (pi: ExtensionAPI) {
+const ROOT_CONTROL_PLANE_APIS = new WeakSet<object>();
+
+export function markNervousRootControlPlane(pi: ExtensionAPI): void {
+	ROOT_CONTROL_PLANE_APIS.add(pi);
+}
+
+function hasNervousRootControlPlane(pi: ExtensionAPI): boolean {
+	return ROOT_CONTROL_PLANE_APIS.has(pi);
+}
+
+export function registerCortexExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "cortex",
 		label: "CORTEX",
@@ -434,55 +444,6 @@ export default function (pi: ExtensionAPI) {
 		},
 	});
 
-	pi.registerCommand("nervous:config", {
-		description: "Show or set persistent NERVous drain/risk/model defaults used by /nervous and subagents",
-		handler: async (args, ctx) => {
-			const store = CortexStore.fromCwd(ctx.cwd);
-			const rawArgs = args ?? "";
-			const parsed = parseNervousConfigArgs(rawArgs);
-			if (parsed.errors.length) {
-				ctx.ui.notify(`Invalid NERVous config: ${parsed.errors.join("; ")}`, "error");
-				return;
-			}
-			try {
-				let config: CortexConfig;
-				if (parsed.hasCortexChanges) {
-					const { result } = await store.mutate((s) => s.setConfig(parsed.patch));
-					config = result;
-				} else {
-					const { result } = await store.query((s) => s.getConfig());
-					config = result;
-				}
-				if (parsed.hasModelChanges) {
-					const next = applyNervousModelPatch(readUserNervousConfig(), parsed.modelPatch);
-					writeUserNervousConfig(next);
-				}
-				const modelConfig = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false });
-				if (parsed.hasChanges) {
-					post(ctx, pi, summarizeConfig(config, true, modelConfig), { config, nervous_config: modelConfig });
-					return;
-				}
-
-				if (shouldOpenConfigMenu(rawArgs, ctx)) {
-					const available = await availableModelSpecs(ctx);
-					const menuResult = await showNervousConfigMenu(store, config, modelConfig, ctx, available);
-					if (menuResult.kind === "fallback") post(ctx, pi, summarizeConfig(config, false, modelConfig), { config, nervous_config: modelConfig });
-					return;
-				}
-
-				post(ctx, pi, summarizeConfig(config, false, modelConfig), { config, nervous_config: modelConfig });
-			} catch (e) {
-				const msg = e instanceof CortexError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
-				ctx.ui.notify(`nervous:config failed: ${msg}`, "error");
-			}
-		},
-		getArgumentCompletions(prefix: string) {
-			const normalized = prefix.toLowerCase();
-			const filtered = CONFIG_COMPLETIONS.filter((item) => item.value.toLowerCase().startsWith(normalized));
-			return filtered.length ? filtered : null;
-		},
-	});
-
 	pi.registerCommand("cortex:resume", {
 		description: "Print the current goal so work can resume after compaction/restart",
 		handler: async (_args, ctx) => {
@@ -509,6 +470,79 @@ export default function (pi: ExtensionAPI) {
 										? "Goal is waiting with blocker/AMYGDALA evidence; resolve or cancel before drain can act."
 										: "Goal is terminal.";
 			post(ctx, pi, `${summarizeGoal(result)}\n\n---\n**Resume hint:** ${hint}`, { goal: result });
+		},
+	});
+
+	if (!hasNervousRootControlPlane(pi)) registerNervousConfigCommand(pi);
+}
+
+export default function cortexExtension(pi: ExtensionAPI): void {
+	registerCortexExtension(pi);
+}
+
+/**
+ * Register the persistent NERVous control command. The root package's control
+ * plane calls this even when the rest of the suite is disabled, so it remains
+ * possible to turn the installed suite back on without editing settings.json.
+ */
+export interface NervousConfigCommandOptions {
+	onEnablementChange?: (enabled: boolean, ctx: ExtensionCommandContext) => void | Promise<void>;
+}
+
+export function registerNervousConfigCommand(pi: ExtensionAPI, options: NervousConfigCommandOptions = {}): void {
+	pi.registerCommand("nervous:config", {
+		description: "Show or set persistent NERVous enablement, drain/risk, and model defaults",
+		handler: async (args, ctx) => {
+			const store = CortexStore.fromCwd(ctx.cwd);
+			const rawArgs = args ?? "";
+			const parsed = parseNervousConfigArgs(rawArgs);
+			if (parsed.errors.length) {
+				ctx.ui.notify(`Invalid NERVous config: ${parsed.errors.join("; ")}`, "error");
+				return;
+			}
+			try {
+				let config: CortexConfig;
+				if (parsed.hasCortexChanges) {
+					const { result } = await store.mutate((s) => s.setConfig(parsed.patch));
+					config = result;
+				} else {
+					const { result } = await store.query((s) => s.getConfig());
+					config = result;
+				}
+				if (parsed.hasEnablementChange) await options.onEnablementChange?.(parsed.enabled!, ctx);
+				if (parsed.hasNervousChanges) {
+					let next = readUserNervousConfig();
+					if (parsed.enabled !== undefined) next = applyNervousEnabledPatch(next, parsed.enabled);
+					if (parsed.hasModelChanges) next = applyNervousModelPatch(next, parsed.modelPatch);
+					writeUserNervousConfig(next);
+				}
+				const nervousConfig = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false });
+				if (parsed.hasChanges) {
+					post(ctx, pi, summarizeConfig(config, true, nervousConfig), { config, nervous_config: nervousConfig });
+					if (parsed.hasEnablementChange) {
+						ctx.ui.notify("NERVous enablement updated; reloading this session.", "info");
+						await ctx.reload();
+					}
+					return;
+				}
+
+				if (shouldOpenConfigMenu(rawArgs, ctx)) {
+					const available = await availableModelSpecs(ctx);
+					const menuResult = await showNervousConfigMenu(store, config, nervousConfig, ctx, available, options.onEnablementChange);
+					if (menuResult.kind === "fallback") post(ctx, pi, summarizeConfig(config, false, nervousConfig), { config, nervous_config: nervousConfig });
+					return;
+				}
+
+				post(ctx, pi, summarizeConfig(config, false, nervousConfig), { config, nervous_config: nervousConfig });
+			} catch (e) {
+				const msg = e instanceof CortexError ? `${e.code}: ${e.message}` : e instanceof Error ? e.message : String(e);
+				ctx.ui.notify(`nervous:config failed: ${msg}`, "error");
+			}
+		},
+		getArgumentCompletions(prefix: string) {
+			const normalized = prefix.toLowerCase();
+			const filtered = CONFIG_COMPLETIONS.filter((item) => item.value.toLowerCase().startsWith(normalized));
+			return filtered.length ? filtered : null;
 		},
 	});
 }
@@ -602,6 +636,8 @@ const MODEL_ALIASES: Record<string, NervousModelKey> = {
 };
 
 const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
+	{ value: "enabled=true", label: "enabled=true — load the full NERVous suite in this session" },
+	{ value: "enabled=false", label: "enabled=false — unload the NERVous suite, leaving only /nervous:config" },
 	...DRAIN_MODE_VALUES.map((value) => ({ value: `drain=${value}`, label: `drain=${value} — ${DRAIN_MODE_DESCRIPTIONS[value]}` })),
 	...RISK_GATE_MODE_VALUES.map((value) => ({ value: `risk=${value}`, label: `risk=${value} — ${RISK_GATE_MODE_DESCRIPTIONS[value]}` })),
 	...DRAIN_POLICY_VALUES.map((value) => ({ value: `policy=${value}`, label: `policy=${value} — ${DRAIN_POLICY_DESCRIPTIONS[value]}` })),
@@ -620,6 +656,7 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 type ConfigMenuResult = { kind: "closed" } | { kind: "fallback" };
 
 interface ConfigDraft {
+	enabled: boolean;
 	drain_mode: DrainMode;
 	risk_gate_mode: RiskGateMode;
 	default_drain_policy: DrainPolicyName;
@@ -635,10 +672,12 @@ async function showNervousConfigMenu(
 	store: CortexStore,
 	config: CortexConfig,
 	modelConfig: NervousConfigResolution,
-	ctx: ExtensionContext,
+	ctx: ExtensionCommandContext,
 	availableModels: string[],
+	onEnablementChange?: NervousConfigCommandOptions["onEnablementChange"],
 ): Promise<ConfigMenuResult> {
 	const current: ConfigDraft = {
+		enabled: resolveNervousEnabled(modelConfig).enabled,
 		drain_mode: config.drain_mode,
 		risk_gate_mode: config.risk_gate_mode,
 		default_drain_policy: config.default_drain_policy,
@@ -658,6 +697,7 @@ async function showNervousConfigMenu(
 			let disabledPrompt: { previous: ConfigDraft; evidence: string; applying: boolean } | undefined;
 
 			const updateSettingsList = () => {
+				settingsList.updateValue("enabled", configValueForId(current, "enabled"));
 				settingsList.updateValue("drain_mode", current.drain_mode);
 				settingsList.updateValue("risk_gate_mode", current.risk_gate_mode);
 				settingsList.updateValue("default_drain_policy", current.default_drain_policy);
@@ -666,6 +706,7 @@ async function showNervousConfigMenu(
 			};
 
 			const revert = (previous: ConfigDraft, id: string) => {
+				current.enabled = previous.enabled;
 				current.drain_mode = previous.drain_mode;
 				current.risk_gate_mode = previous.risk_gate_mode;
 				current.default_drain_policy = previous.default_drain_policy;
@@ -696,6 +737,25 @@ async function showNervousConfigMenu(
 
 			const applyChange = (id: string, newValue: string) => {
 				const previous = cloneDraft(current);
+				if (id === "enabled" && (newValue === "true" || newValue === "false")) {
+					const enabled = newValue === "true";
+					void (async () => {
+						try {
+							await onEnablementChange?.(enabled, ctx);
+							writeUserNervousConfig(applyNervousEnabledPatch(readUserNervousConfig(), enabled));
+							current.enabled = enabled;
+							updateSettingsList();
+							ctx.ui.notify("NERVous enablement updated; reloading this session.", "info");
+							done(undefined);
+							await ctx.reload();
+						} catch (e) {
+							revert(previous, id);
+							ctx.ui.notify(`nervous:config failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+							tui.requestRender();
+						}
+					})().catch((e) => ctx.ui.notify(`nervous:config failed: ${e instanceof Error ? e.message : String(e)}`, "error"));
+					return;
+				}
 				if (isModelSettingId(id)) {
 					const value = newValue === "__unset__" || newValue === MODEL_UNSET ? null : newValue;
 					try {
@@ -806,6 +866,13 @@ function configMenuItems(current: ConfigDraft, availableModels: string[]): Setti
 	}));
 	return [
 		{
+			id: "enabled",
+			label: "NERVous suite",
+			description: "Turn the installed NERVous suite on or off. The session reloads; when off, only /nervous:config remains available to turn it back on.",
+			currentValue: configValueForId(current, "enabled"),
+			values: ["true", "false"],
+		},
+		{
 			id: "drain_mode",
 			label: "Drain mode",
 			description: `When CORTEX drain resumes incomplete goals. ${formatInlineDescriptions(DRAIN_MODE_VALUES, DRAIN_MODE_DESCRIPTIONS)}`,
@@ -837,6 +904,7 @@ function configMenuItems(current: ConfigDraft, availableModels: string[]): Setti
 }
 
 function configValueForId(config: ConfigDraft, id: string): string {
+	if (id === "enabled") return String(config.enabled);
 	if (id === "drain_mode") return config.drain_mode;
 	if (id === "risk_gate_mode") return config.risk_gate_mode;
 	if (id === "default_drain_policy") return config.default_drain_policy;
@@ -998,8 +1066,11 @@ function splitCommandArgs(input: string): string[] {
 interface ParsedNervousConfigArgs {
 	patch: ConfigInput;
 	modelPatch: Partial<Record<NervousModelKey, string | null>>;
+	enabled?: boolean;
 	hasCortexChanges: boolean;
 	hasModelChanges: boolean;
+	hasEnablementChange: boolean;
+	hasNervousChanges: boolean;
 	hasChanges: boolean;
 	errors: string[];
 }
@@ -1007,6 +1078,7 @@ interface ParsedNervousConfigArgs {
 function parseNervousConfigArgs(args: string): ParsedNervousConfigArgs {
 	const patch: ConfigInput = {};
 	const modelPatch: Partial<Record<NervousModelKey, string | null>> = {};
+	let enabled: boolean | undefined;
 	const errors: string[] = [];
 	const tokens = splitCommandArgs(args).filter((token) => !["show", "get", "current"].includes(token.toLowerCase()));
 	const takeValue = (i: number, key: string): { value?: string; next: number } => {
@@ -1033,6 +1105,15 @@ function parseNervousConfigArgs(args: string): ParsedNervousConfigArgs {
 				const trimmed = value.trim();
 				modelPatch[modelKey] = trimmed === "" || trimmed.toLowerCase() === "unset" ? null : trimmed;
 			}
+			continue;
+		}
+		if (["enabled", "enable", "nervous_enabled", "nervous-enabled"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			const normalized = value?.toLowerCase();
+			if (["true", "on", "yes", "1"].includes(normalized ?? "")) enabled = true;
+			else if (["false", "off", "no", "0"].includes(normalized ?? "")) enabled = false;
+			else if (value !== undefined) errors.push(`invalid enabled "${value}"; use true or false`);
 			continue;
 		}
 		if (["drain", "drain_mode"].includes(key)) {
@@ -1074,9 +1155,11 @@ function parseNervousConfigArgs(args: string): ParsedNervousConfigArgs {
 		}
 		errors.push(`unknown option "${rawKey}"`);
 	}
-	const hasCortexChanges = Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode);
+	const hasCortexChanges = Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode || patch.risk_gate_evidence);
 	const hasModelChanges = Object.keys(modelPatch).length > 0;
-	return { patch, modelPatch, hasCortexChanges, hasModelChanges, hasChanges: hasCortexChanges || hasModelChanges, errors };
+	const hasEnablementChange = enabled !== undefined;
+	const hasNervousChanges = hasEnablementChange || hasModelChanges;
+	return { patch, modelPatch, enabled, hasCortexChanges, hasModelChanges, hasEnablementChange, hasNervousChanges, hasChanges: hasCortexChanges || hasNervousChanges, errors };
 }
 
 export function summarizeConfig(config: CortexConfig, changed: boolean, modelConfig?: NervousConfigResolution): string {
@@ -1091,6 +1174,9 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 		`| \`default_drain_policy\` | \`${config.default_drain_policy}\` | Drain budget/retry posture. |`,
 	];
 	if (config.risk_gate_evidence) lines.push(`| \`risk_gate_evidence\` | ${config.risk_gate_evidence} | Audit evidence for disabled risk gate mode. |`);
+	const enablement = modelConfig ? resolveNervousEnabled(modelConfig) : { enabled: true, source: "default" as const };
+	lines.push("", "## NERVous suite", "| Setting | Effective | Source | Meaning |", "|---|---|---|---|");
+	lines.push(`| \`enabled\` | \`${enablement.enabled}\` | ${enablement.source} | Load NERVous tools, commands, skills, and prompts. Changes reload the session. |`);
 	lines.push("", "## Current model defaults", "| Model key | User setting | Effective | Source | Used for |", "|---|---|---|---|---|");
 	for (const key of MODEL_SETTING_IDS) {
 		const user = modelConfig ? getNervousModel(modelConfig.user, key) : undefined;
@@ -1107,11 +1193,17 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 		"## Usage",
 		"- Open the TUI menu: `/nervous:config`",
 		"- Print this help: `/nervous:config show`",
+		"- Turn the installed suite off: `/nervous:config enabled=false` (reloads this session; the config command stays available)",
+		"- Turn the suite back on: `/nervous:config enabled=true`",
 		"- Set CORTEX defaults: `/nervous:config drain=always risk=auto_deliberate policy=default`",
 		"- Set model defaults: `/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong magi_model=provider/model`",
 		"- Clear a model default: `/nervous:config lion_review_model=unset`",
 		"",
 		"## Options",
+		"",
+		"### Suite enablement",
+		"Aliases: `enabled`, `enable`, `nervous_enabled`",
+		"`true` loads the complete suite. `false` unloads all NERVous tools, workflow commands, skills, and prompts after reload, while preserving `/nervous:config` so it can be re-enabled.",
 		"",
 		"### Drain mode",
 		"Aliases: `drain`, `drain_mode`",

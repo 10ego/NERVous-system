@@ -18,7 +18,7 @@ Then start a durable workflow:
 /nervous implement this feature with durable planning and worker delegation
 ```
 
-NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard.
+NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard. Keep it installed but turn the suite off or back on with `/nervous:config enabled=false` or `/nervous:config enabled=true`; the command reloads the current session and remains available while the suite is off.
 
 ## Highlights
 
