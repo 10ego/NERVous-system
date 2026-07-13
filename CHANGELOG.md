@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/10ego/NERVous-system/compare/v1.1.2...v1.2.0) (2026-07-13)
+
+
+### Features
+
+* **config:** add persistent suite toggle ([#30](https://github.com/10ego/NERVous-system/issues/30)) ([1004fac](https://github.com/10ego/NERVous-system/commit/1004fac5ab1faeb2b2b331a671f9370d04bab521))
+
 ## [1.1.2](https://github.com/10ego/NERVous-system/compare/v1.1.1...v1.1.2) (2026-07-13)
 
 
