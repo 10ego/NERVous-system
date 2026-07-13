@@ -8,7 +8,7 @@ The 1.x compatibility commitment covers documented tool actions, extension entry
 
 ## Automated releases
 
-[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version changes, `CHANGELOG.md`, and release manifest. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `nervous-system` to npm with provenance.
+[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version changes, `CHANGELOG.md`, and release manifest. The generated PR title—and therefore its squash commit—uses `release(main): release <version>`. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `nervous-system` to npm with provenance.
 
 Semver is selected from the merged commit (normally the squash-merged PR title):
 
@@ -18,7 +18,7 @@ Semver is selected from the merged commit (normally the squash-merged PR title):
 
 ### Merge policy
 
-All changes to `main` must go through a pull request and use squash merging. The required `Validate PR title` check enforces the conventional title that becomes the squash commit, and the required `Test` check runs the full test suite. Direct pushes, force pushes, branch deletion, and bypassing these requirements as an administrator are disabled.
+All changes to `main` must go through a pull request and use squash merging. The required `Validate PR title` check enforces the conventional title that becomes the squash commit, and the required `Test` check runs the full test suite. When merging an automated release PR, remove GitHub's redundant `Co-authored-by: nerv-ops[bot]` trailer so the commit retains its single bot attribution. Direct pushes, force pushes, branch deletion, and bypassing these requirements as an administrator are disabled.
 
 ### One-time repository setup
 
