@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.0](https://github.com/10ego/NERVous-system/compare/v1.4.0...v1.5.0) (2026-07-14)
+
+
+### Features
+
+* **release:** auto-merge release pull requests ([#42](https://github.com/10ego/NERVous-system/issues/42)) ([20f7a6d](https://github.com/10ego/NERVous-system/commit/20f7a6dd7678f11e7b2c57a8cd3683037a08b5e6))
+
 ## [1.4.0](https://github.com/10ego/NERVous-system/compare/v1.3.0...v1.4.0) (2026-07-14)
 
 
