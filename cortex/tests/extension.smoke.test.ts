@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { describe, it } from "vitest";
-import factory, { summarizeConfig } from "../extension/index.ts";
+import factory, { magiReadinessGaps, summarizeConfig } from "../extension/index.ts";
 
 interface Captured {
 	tools: Array<Record<string, unknown>>;
@@ -76,6 +76,27 @@ async function settleUiWork(): Promise<void> {
 }
 
 describe("cortex extension factory", () => {
+	it("reports framing gaps before MAGI deliberation", () => {
+		const base = {
+			intent_summary: "summary",
+			goal: "goal",
+			success_criteria: ["criterion"],
+			constraints: [],
+			risks: [],
+			expected_output: "output",
+			complexity: "high" as const,
+			needs_magi: true,
+		};
+		assert.deepEqual(magiReadinessGaps(base), ["scope", "decision_needed"]);
+		assert.deepEqual(magiReadinessGaps({
+			...base,
+			framing: {
+				context: [], scope: ["bounded scope"], non_goals: [], assumptions: [], open_questions: [],
+				candidate_options: ["a", "b"], decision_needed: "Choose an option.",
+			},
+		}), []);
+	});
+
 	it("registers the cortex tool and /cortex* commands without throwing", () => {
 		const { pi, captured } = stubPi();
 		assert.doesNotThrow(() => factory(pi));

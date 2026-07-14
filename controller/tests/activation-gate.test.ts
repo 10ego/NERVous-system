@@ -74,6 +74,10 @@ describe("explicit NERVous activation gate", () => {
 			h.sent[0]!.indexOf("one bounded task-framing pass") < h.sent[0]!.indexOf("Persist the result in `cortex analyze.framing`"),
 			"the invocation frames new work before durable analysis",
 		);
+		assert.ok(
+			h.sent[0]!.indexOf("one bounded task-framing pass") < h.sent[0]!.indexOf("Use MAGI for hard"),
+			"the invocation frames new work before MAGI deliberation",
+		);
 	});
 
 	it("keeps the coordinated workflow active for later turns in the same chain", async () => {

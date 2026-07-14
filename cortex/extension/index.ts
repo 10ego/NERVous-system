@@ -43,6 +43,7 @@ import {
 	type DrainPolicyName,
 	type Goal,
 	type GoalStatus,
+	type IntentAnalysis,
 	type RiskGateMode,
 	type VerifyRecommendation,
 } from "./schema.ts";
@@ -100,6 +101,15 @@ async function runQuery(
 
 function projectName(cwd: string): string {
 	return path.basename(cwd) || cwd;
+}
+
+export function magiReadinessGaps(intent: IntentAnalysis): string[] {
+	const gaps: string[] = [];
+	if (!intent.goal.trim()) gaps.push("objective");
+	if (!intent.success_criteria.length) gaps.push("success criteria");
+	if (!intent.framing?.scope.length) gaps.push("scope");
+	if (!intent.framing?.decision_needed?.trim()) gaps.push("decision_needed");
+	return gaps;
 }
 
 /** Resolve the goal id: explicit id, "current"/"latest", or undefined. */
@@ -181,8 +191,11 @@ export function registerCortexExtension(pi: ExtensionAPI): void {
 							needs_magi: p.needs_magi,
 							magi_rationale: p.magi_rationale,
 						});
+						const gaps = g.intent.needs_magi ? magiReadinessGaps(g.intent) : [];
 						const next = g.intent.needs_magi
-							? `needs_magi=true → convene MAGI before planning.`
+							? gaps.length
+								? `needs_magi=true, but framing is not ready (${gaps.join(", ")}); do not convene MAGI until these gaps are resolved.`
+								: `needs_magi=true → framing ready; convene MAGI before planning.`
 							: `proceed to plan.`;
 						return ok(action, `Analyzed ${g.id}: ${g.intent.intent_summary}\n(${next})`, { goal: g });
 					});

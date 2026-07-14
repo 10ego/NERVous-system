@@ -436,6 +436,29 @@ describe("GoalStore — current / list / serialization", () => {
 		assert.deepEqual(back.drain_runs.get(run.id)?.policy.hard_stop_categories, ["custom_stop"]);
 	});
 
+	it("fromJSON normalizes malformed framing without breaking legacy goals", () => {
+		const s = GoalStore.fromJSON({
+			goals: {
+				"goal-001": {
+					prompt: "legacy",
+					intent: {
+						goal: "legacy",
+						framing: {
+							scope: ["  retained scope  ", 42, ""],
+							assumptions: "not-an-array",
+							decision_needed: 99,
+						},
+					},
+				},
+			},
+		});
+		const framing = s.get("goal-001")?.intent.framing;
+		assert.deepEqual(framing?.scope, ["retained scope"]);
+		assert.deepEqual(framing?.assumptions, []);
+		assert.equal(framing?.decision_needed, undefined);
+		assert.doesNotThrow(() => summarizeGoal(s.get("goal-001")!));
+	});
+
 	it("fromJSON coerces bad enums to safe defaults", () => {
 		const bad = {
 			meta: { version: 1, updated_at: "x" },
