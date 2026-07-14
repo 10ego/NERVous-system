@@ -18,7 +18,7 @@ Then start a durable workflow:
 /nervous implement this feature with durable planning and worker delegation
 ```
 
-NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard. Its model tools are inactive during ordinary prompts. An exact `/nervous [task]` invocation activates them for that agent run and automatically restores the previous tool set afterward. Keep the package installed but turn its entire runtime surface off or back on with `/nervous:config enabled=false` or `/nervous:config enabled=true`; the command reloads the current session and remains available while the suite is off.
+NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard. Its model tools are inactive in a fresh session chain. An exact `/nervous [task]` command activates the operator-permitted component set after any current run becomes idle, then keeps the coordinated workflow available for later turns on that branch. Keep the package installed but turn its runtime resources off or back on with `/nervous:config enabled=false` or `/nervous:config enabled=true`.
 
 ## Highlights
 

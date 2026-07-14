@@ -1,92 +1,143 @@
 import * as assert from "node:assert";
 import { describe, it } from "vitest";
 import { installNervousActivationGate, NERVOUS_TOOL_NAMES } from "../extension/activation-gate.ts";
+import { NERVOUS_ACTIVATION_ENTRY, NERVOUS_PROMPT_SIGNATURE } from "../extension/nervous-command.ts";
 
 type Handler = (event: any, ctx: any) => any;
 
-function harness(initialActive: string[] = ["read", "bash", "other", ...NERVOUS_TOOL_NAMES]) {
-	let active = [...initialActive];
+function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdle?: () => Promise<void> } = {}) {
+	let active = [...(options.initialActive ?? ["read", "bash", "other", ...NERVOUS_TOOL_NAMES])];
+	let branch = [...(options.branch ?? [])];
 	const handlers = new Map<string, Handler[]>();
-	const all = [...new Set(["read", "bash", "other", ...NERVOUS_TOOL_NAMES])];
+	const commands = new Map<string, any>();
+	const sent: string[] = [];
+	const notifications: Array<{ message: string; level: string }> = [];
 	const pi: any = {
 		on(event: string, handler: Handler) {
 			handlers.set(event, [...(handlers.get(event) ?? []), handler]);
 		},
+		registerCommand(name: string, command: any) { commands.set(name, command); },
 		getActiveTools: () => [...active],
-		getAllTools: () => all.map((name) => ({ name })),
-		setActiveTools(names: string[]) {
-			active = [...names];
-		},
+		setActiveTools(names: string[]) { active = [...names]; },
+		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
+		sendUserMessage(text: string) { sent.push(text); },
 	};
 	installNervousActivationGate(pi);
+	const ctx = {
+		sessionManager: { getBranch: () => [...branch] },
+		waitForIdle: options.waitForIdle ?? (async () => {}),
+		ui: { notify(message: string, level: string) { notifications.push({ message, level }); } },
+	};
 	return {
 		active: () => [...active],
+		branch: () => [...branch],
+		sent,
+		notifications,
 		setActive(names: string[]) { active = [...names]; },
+		setBranch(entries: any[]) { branch = [...entries]; },
+		async command(args: string) { await commands.get("nervous").handler(args, ctx); },
 		async emit(event: string, payload: any = {}) {
 			const results = [];
-			for (const handler of handlers.get(event) ?? []) results.push(await handler({ type: event, ...payload }, {}));
+			for (const handler of handlers.get(event) ?? []) results.push(await handler({ type: event, ...payload }, ctx));
 			return results;
 		},
 	};
 }
 
+const activationEntry = { type: "custom", customType: NERVOUS_ACTIVATION_ENTRY, data: { active: true } };
+
 describe("explicit NERVous activation gate", () => {
-	it("hides every NERVous tool by default without changing unrelated tools", async () => {
+	it("hides every NERVous tool in a fresh chain without changing unrelated tools", async () => {
 		const h = harness();
 		await h.emit("session_start", { reason: "startup" });
 		assert.deepEqual(h.active(), ["read", "bash", "other"]);
 	});
 
-	it("activates the suite for one exact /nervous invocation and restores afterward", async () => {
-		const h = harness();
+	it("waits for the current run before activating and dispatching the workflow", async () => {
+		let release!: () => void;
+		const idle = new Promise<void>((resolve) => { release = resolve; });
+		const h = harness({ waitForIdle: () => idle });
 		await h.emit("session_start", { reason: "startup" });
-		await h.emit("input", { text: "/nervous implement the feature", source: "interactive" });
+		const invocation = h.command("implement the feature");
+		await Promise.resolve();
+		assert.deepEqual(h.active(), ["read", "bash", "other"], "queued command must not authorize the in-flight run");
+		assert.deepEqual(h.sent, []);
+
+		release();
+		await invocation;
 		assert.deepEqual(h.active(), ["read", "bash", "other", ...NERVOUS_TOOL_NAMES]);
+		assert.equal(h.sent.length, 1);
+		assert.match(h.sent[0]!, /Invocation arguments: implement the feature/);
+	});
 
-		const allowed = await h.emit("tool_call", { toolName: "cortex", toolCallId: "call-1", input: {} });
-		assert.deepEqual(allowed, [undefined]);
-
+	it("keeps the coordinated workflow active for later turns in the same chain", async () => {
+		const h = harness();
+		await h.emit("session_start", { reason: "startup" });
+		await h.command("start durable work");
 		await h.emit("agent_end", { messages: [] });
+		assert.ok(h.active().includes("cortex"));
+		assert.ok(h.branch().some((entry) => entry.customType === NERVOUS_ACTIVATION_ENTRY));
+
+		const allowed = await h.emit("tool_call", { toolName: "axon", toolCallId: "call-1", input: {} });
+		assert.deepEqual(allowed, [undefined]);
+	});
+
+	it("restores chain activation on resume and recognizes pre-marker workflow sessions", async () => {
+		const resumed = harness({ branch: [activationEntry] });
+		await resumed.emit("session_start", { reason: "resume" });
+		assert.ok(resumed.active().includes("cortex"));
+
+		const legacy = harness({ branch: [{ type: "message", message: { role: "user", content: [{ type: "text", text: `${NERVOUS_PROMPT_SIGNATURE}\n\nInvocation arguments: old work` }] } }] });
+		await legacy.emit("session_start", { reason: "resume" });
+		assert.ok(legacy.active().includes("cortex"));
+	});
+
+	it("syncs activation when tree navigation crosses the marker", async () => {
+		const h = harness();
+		await h.emit("session_start", { reason: "startup" });
+		h.setBranch([activationEntry]);
+		await h.emit("session_tree", { newLeafId: "after", oldLeafId: "before" });
+		assert.ok(h.active().includes("cortex"));
+
+		h.setBranch([]);
+		await h.emit("session_tree", { newLeafId: "before", oldLeafId: "after" });
 		assert.deepEqual(h.active(), ["read", "bash", "other"]);
 	});
 
-	it("does not activate for mentions, sibling commands, or extension-injected input", async () => {
-		const h = harness();
+	it("activates only the configured NERVous subset and blocks excluded tools", async () => {
+		const h = harness({ initialActive: ["read", "bash", "cortex", "axon"] });
 		await h.emit("session_start", { reason: "startup" });
-		for (const payload of [
-			{ text: "please use /nervous for this", source: "interactive" },
-			{ text: "/nervous:config show", source: "interactive" },
-			{ text: "/nervous hidden request", source: "extension" },
-		]) {
-			await h.emit("input", payload);
-			assert.deepEqual(h.active(), ["read", "bash", "other"]);
-		}
+		await h.command("restricted workflow");
+		assert.deepEqual(h.active(), ["read", "bash", "axon", "cortex"]);
+
+		const [result] = await h.emit("tool_call", { toolName: "magi", toolCallId: "call-2", input: {} });
+		assert.equal(result.block, true);
+		assert.match(result.reason, /excluded/);
 	});
 
-	it("hard-blocks unauthorized calls even if a NERVous tool is re-enabled elsewhere", async () => {
+	it("does not overwrite tool revocations made after chain activation", async () => {
+		const h = harness();
+		await h.emit("session_start", { reason: "startup" });
+		await h.command("long task");
+		h.setActive(["read", "cortex"]);
+		await h.emit("agent_end", { messages: [] });
+		assert.deepEqual(h.active(), ["read", "cortex"]);
+	});
+
+	it("hard-blocks NERVous calls in a fresh chain even if a tool is made visible", async () => {
 		const h = harness();
 		await h.emit("session_start", { reason: "startup" });
 		h.setActive(["read", "cortex"]);
-		const [result] = await h.emit("tool_call", { toolName: "cortex", toolCallId: "call-2", input: {} });
+		const [result] = await h.emit("tool_call", { toolName: "cortex", toolCallId: "call-3", input: {} });
 		assert.equal(result.block, true);
 		assert.match(result.reason, /\/nervous/);
 	});
 
-	it("restores stale activation before a later idle ordinary prompt", async () => {
-		const h = harness();
+	it("reports disabled suite configuration instead of dispatching", async () => {
+		const h = harness({ initialActive: ["read", "bash"] });
 		await h.emit("session_start", { reason: "startup" });
-		await h.emit("input", { text: "/nervous interrupted task", source: "rpc" });
-		await h.emit("input", { text: "ordinary request", source: "rpc" });
-		assert.deepEqual(h.active(), ["read", "bash", "other"]);
-	});
-
-	it("keeps the lease during steering and restores it at shutdown", async () => {
-		const h = harness();
-		await h.emit("session_start", { reason: "startup" });
-		await h.emit("input", { text: "/nervous long task", source: "interactive" });
-		await h.emit("input", { text: "focus on tests", source: "interactive", streamingBehavior: "steer" });
-		assert.ok(h.active().includes("cortex"));
-		await h.emit("session_shutdown", { reason: "reload" });
-		assert.deepEqual(h.active(), ["read", "bash", "other"]);
+		await h.command("cannot run");
+		assert.deepEqual(h.sent, []);
+		assert.match(h.notifications[0]!.message, /No NERVous tools/);
 	});
 });

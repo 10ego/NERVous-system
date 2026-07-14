@@ -2,8 +2,8 @@
  * NERVous System's always-loaded control plane.
  *
  * The root manifest keeps this extension enabled even while the rest of the
- * package is disabled. It owns `/nervous:config`, which safely restricts or
- * restores Pi's normal package-resource selection and then reloads Pi.
+ * package is disabled. It owns `/nervous:config` for package-resource selection
+ * and `/nervous` for branch-persistent, coordinated tool activation.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

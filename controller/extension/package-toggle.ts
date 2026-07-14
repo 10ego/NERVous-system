@@ -27,7 +27,7 @@ export const ROOT_SKILLS = [
 ] as const;
 export const ROOT_PROMPTS = [
 	"magi/prompts",
-	"cortex/prompts",
+	"cortex/prompts/cortex.md",
 	"lion/prompts",
 	"cerebel/prompts",
 	"ganglion/prompts",
