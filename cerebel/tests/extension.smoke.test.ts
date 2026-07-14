@@ -101,6 +101,30 @@ describe("cerebel extension factory", () => {
 		}
 	});
 
+	it("uses configured parallelism for new waves while preserving explicit overrides", async () => {
+		const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+		const oldCerebelPath = process.env.CEREBEL_PATH;
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-configured-parallelism-"));
+		const agentDir = path.join(dir, "agent");
+		process.env.PI_CODING_AGENT_DIR = agentDir;
+		process.env.CEREBEL_PATH = path.join(dir, "cerebel.json");
+		try {
+			await fs.mkdir(agentDir, { recursive: true });
+			await fs.writeFile(path.join(agentDir, "nervous.json"), JSON.stringify({ cerebel: { maxParallel: 6 } }));
+			const { pi, tools } = stubPi();
+			factory(pi);
+			const cerebel = tools.find((tool) => tool.name === "cerebel");
+			const configured = await cerebel.execute("configured", { action: "plan_wave", assignments: [{ objective: "A" }] }, undefined, undefined, { cwd: dir });
+			const explicit = await cerebel.execute("explicit", { action: "plan_wave", max_parallel: 2, assignments: [{ objective: "B" }] }, undefined, undefined, { cwd: dir });
+			assert.equal(configured.details.wave.max_parallel, 6);
+			assert.equal(explicit.details.wave.max_parallel, 2);
+		} finally {
+			if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR; else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+			if (oldCerebelPath === undefined) delete process.env.CEREBEL_PATH; else process.env.CEREBEL_PATH = oldCerebelPath;
+			await fs.rm(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("rejects invalid run_wave timeouts before creating a LION worker", async () => {
 		const oldRoot = process.env.NERVOUS_STATE_ROOT, oldProject = process.env.NERVOUS_PROJECT, oldContext = process.env.NERVOUS_CONTEXT;
 		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "cerebel-invalid-timeout-"));
