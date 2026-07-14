@@ -1,5 +1,6 @@
 import * as assert from "node:assert";
 import { describe, it } from "vitest";
+import { summarizeGoal } from "../extension/render.ts";
 import { canTransition, GoalStore } from "../extension/store.ts";
 import { CortexError } from "../extension/schema.ts";
 import type { GoalStatus } from "../extension/schema.ts";
@@ -31,11 +32,29 @@ describe("GoalStore — analyze", () => {
 			constraints: ["no deps"],
 			risks: [{ description: "r", severity: "high" }],
 			expected_output: "api + tests",
+			framing: {
+				context: ["existing HTTP service"],
+				scope: ["CRUD endpoints"],
+				non_goals: ["authentication"],
+				assumptions: ["in-memory storage is acceptable"],
+				open_questions: ["pagination can follow later"],
+				candidate_options: ["extend the service", "add a module"],
+				decision_needed: "Choose the integration shape.",
+			},
 			complexity: "high",
 		});
 		assert.deepEqual(g.intent.success_criteria, ["c1", "c2"]);
 		assert.equal(g.intent.risks[0]?.severity, "high");
 		assert.equal(g.intent.complexity, "high");
+		assert.deepEqual(g.intent.framing?.scope, ["CRUD endpoints"]);
+		assert.equal(g.intent.framing?.decision_needed, "Choose the integration shape.");
+		assert.match(summarizeGoal(g), /## Task framing/);
+		assert.match(summarizeGoal(g), /\*\*Non-goals:\*\* authentication/);
+	});
+
+	it("omits an empty framing brief for backward compatibility", () => {
+		const g = store().analyze({ prompt: "p", framing: {} });
+		assert.equal(g.intent.framing, undefined);
 	});
 
 	it("heuristic sets needs_magi for high complexity / high-severity risk", () => {
@@ -375,13 +394,21 @@ describe("GoalStore — current / list / serialization", () => {
 
 	it("round-trips through toJSON/fromJSON", () => {
 		const s = store();
-		const g = s.analyze({ prompt: "p", goal: "g", success_criteria: ["c"], complexity: "high" });
+		const g = s.analyze({
+			prompt: "p",
+			goal: "g",
+			success_criteria: ["c"],
+			complexity: "high",
+			framing: { scope: ["framed scope"], assumptions: ["framed assumption"] },
+		});
 		s.plan(g.id, { subtasks: [{ title: "a" }] });
 		s.link(g.id, [{ plan_id: "plan-001", axon_task_id: "task-001" }]);
 		const back = GoalStore.fromJSON(s.toJSON());
 		assert.equal(back.get(g.id)?.intent.goal, "g");
 		assert.equal(back.get(g.id)?.status, "executing");
 		assert.equal(back.get(g.id)?.plan?.subtasks[0]?.axon_task_id, "task-001");
+		assert.deepEqual(back.get(g.id)?.intent.framing?.scope, ["framed scope"]);
+		assert.deepEqual(back.get(g.id)?.intent.framing?.assumptions, ["framed assumption"]);
 		assert.equal(back.current_goal_id, g.id);
 	});
 

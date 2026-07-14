@@ -26,6 +26,7 @@ import {
 	type Retryability,
 	type RiskAcceptance,
 	type RiskGateMode,
+	type TaskFraming,
 	type VerificationReport,
 	VERIFY_RECOMMENDATIONS,
 	type VerifyRecommendation,
@@ -70,6 +71,7 @@ export interface AnalyzeInput {
 	constraints?: string[];
 	risks?: Array<{ description: string; severity?: string }>;
 	expected_output?: string;
+	framing?: Partial<TaskFraming>;
 	complexity?: string;
 	needs_magi?: boolean;
 	magi_rationale?: string;
@@ -163,6 +165,32 @@ function asPriority(v: unknown): Priority {
 const RETRYABILITIES = ["unknown", "retryable", "not_retryable"] as const;
 function asRetryability(v: unknown): Retryability {
 	return (RETRYABILITIES as readonly string[]).includes(v as string) ? (v as Retryability) : "unknown";
+}
+
+function cleanStrings(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+		: [];
+}
+
+function normalizeFraming(value: unknown): TaskFraming | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const raw = value as Record<string, unknown>;
+	const framing: TaskFraming = {
+		context: cleanStrings(raw.context),
+		scope: cleanStrings(raw.scope),
+		non_goals: cleanStrings(raw.non_goals),
+		assumptions: cleanStrings(raw.assumptions),
+		open_questions: cleanStrings(raw.open_questions),
+		candidate_options: cleanStrings(raw.candidate_options),
+		decision_needed: typeof raw.decision_needed === "string" && raw.decision_needed.trim()
+			? raw.decision_needed.trim()
+			: undefined,
+	};
+	return framing.context.length || framing.scope.length || framing.non_goals.length || framing.assumptions.length ||
+		framing.open_questions.length || framing.candidate_options.length || framing.decision_needed
+		? framing
+		: undefined;
 }
 
 /* ----------------------------- store ----------------------------------- */
@@ -297,6 +325,7 @@ export class GoalStore {
 				constraints: strArr(intent.constraints),
 				risks,
 				expected_output: str(intent.expected_output),
+				framing: normalizeFraming(intent.framing),
 				complexity: asComplexity(intent.complexity),
 				needs_magi: typeof intent.needs_magi === "boolean" ? intent.needs_magi : false,
 				magi_rationale: typeof intent.magi_rationale === "string" ? intent.magi_rationale : undefined,
@@ -458,6 +487,7 @@ export class GoalStore {
 			constraints: input.constraints ?? [],
 			risks: (input.risks ?? []).map((r) => ({ description: r.description, severity: asSeverity(r.severity) })),
 			expected_output: input.expected_output ?? "",
+			framing: normalizeFraming(input.framing),
 			complexity: asComplexity(input.complexity),
 			needs_magi: input.needs_magi ?? this.heuristicNeedsMagi(input),
 			magi_rationale: input.magi_rationale,

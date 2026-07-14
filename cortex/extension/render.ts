@@ -52,6 +52,17 @@ export function summarizeGoal(g: Goal): string {
 		lines.push("## Intent");
 		lines.push(g.intent.intent_summary);
 	}
+	if (g.intent.framing) {
+		const f = g.intent.framing;
+		lines.push("", "## Task framing");
+		appendFramingList(lines, "Context", f.context);
+		appendFramingList(lines, "Scope", f.scope);
+		appendFramingList(lines, "Non-goals", f.non_goals);
+		appendFramingList(lines, "Assumptions", f.assumptions);
+		appendFramingList(lines, "Open questions", f.open_questions);
+		appendFramingList(lines, "Candidate options", f.candidate_options);
+		if (f.decision_needed) lines.push(`- **Decision needed:** ${f.decision_needed}`);
+	}
 	if (g.intent.success_criteria.length) {
 		lines.push("");
 		lines.push("## Success criteria");
@@ -112,6 +123,10 @@ export function summarizeGoal(g: Goal): string {
 		if (g.risk_acceptance.expires_at) lines.push(`- **expires:** ${g.risk_acceptance.expires_at}`);
 	}
 	return lines.join("\n");
+}
+
+function appendFramingList(lines: string[], label: string, values: string[]): void {
+	if (values.length) lines.push(`- **${label}:** ${values.join("; ")}`);
 }
 
 export function verificationSection(v: VerificationReport): string {

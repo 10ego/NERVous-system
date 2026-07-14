@@ -84,10 +84,12 @@ describe("cortex extension factory", () => {
 		assert.ok(cortex, "cortex tool registered");
 		assert.equal(typeof cortex?.execute, "function");
 		assert.ok(cortex?.parameters, "tool has parameters schema");
+		assert.ok((cortex?.parameters as any)?.properties?.framing, "analyze accepts a structured framing brief");
 		assert.ok(cortex?.promptSnippet, "tool has promptSnippet");
-		assert.ok(
-			Array.isArray((cortex?.promptGuidelines as string[]) ?? []) && (cortex?.promptGuidelines as string[]).length > 0,
-		);
+		const guidelines = (cortex?.promptGuidelines as string[]) ?? [];
+		assert.ok(Array.isArray(guidelines) && guidelines.length > 0);
+		assert.match(guidelines.join("\n"), /one bounded task-framing pass/);
+		assert.match(guidelines.join("\n"), /Do not repeat framing on resume or replan/);
 		assert.equal(typeof cortex?.renderCall, "function");
 		assert.equal(typeof cortex?.renderResult, "function");
 
