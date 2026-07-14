@@ -64,7 +64,7 @@ describe("dashboard extension factory", () => {
 		assert.ok(dashboard, "/nervous:dashboard registered");
 		assert.equal(typeof dashboard?.options.handler, "function");
 		assert.ok(dashboard?.options.description);
-		assert.equal(commands.some((c) => c.name === "nervous"), false, "/nervous prompt template remains unshadowed");
+		assert.equal(commands.some((c) => c.name === "nervous"), false, "dashboard does not register the /nervous activation command");
 	});
 
 	it("auto-refreshes while open and cleans up its timer", async () => {
