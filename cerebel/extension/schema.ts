@@ -143,7 +143,7 @@ export const CerebelToolParams = Type.Object({
 	action: StringEnum(CEREBEL_ACTIONS, { description: "What to do. plan_wave/dispatch/record/decide/complete_wave/cancel/run_wave/get/list/summary." }),
 	wave_id: Type.Optional(Type.String({ description: "Wave id. Use current/latest when omitted for most actions." })),
 	goal_id: Type.Optional(Type.String({ description: "Optional CORTEX goal id this wave serves." })),
-	max_parallel: Type.Optional(Type.Number({ description: "Maximum concurrent assignments. plan_wave defaults to 3; run_wave defaults to the selected wave's stored max_parallel." })),
+	max_parallel: Type.Optional(Type.Number({ description: "Maximum concurrent assignments. plan_wave defaults to /nervous:config max_parallel (3 when unset); run_wave defaults to the selected wave's stored max_parallel." })),
 	// plan_wave input: either AXON task briefs or direct assignments
 	tasks: Type.Optional(Type.Array(TaskBriefSchema, { description: "Ready AXON task briefs to turn into LION assignments." })),
 	assignments: Type.Optional(Type.Array(AssignmentInputSchema, { description: "Direct assignments to add to a wave." })),
