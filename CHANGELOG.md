@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.4.0](https://github.com/10ego/NERVous-system/compare/v1.3.0...v1.4.0) (2026-07-14)
+
+
+### Features
+
+* **config:** add configurable CEREBEL parallelism ([#40](https://github.com/10ego/NERVous-system/issues/40)) ([aaaccd7](https://github.com/10ego/NERVous-system/commit/aaaccd7942550af16a4036556099ecdf10eccdfa))
+
 ## [1.3.0](https://github.com/10ego/NERVous-system/compare/v1.2.2...v1.3.0) (2026-07-14)
 
 
