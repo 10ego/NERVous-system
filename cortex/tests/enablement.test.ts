@@ -29,25 +29,32 @@ describe("bundled suite enablement compatibility", () => {
 			assert.equal(raw.enabled, false);
 			assert.equal(raw.cerebel.maxParallel, 6);
 			assert.equal(raw.models.lion.default, "provider/fast");
+			assert.deepEqual(fs.readdirSync(agentDir), ["nervous.json"], "atomic persistence leaves no temporary file");
+			assert.equal(fs.statSync(path.join(agentDir, "nervous.json")).mode & 0o777, 0o600);
 			const loaded = loadNervousConfig({ cwd: dir, isProjectTrusted: true });
 			assert.equal(loaded.user.enabled, false);
 			assert.deepEqual(resolveNervousCerebelMaxParallel(loaded), { maxParallel: 6, source: "user", path: path.join(agentDir, "nervous.json") });
 		} finally {
 			if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
+			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 
 	it("defaults malformed CEREBEL parallelism and rejects invalid patches", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-enablement-test-"));
-		const agentDir = path.join(dir, "agent");
-		fs.mkdirSync(agentDir, { recursive: true });
-		fs.writeFileSync(path.join(agentDir, "nervous.json"), JSON.stringify({ version: 1, models: {}, cerebel: { maxParallel: 11 } }));
+		try {
+			const agentDir = path.join(dir, "agent");
+			fs.mkdirSync(agentDir, { recursive: true });
+			fs.writeFileSync(path.join(agentDir, "nervous.json"), JSON.stringify({ version: 1, models: {}, cerebel: { maxParallel: 11 } }));
 
-		const loaded = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: true });
-		assert.deepEqual(resolveNervousCerebelMaxParallel(loaded), { maxParallel: 3, source: "default" });
-		for (const invalid of [0, 11, 2.5, Number.NaN]) {
-			assert.throws(() => applyNervousCerebelMaxParallelPatch(readUserNervousConfig(agentDir), invalid), /integer from 1 through 10/);
+			const loaded = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: true });
+			assert.deepEqual(resolveNervousCerebelMaxParallel(loaded), { maxParallel: 3, source: "default" });
+			for (const invalid of [0, 11, 2.5, Number.NaN]) {
+				assert.throws(() => applyNervousCerebelMaxParallelPatch(readUserNervousConfig(agentDir), invalid), /integer from 1 through 10/);
+			}
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

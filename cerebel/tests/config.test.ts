@@ -8,18 +8,26 @@ import { resolveConfiguredCerebelMaxParallel } from "../extension/config.ts";
 describe("CEREBEL config", () => {
 	it("uses the persisted user default", () => {
 		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cerebel-config-test-"));
-		fs.writeFileSync(path.join(agentDir, "nervous.json"), JSON.stringify({ cerebel: { maxParallel: 7 } }));
-		assert.equal(resolveConfiguredCerebelMaxParallel(agentDir), 7);
+		try {
+			fs.writeFileSync(path.join(agentDir, "nervous.json"), JSON.stringify({ cerebel: { maxParallel: 7 } }));
+			assert.equal(resolveConfiguredCerebelMaxParallel(agentDir), 7);
+		} finally {
+			fs.rmSync(agentDir, { recursive: true, force: true });
+		}
 	});
 
 	it("falls back to 3 for missing, malformed, or out-of-range values", () => {
 		const agentDir = fs.mkdtempSync(path.join(os.tmpdir(), "cerebel-config-test-"));
-		assert.equal(resolveConfiguredCerebelMaxParallel(agentDir), 3);
-		for (const maxParallel of [0, 11, 2.5, "6"]) {
-			fs.writeFileSync(path.join(agentDir, "nervous.json"), JSON.stringify({ cerebel: { maxParallel } }));
+		try {
 			assert.equal(resolveConfiguredCerebelMaxParallel(agentDir), 3);
+			for (const maxParallel of [0, 11, 2.5, "6"]) {
+				fs.writeFileSync(path.join(agentDir, "nervous.json"), JSON.stringify({ cerebel: { maxParallel } }));
+				assert.equal(resolveConfiguredCerebelMaxParallel(agentDir), 3);
+			}
+			fs.writeFileSync(path.join(agentDir, "nervous.json"), "not-json");
+			assert.equal(resolveConfiguredCerebelMaxParallel(agentDir), 3);
+		} finally {
+			fs.rmSync(agentDir, { recursive: true, force: true });
 		}
-		fs.writeFileSync(path.join(agentDir, "nervous.json"), "not-json");
-		assert.equal(resolveConfiguredCerebelMaxParallel(agentDir), 3);
 	});
 });

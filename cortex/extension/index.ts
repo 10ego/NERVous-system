@@ -22,6 +22,7 @@ import {
 	applyNervousCerebelMaxParallelPatch,
 	applyNervousEnabledPatch,
 	applyNervousModelPatch,
+	DEFAULT_CEREBEL_MAX_PARALLEL,
 	loadNervousConfig,
 	MAX_CEREBEL_MAX_PARALLEL,
 	MIN_CEREBEL_MAX_PARALLEL,
@@ -1250,7 +1251,7 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 	];
 	if (config.risk_gate_evidence) lines.push(`| \`risk_gate_evidence\` | ${config.risk_gate_evidence} | Audit evidence for disabled risk gate mode. |`);
 	const enablement = modelConfig ? resolveNervousEnabled(modelConfig) : { enabled: true, source: "default" as const };
-	const cerebelMaxParallel = modelConfig ? resolveNervousCerebelMaxParallel(modelConfig) : { maxParallel: 3, source: "default" as const };
+	const cerebelMaxParallel = modelConfig ? resolveNervousCerebelMaxParallel(modelConfig) : { maxParallel: DEFAULT_CEREBEL_MAX_PARALLEL, source: "default" as const };
 	lines.push("", "## NERVous suite", "| Setting | Effective | Source | Meaning |", "|---|---|---|---|");
 	lines.push(`| \`enabled\` | \`${enablement.enabled}\` | ${enablement.source} | Load NERVous tools, commands, skills, and prompts. Changes reload the session. |`);
 	lines.push(`| \`cerebel.maxParallel\` | \`${cerebelMaxParallel.maxParallel}\` | ${cerebelMaxParallel.source} | Default concurrent LION workers for new CEREBEL waves. |`);

@@ -4,8 +4,8 @@ import {
 	applyNervousModelPatch as applyBaseNervousModelPatch,
 	getPiAgentDir,
 	loadNervousConfig as loadBaseNervousConfig,
+	normalizeNervousConfig as normalizeBaseNervousConfig,
 	readUserNervousConfig as readBaseUserNervousConfig,
-	writeUserNervousConfig as writeBaseUserNervousConfig,
 	type NervousConfig,
 	type NervousConfigResolution as BaseNervousConfigResolution,
 	type NervousModelKey,
@@ -55,14 +55,21 @@ export function readUserNervousConfig(agentDir?: string): NervousConfigWithEnabl
 }
 
 export function writeUserNervousConfig(config: NervousConfigWithEnablement, agentDir?: string): string {
-	const filePath = writeBaseUserNervousConfig(config, agentDir);
+	const filePath = userConfigPath(agentDir);
+	const persisted: Record<string, unknown> = { ...normalizeBaseNervousConfig(config) };
 	const enabled = config.enabled;
 	const maxParallel = config.cerebel?.maxParallel;
-	if (typeof enabled !== "boolean" && !validCerebelMaxParallel(maxParallel)) return filePath;
-	const persisted = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
 	if (typeof enabled === "boolean") persisted.enabled = enabled;
 	if (validCerebelMaxParallel(maxParallel)) persisted.cerebel = { maxParallel };
-	fs.writeFileSync(filePath, `${JSON.stringify(persisted, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+
+	fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+	const temporary = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+	try {
+		fs.writeFileSync(temporary, `${JSON.stringify(persisted, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+		fs.renameSync(temporary, filePath);
+	} finally {
+		try { fs.rmSync(temporary, { force: true }); } catch { /* best-effort cleanup after failed writes */ }
+	}
 	return filePath;
 }
 
