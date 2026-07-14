@@ -67,6 +67,7 @@ CORTEX drain mode can keep progressing through the active context while preservi
 /nervous:config enabled=true                                          # enable the suite and reload
 /nervous:config show                                                  # show persistent defaults as markdown
 /nervous:config drain=always risk=auto_deliberate                     # set defaults used by /nervous
+/nervous:config max_parallel=6                                        # default concurrent LIONs for new CEREBEL waves (1-10)
 /nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong # set LION role model defaults
 /nervous:config lion_review_model=unset                               # clear a model default back to pi default
 /nervous risk=user_accepted implement the migration                   # apply drain/risk tokens for one invocation
@@ -74,7 +75,7 @@ CORTEX drain mode can keep progressing through the active context while preservi
 
 `auto_deliberate` is the default and proceeds only with recorded MAGI or AMYGDALA approval evidence. `strict` always blocks hard-stop risk for review, `user_accepted` requires scoped user acceptance evidence, and `disabled` requires an explicit dangerous opt-in plus audit evidence.
 
-Suite enablement is stored at user scope in `~/.pi/agent/nervous.json`; a missing `enabled` value defaults to `true`. Model defaults use that same file with the trusted project overlay `.pi/nervous.json`. Unset model keys preserve the current behavior: NERVous passes no `--model`, so pi uses the session or default model.
+Suite enablement and CEREBEL's `max_parallel` default are stored at user scope in `~/.pi/agent/nervous.json`; missing values default to `true` and `3`, respectively. Model defaults use that same file with the trusted project overlay `.pi/nervous.json`. Unset model keys preserve the current behavior: NERVous passes no `--model`, so pi uses the session or default model.
 
 Failed work is recorded with retryability through `cortex record_failure`. Skipped or blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.
 
