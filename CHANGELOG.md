@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0](https://github.com/10ego/NERVous-system/compare/v1.2.2...v1.3.0) (2026-07-14)
+
+
+### Features
+
+* **controller:** gate tools behind explicit nervous activation ([#38](https://github.com/10ego/NERVous-system/issues/38)) ([1c81203](https://github.com/10ego/NERVous-system/commit/1c81203e0d8793b9d5d02484e17764aad35621e2))
+
 ## [1.2.2](https://github.com/10ego/NERVous-system/compare/v1.2.1...v1.2.2) (2026-07-13)
 
 
