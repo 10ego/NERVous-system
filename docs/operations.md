@@ -51,9 +51,11 @@ NERVous does not automatically migrate or delete old repository-local `.pi/` sta
 
 `lion/runs.json` is the only lifecycle and identity authority. A progress envelope is visible only when its full namespace/run/incarnation matches an active canonical run. Closed envelopes represent an interrupted terminal fold and remain retryable; terminal canonical records ignore post-commit cleanup orphans. Malformed progress files produce bounded warnings/quarantine and never trigger canonical reset. Cleanup is classification-based: active and unclassifiable files are never removed merely because they are old or storage pressure exists. Run `npm run benchmark:lion-progress` in a source checkout to verify the zero-canonical-I/O flush gate.
 
-## Suite enablement, drain, risk gates, and model defaults
+## Invocation gating, suite enablement, drain, risk gates, and model defaults
 
-Keep NERVous installed while disabling its runtime surface with `/nervous:config enabled=false`. Pi reloads the current session with every NERVous tool, workflow command, skill, and prompt removed, except for `/nervous:config` itself. Run `enabled=true` to reload with the full suite again. The user-level setting is persistent and defaults to enabled; Pi's trusted project package settings still determine which package resources apply in that repository.
+When the suite is enabled, its extensions remain loaded but all eight model-callable NERVous tools are inactive by default. Exact raw interactive or RPC input matching `/nervous` or `/nervous <request>` activates the available component tools for one agent run. The controller snapshots the prior active tool set and restores it on agent completion or shutdown. An idle non-NERVous input also clears any stale lease left by an interrupted start, and a tool-call guard rejects NERVous calls without a lease even if another extension accidentally re-enables one.
+
+This invocation gate is separate from package enablement. Keep NERVous installed while removing its full runtime surface with `/nervous:config enabled=false`. Pi reloads the current session with every NERVous tool, workflow command, skill, and prompt removed, except for `/nervous:config` itself. Run `enabled=true` to reload the resources; model tools return to their gated, inactive-by-default state. The user-level setting is persistent and defaults to enabled; Pi's trusted project package settings still determine which package resources apply in that repository.
 
 CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized, and optionally set default models for NERVous subprocess systems:
 
