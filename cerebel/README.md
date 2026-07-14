@@ -39,6 +39,16 @@ Package surfaces:
 | `list` | List waves |
 | `summary` | Summarize orchestration state |
 
+## Configuring parallel workers
+
+Open `/nervous:config` and set **CEREBEL parallel workers**, or set it directly:
+
+```text
+/nervous:config max_parallel=6
+```
+
+The persisted value accepts integers from 1 through 10 and becomes the default for new waves when `plan_wave` omits `max_parallel`. It defaults to 3 when unset. An explicit `plan_wave max_parallel=...` still overrides the configured default, and an explicit `run_wave max_parallel=...` remains a one-run override for the selected wave.
+
 Example flow:
 
 ```text

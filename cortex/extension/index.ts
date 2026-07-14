@@ -18,7 +18,20 @@ import * as path from "node:path";
 import { getSelectListTheme, getSettingsListTheme, type ExtensionAPI, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Container, fuzzyFilter, getKeybindings, Input, Key, matchesKey, type SelectItem, SelectList, type SettingItem, SettingsList, Text } from "@earendil-works/pi-tui";
 import { getNervousModel, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
-import { applyNervousEnabledPatch, applyNervousModelPatch, loadNervousConfig, readUserNervousConfig, resolveNervousEnabled, writeUserNervousConfig, type NervousConfigResolution } from "./enablement.ts";
+import {
+	applyNervousCerebelMaxParallelPatch,
+	applyNervousEnabledPatch,
+	applyNervousModelPatch,
+	DEFAULT_CEREBEL_MAX_PARALLEL,
+	loadNervousConfig,
+	MAX_CEREBEL_MAX_PARALLEL,
+	MIN_CEREBEL_MAX_PARALLEL,
+	readUserNervousConfig,
+	resolveNervousCerebelMaxParallel,
+	resolveNervousEnabled,
+	writeUserNervousConfig,
+	type NervousConfigResolution,
+} from "./enablement.ts";
 import { CortexStore } from "./backend.ts";
 import {
 	type CortexAction,
@@ -533,6 +546,7 @@ export function registerNervousConfigCommand(pi: ExtensionAPI, options: NervousC
 					let next = readUserNervousConfig();
 					if (parsed.enabled !== undefined) next = applyNervousEnabledPatch(next, parsed.enabled);
 					if (parsed.hasModelChanges) next = applyNervousModelPatch(next, parsed.modelPatch);
+					if (parsed.cerebelMaxParallel !== undefined) next = applyNervousCerebelMaxParallelPatch(next, parsed.cerebelMaxParallel);
 					writeUserNervousConfig(next);
 				}
 				const nervousConfig = loadNervousConfig({ cwd: ctx.cwd, isProjectTrusted: () => ctx.isProjectTrusted?.() ?? false });
@@ -574,6 +588,10 @@ const DRAIN_MODE_VALUES = ["off", "on_explicit_nervous", "always"] as const;
 const RISK_GATE_MODE_VALUES = ["strict", "auto_deliberate", "user_accepted", "disabled"] as const;
 const DRAIN_POLICY_VALUES = ["default", "conservative", "aggressive"] as const;
 const MODEL_UNSET = "(unset — pi default)";
+const CEREBEL_MAX_PARALLEL_VALUES = Array.from(
+	{ length: MAX_CEREBEL_MAX_PARALLEL - MIN_CEREBEL_MAX_PARALLEL + 1 },
+	(_, index) => String(MIN_CEREBEL_MAX_PARALLEL + index),
+);
 const MODEL_SETTING_IDS = ["lion.default", "lion.implementationDefault", "lion.reviewDefault", "magi.councillorDefault", "magi.synthesisDefault"] as const satisfies readonly NervousModelKey[];
 
 const DRAIN_MODE_DESCRIPTIONS: Record<DrainMode, string> = {
@@ -662,6 +680,7 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 	...DRAIN_MODE_VALUES.map((value) => ({ value: `drain=${value}`, label: `drain=${value} — ${DRAIN_MODE_DESCRIPTIONS[value]}` })),
 	...RISK_GATE_MODE_VALUES.map((value) => ({ value: `risk=${value}`, label: `risk=${value} — ${RISK_GATE_MODE_DESCRIPTIONS[value]}` })),
 	...DRAIN_POLICY_VALUES.map((value) => ({ value: `policy=${value}`, label: `policy=${value} — ${DRAIN_POLICY_DESCRIPTIONS[value]}` })),
+	...CEREBEL_MAX_PARALLEL_VALUES.map((value) => ({ value: `max_parallel=${value}`, label: `max_parallel=${value} — default concurrent LION workers for new CEREBEL waves` })),
 	{ value: "lion_model=", label: `lion_model=<model> — ${MODEL_DESCRIPTIONS["lion.default"]}` },
 	{ value: "lion_implementation_model=", label: `lion_implementation_model=<model> — ${MODEL_DESCRIPTIONS["lion.implementationDefault"]}` },
 	{ value: "lion_review_model=", label: `lion_review_model=<model> — ${MODEL_DESCRIPTIONS["lion.reviewDefault"]}` },
@@ -678,6 +697,7 @@ type ConfigMenuResult = { kind: "closed" } | { kind: "fallback" };
 
 interface ConfigDraft {
 	enabled: boolean;
+	cerebel_max_parallel: number;
 	drain_mode: DrainMode;
 	risk_gate_mode: RiskGateMode;
 	default_drain_policy: DrainPolicyName;
@@ -699,6 +719,7 @@ async function showNervousConfigMenu(
 ): Promise<ConfigMenuResult> {
 	const current: ConfigDraft = {
 		enabled: resolveNervousEnabled(modelConfig).enabled,
+		cerebel_max_parallel: resolveNervousCerebelMaxParallel(modelConfig).maxParallel,
 		drain_mode: config.drain_mode,
 		risk_gate_mode: config.risk_gate_mode,
 		default_drain_policy: config.default_drain_policy,
@@ -719,6 +740,7 @@ async function showNervousConfigMenu(
 
 			const updateSettingsList = () => {
 				settingsList.updateValue("enabled", configValueForId(current, "enabled"));
+				settingsList.updateValue("cerebel_max_parallel", String(current.cerebel_max_parallel));
 				settingsList.updateValue("drain_mode", current.drain_mode);
 				settingsList.updateValue("risk_gate_mode", current.risk_gate_mode);
 				settingsList.updateValue("default_drain_policy", current.default_drain_policy);
@@ -728,6 +750,7 @@ async function showNervousConfigMenu(
 
 			const revert = (previous: ConfigDraft, id: string) => {
 				current.enabled = previous.enabled;
+				current.cerebel_max_parallel = previous.cerebel_max_parallel;
 				current.drain_mode = previous.drain_mode;
 				current.risk_gate_mode = previous.risk_gate_mode;
 				current.default_drain_policy = previous.default_drain_policy;
@@ -775,6 +798,20 @@ async function showNervousConfigMenu(
 							tui.requestRender();
 						}
 					})().catch((e) => ctx.ui.notify(`nervous:config failed: ${e instanceof Error ? e.message : String(e)}`, "error"));
+					return;
+				}
+				if (id === "cerebel_max_parallel" && CEREBEL_MAX_PARALLEL_VALUES.includes(newValue)) {
+					try {
+						const maxParallel = Number(newValue);
+						writeUserNervousConfig(applyNervousCerebelMaxParallelPatch(readUserNervousConfig(), maxParallel));
+						current.cerebel_max_parallel = maxParallel;
+						updateSettingsList();
+						ctx.ui.notify(`NERVous config updated: max_parallel=${maxParallel}`, "info");
+					} catch (e) {
+						revert(previous, id);
+						ctx.ui.notify(`nervous:config failed: ${e instanceof Error ? e.message : String(e)}`, "error");
+					}
+					tui.requestRender();
 					return;
 				}
 				if (isModelSettingId(id)) {
@@ -901,6 +938,13 @@ function configMenuItems(current: ConfigDraft, availableModels: string[], canCha
 			values: [...DRAIN_MODE_VALUES],
 		},
 		{
+			id: "cerebel_max_parallel",
+			label: "CEREBEL parallel workers",
+			description: `Default concurrent LION workers for new CEREBEL waves. Explicit plan_wave/run_wave max_parallel values still override it. Range: ${MIN_CEREBEL_MAX_PARALLEL}-${MAX_CEREBEL_MAX_PARALLEL}.`,
+			currentValue: String(current.cerebel_max_parallel),
+			values: CEREBEL_MAX_PARALLEL_VALUES,
+		},
+		{
 			id: "risk_gate_mode",
 			label: "Risk gate",
 			description: `How risky work is authorized. Default: auto_deliberate. Hard-stop work still needs recorded MAGI/AMYGDALA evidence. ${formatInlineDescriptions(RISK_GATE_MODE_VALUES, RISK_GATE_MODE_DESCRIPTIONS)}`,
@@ -926,6 +970,7 @@ function configMenuItems(current: ConfigDraft, availableModels: string[], canCha
 
 function configValueForId(config: ConfigDraft, id: string): string {
 	if (id === "enabled") return String(config.enabled);
+	if (id === "cerebel_max_parallel") return String(config.cerebel_max_parallel);
 	if (id === "drain_mode") return config.drain_mode;
 	if (id === "risk_gate_mode") return config.risk_gate_mode;
 	if (id === "default_drain_policy") return config.default_drain_policy;
@@ -959,7 +1004,7 @@ function buildModelSubmenu(available: string[], currentSpec: string | undefined)
 			const filtered = query.trim() ? fuzzyFilter(allItems, query, (i) => i.label) : allItems;
 			list = makeList(filtered);
 		};
-		const navKeys = ["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"];
+		const navKeys = ["tui.select.up", "tui.select.down", "tui.select.confirm", "tui.select.cancel"] as const;
 		return {
 			render(width: number): string[] {
 				return [...search.render(width), ...list.render(width)];
@@ -1088,6 +1133,7 @@ interface ParsedNervousConfigArgs {
 	patch: ConfigInput;
 	modelPatch: Partial<Record<NervousModelKey, string | null>>;
 	enabled?: boolean;
+	cerebelMaxParallel?: number;
 	hasCortexChanges: boolean;
 	hasModelChanges: boolean;
 	hasEnablementChange: boolean;
@@ -1100,6 +1146,7 @@ function parseNervousConfigArgs(args: string): ParsedNervousConfigArgs {
 	const patch: ConfigInput = {};
 	const modelPatch: Partial<Record<NervousModelKey, string | null>> = {};
 	let enabled: boolean | undefined;
+	let cerebelMaxParallel: number | undefined;
 	const errors: string[] = [];
 	const tokens = splitCommandArgs(args).filter((token) => !["show", "get", "current"].includes(token.toLowerCase()));
 	const takeValue = (i: number, key: string): { value?: string; next: number } => {
@@ -1135,6 +1182,14 @@ function parseNervousConfigArgs(args: string): ParsedNervousConfigArgs {
 			if (["true", "on", "yes", "1"].includes(normalized ?? "")) enabled = true;
 			else if (["false", "off", "no", "0"].includes(normalized ?? "")) enabled = false;
 			else if (value !== undefined) errors.push(`invalid enabled "${value}"; use true or false`);
+			continue;
+		}
+		if (["max_parallel", "max-parallel", "cerebel_max_parallel", "cerebel-max-parallel", "cerebel.maxparallel"].includes(key)) {
+			const { value, next } = takeValue(i, key);
+			i = next;
+			const numeric = Number(value);
+			if (value !== undefined && Number.isInteger(numeric) && numeric >= MIN_CEREBEL_MAX_PARALLEL && numeric <= MAX_CEREBEL_MAX_PARALLEL) cerebelMaxParallel = numeric;
+			else if (value !== undefined) errors.push(`invalid max_parallel "${value}"; use an integer from ${MIN_CEREBEL_MAX_PARALLEL} through ${MAX_CEREBEL_MAX_PARALLEL}`);
 			continue;
 		}
 		if (["drain", "drain_mode"].includes(key)) {
@@ -1179,8 +1234,8 @@ function parseNervousConfigArgs(args: string): ParsedNervousConfigArgs {
 	const hasCortexChanges = Boolean(patch.drain_mode || patch.default_drain_policy || patch.risk_gate_mode || patch.risk_gate_evidence);
 	const hasModelChanges = Object.keys(modelPatch).length > 0;
 	const hasEnablementChange = enabled !== undefined;
-	const hasNervousChanges = hasEnablementChange || hasModelChanges;
-	return { patch, modelPatch, enabled, hasCortexChanges, hasModelChanges, hasEnablementChange, hasNervousChanges, hasChanges: hasCortexChanges || hasNervousChanges, errors };
+	const hasNervousChanges = hasEnablementChange || hasModelChanges || cerebelMaxParallel !== undefined;
+	return { patch, modelPatch, enabled, cerebelMaxParallel, hasCortexChanges, hasModelChanges, hasEnablementChange, hasNervousChanges, hasChanges: hasCortexChanges || hasNervousChanges, errors };
 }
 
 export function summarizeConfig(config: CortexConfig, changed: boolean, modelConfig?: NervousConfigResolution): string {
@@ -1196,8 +1251,10 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 	];
 	if (config.risk_gate_evidence) lines.push(`| \`risk_gate_evidence\` | ${config.risk_gate_evidence} | Audit evidence for disabled risk gate mode. |`);
 	const enablement = modelConfig ? resolveNervousEnabled(modelConfig) : { enabled: true, source: "default" as const };
+	const cerebelMaxParallel = modelConfig ? resolveNervousCerebelMaxParallel(modelConfig) : { maxParallel: DEFAULT_CEREBEL_MAX_PARALLEL, source: "default" as const };
 	lines.push("", "## NERVous suite", "| Setting | Effective | Source | Meaning |", "|---|---|---|---|");
 	lines.push(`| \`enabled\` | \`${enablement.enabled}\` | ${enablement.source} | Load NERVous tools, commands, skills, and prompts. Changes reload the session. |`);
+	lines.push(`| \`cerebel.maxParallel\` | \`${cerebelMaxParallel.maxParallel}\` | ${cerebelMaxParallel.source} | Default concurrent LION workers for new CEREBEL waves. |`);
 	lines.push("", "## Current model defaults", "| Model key | User setting | Effective | Source | Used for |", "|---|---|---|---|---|");
 	for (const key of MODEL_SETTING_IDS) {
 		const user = modelConfig ? getNervousModel(modelConfig.user, key) : undefined;
@@ -1217,6 +1274,7 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 		"- Root NERVous System package only: turn the installed suite off with `/nervous:config enabled=false` (reloads this session; the config command stays available)",
 		"- Root NERVous System package only: turn the suite back on with `/nervous:config enabled=true`",
 		"- Set CORTEX defaults: `/nervous:config drain=always risk=auto_deliberate policy=default`",
+		"- Set CEREBEL concurrency: `/nervous:config max_parallel=6`",
 		"- Set model defaults: `/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong magi_model=provider/model`",
 		"- Clear a model default: `/nervous:config lion_review_model=unset`",
 		"",
@@ -1238,6 +1296,10 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 		"### Drain policy",
 		"Aliases: `policy`, `default_drain_policy`",
 		...formatOptionTable(DRAIN_POLICY_VALUES, DRAIN_POLICY_DESCRIPTIONS),
+		"",
+		"### CEREBEL parallel workers",
+		"Aliases: `max_parallel`, `cerebel_max_parallel`",
+		`Integer from ${MIN_CEREBEL_MAX_PARALLEL} through ${MAX_CEREBEL_MAX_PARALLEL}. Default: 3. Used when a new CEREBEL wave omits max_parallel; explicit plan_wave and run_wave values still override it.`,
 		"",
 		"### Model defaults",
 		"Aliases: `lion_model`, `lion_implementation_model`, `lion_review_model`, `magi_model`, `magi_synthesis_model` (also exact keys like `model.lion.review`).",

@@ -112,6 +112,7 @@ describe("cortex extension factory", () => {
 		assert.match(output, /## Current CORTEX defaults/);
 		assert.match(output, /## NERVous suite/);
 		assert.match(output, /\| `enabled` \| `true` \| default \|/);
+		assert.match(output, /\| `cerebel\.maxParallel` \| `3` \| default \|/);
 		assert.match(output, /\| `risk_gate_mode` \| `auto_deliberate` \|/);
 		assert.match(output, /## Usage/);
 		assert.match(output, /## Options/);
@@ -144,6 +145,7 @@ describe("cortex extension factory", () => {
 		assert.match(modelCompletions[0]?.label ?? "", /LION/);
 		const reviewCompletions = complete("lion_review_model=") ?? [];
 		assert.ok(reviewCompletions.some((item) => item.value === "lion_review_model="));
+		assert.deepEqual((complete("max_parallel=") ?? []).map((item) => item.value), Array.from({ length: 10 }, (_, index) => `max_parallel=${index + 1}`));
 	});
 
 	it("prints markdown config with the auto_deliberate default outside TUI", async () => {
@@ -193,6 +195,57 @@ describe("cortex extension factory", () => {
 		assert.doesNotMatch(rendered, /Cancel/);
 		const output = String(captured.messages[0]?.content ?? "");
 		assert.match(output, /\| `drain_mode` \| `always` \|/);
+	});
+
+	it("updates CEREBEL parallelism from the TUI menu", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+
+		await withTempCortex(async (dir) => {
+			await command.handler(
+				"",
+				commandCtx(dir, {
+					mode: "tui",
+					ui: {
+						notify() {},
+						custom: async (factoryFn: any) => {
+							const component = factoryFn({ requestRender() {} }, testTheme, {}, () => undefined);
+							for (const ch of "parallel") component.handleInput(ch);
+							component.handleInput(" "); // CEREBEL max_parallel: 3 -> 4.
+							await settleUiWork();
+							return undefined;
+						},
+					},
+				}),
+			);
+			await command.handler("show", commandCtx(dir));
+			const raw = JSON.parse(await fs.readFile(path.join(dir, "agent", "nervous.json"), "utf8"));
+			assert.equal(raw.cerebel.maxParallel, 4);
+		});
+
+		assert.match(String(captured.messages[0]?.content ?? ""), /\| `cerebel\.maxParallel` \| `4` \| user \|/);
+	});
+
+	it("sets and validates CEREBEL parallelism from command arguments", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const command = nervousConfigCommand(captured);
+		const notifications: string[] = [];
+
+		await withTempCortex(async (dir) => {
+			await command.handler("max_parallel=6", commandCtx(dir));
+			for (const invalid of ["0", "11", "2.5", "many"]) {
+				await command.handler(`max_parallel=${invalid}`, commandCtx(dir, {
+					ui: { notify(message: string) { notifications.push(message); } },
+				}));
+			}
+			const raw = JSON.parse(await fs.readFile(path.join(dir, "agent", "nervous.json"), "utf8"));
+			assert.equal(raw.cerebel.maxParallel, 6);
+		});
+
+		assert.match(String(captured.messages[0]?.content ?? ""), /\| `cerebel\.maxParallel` \| `6` \| user \|/);
+		assert.equal(notifications.filter((message) => message.includes("integer from 1 through 10")).length, 4);
 	});
 
 	it("rejects suite enablement outside the root control plane", async () => {

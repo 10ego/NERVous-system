@@ -2,6 +2,7 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { CerebelStore } from "./backend.ts";
+import { resolveConfiguredCerebelMaxParallel } from "./config.ts";
 import { CerebelError, CerebelToolParams, type Assignment, type AssignmentStatus, type CerebelToolInput, type CerebelSummary, type Wave, type WaveStatus } from "./schema.ts";
 import { isTerminalAssignmentStatus } from "./store.ts";
 import { renderCerebelCall, renderCerebelResult, RUN_WAVE_DASHBOARD_HINT, summarizeList, summarizeSummary, summarizeWave } from "./render.ts";
@@ -520,7 +521,8 @@ export default function (pi: ExtensionAPI) {
 			switch (action) {
 				case "plan_wave": {
 					return runOp(store, action, (l) => {
-						const wave = l.planWave({ goal_id: p.goal_id, tasks: p.tasks, assignments: p.assignments, context: p.context, max_parallel: p.max_parallel });
+						const maxParallel = p.max_parallel ?? resolveConfiguredCerebelMaxParallel();
+						const wave = l.planWave({ goal_id: p.goal_id, tasks: p.tasks, assignments: p.assignments, context: p.context, max_parallel: maxParallel });
 						return ok(action, `Planned ${wave.id}: ${wave.assignments.length} assignment(s). Next: run LION for ready assignments, then cerebel dispatch/record.`, { wave });
 					});
 				}

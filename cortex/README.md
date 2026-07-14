@@ -132,6 +132,7 @@ Drain mode is togglable with persistent CORTEX config. `/nervous:config` also ma
 /nervous:config enabled=true
 /nervous:config drain=on_explicit_nervous risk=auto_deliberate policy=default
 /nervous:config drain=always risk=strict policy=conservative
+/nervous:config max_parallel=6
 /nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"
 /nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong magi_model=provider/balanced magi_synthesis_model=provider/strong:high
 /nervous:config lion_review_model=unset
@@ -140,7 +141,7 @@ cortex get_config
 cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="auto_deliberate"
 ```
 
-In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, drain policy, and model defaults. When CORTEX is loaded through the root NERVous System package, the menu also includes suite enablement: `enabled=false` unloads component tools, workflow commands, skills, and prompts while retaining `/nervous:config` plus an inert `/nervous` command that reports the disabled configuration; `enabled=true` reloads the complete suite. Standalone CORTEX keeps its own configuration surface and rejects suite toggles. When pi's model registry is available, model rows open a searchable picker. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
+In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, CEREBEL parallel workers, risk gate, drain policy, and model defaults. When CORTEX is loaded through the root NERVous System package, the menu also includes suite enablement: `enabled=false` unloads component tools, workflow commands, skills, and prompts while retaining `/nervous:config` plus an inert `/nervous` command that reports the disabled configuration; `enabled=true` reloads the complete suite. Standalone CORTEX keeps its own configuration surface and rejects suite toggles. When pi's model registry is available, model rows open a searchable picker. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
 
 For per-invocation settings, include config tokens in `/nervous` arguments; the dispatched workflow applies them first. In the root package, those tokens configure that invocation while the session branch itself remains NERVous-activated for later turns:
 
