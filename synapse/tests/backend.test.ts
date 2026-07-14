@@ -172,13 +172,14 @@ describe("SynapseStore — retention applied on save", () => {
 		);
 		await raw.mutate((log) => {
 			log.post({ message: "old" });
-			log.notes[0]!.created_at = new Date(Date.now() - 1000).toISOString();
+			log.notes[0]!.created_at = new Date(Date.now() - 120_000).toISOString();
 			log.post({ message: "new" });
 		});
-		// Then a store WITH retention prunes the stale note on demand.
+		// Then a store WITH retention prunes the stale note on demand. Keep a wide
+		// timing margin so parallel suite load cannot age the fresh note out too.
 		const store = new SynapseStore(
 			new FileBackend({ synapsePath: path.join(dir, "synapse.json"), dir }),
-			{ ttl_ms: 10, max_notes: 0 },
+			{ ttl_ms: 60_000, max_notes: 0 },
 		);
 		const { pruned } = await store.pruneOnly();
 		assert.equal(pruned, 1);
