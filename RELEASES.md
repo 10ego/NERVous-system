@@ -8,7 +8,7 @@ The 1.x compatibility commitment covers documented tool actions, extension entry
 
 ## Automated releases
 
-[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version changes, `CHANGELOG.md`, and release manifest. Its root Node strategy is the sole version writer: the generated PR normalizes `package.json`, both root `package-lock.json` version fields, and `.release-please-manifest.json`. The generated PR title—and therefore its squash commit—uses `release(main): release <version>`. Merging that release PR creates a GitHub release and, after the test suite passes, publishes `nervous-system` to npm with provenance.
+[Release Please](https://github.com/googleapis/release-please) watches conventional commits merged into `main`. It opens or updates a release PR containing the calculated version changes, `CHANGELOG.md`, and release manifest, then enables squash auto-merge for that PR. Required checks must pass before GitHub merges it. Its root Node strategy is the sole version writer: the generated PR normalizes `package.json`, both root `package-lock.json` version fields, and `.release-please-manifest.json`. The generated PR title—and therefore its squash commit—uses `release(main): release <version>`. The merge creates a GitHub release and, after the test suite passes, publishes `nervous-system` to npm with provenance.
 
 Pull-request CI verifies those four fields remain equal. The publish job repeats that read-only check against the version emitted by Release Please, so an inconsistent release commit cannot publish; no feature PR should manually set a release version.
 
@@ -20,7 +20,7 @@ Semver is selected from the merged commit (normally the squash-merged PR title):
 
 ### Merge policy
 
-All changes to `main` must go through a pull request and use squash merging. The required `Validate PR title` check enforces the conventional title that becomes the squash commit, and the required `Test` check runs the full test suite. When merging an automated release PR, remove GitHub's redundant `Co-authored-by: nerv-ops[bot]` trailer so the commit retains its single bot attribution. Direct pushes, force pushes, branch deletion, and bypassing these requirements as an administrator are disabled.
+All changes to `main` must go through a pull request and use squash merging. The required `Validate PR title` check enforces the conventional title that becomes the squash commit, and the required `Test` check runs the full test suite. Direct pushes, force pushes, branch deletion, and bypassing these requirements as an administrator are disabled.
 
 ### One-time repository setup
 
@@ -30,8 +30,9 @@ All changes to `main` must go through a pull request and use squash merging. The
    - workflow filename: `release-please.yml`
    - environment: leave blank
 2. Install the private [`nerv-ops`](https://github.com/settings/apps/nerv-ops) GitHub App on this repository with **Contents: read and write** and **Pull requests: read and write** permissions.
-3. Add the App ID as the repository Actions variable `NERV_OPS_APP_ID`, and add a generated PEM private key as the repository Actions secret `NERV_OPS_PRIVATE_KEY`. Release Please exchanges these credentials for a short-lived, repository-scoped installation token; no personal access token is stored.
-4. Use conventional titles for squash-merged PRs so Release Please can calculate the intended version.
+3. Under the repository's **Settings → General → Pull Requests**, enable **Allow auto-merge** and keep only squash merging enabled.
+4. Add the App ID as the repository Actions variable `NERV_OPS_APP_ID`, and add a generated PEM private key as the repository Actions secret `NERV_OPS_PRIVATE_KEY`. Release Please exchanges these credentials for a short-lived, repository-scoped installation token; no personal access token is stored.
+5. Use conventional titles for squash-merged PRs so Release Please can calculate the intended version.
 
 No npm token is stored in GitHub. The publish job uses npm trusted publishing through GitHub's OIDC identity and only runs when Release Please creates a release.
 
