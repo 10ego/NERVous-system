@@ -23,13 +23,13 @@ NERVous System is a version-aligned collection of pi packages that share durable
 ## Execution flow
 
 ```text
-User → CORTEX →(if hard)→ MAGI → CORTEX → AXON → CEREBEL → GANGLION{LION…}
-                                              │            ↕ SYNAPSE
-                                              └─→ AMYGDALA (on risk)
+User → CORTEX frame once → analyze →(if hard)→ MAGI → CORTEX plan → AXON → CEREBEL → GANGLION{LION…}
+                                                               │            ↕ SYNAPSE
+                                                               └─→ AMYGDALA (on risk)
 LIONs complete → update AXON → CEREBEL assigns more → … → CORTEX checks → MAGI final review
 ```
 
-**Key principle:** AXON is durable state; SYNAPSE is transient coordination. Interrupted work resumes from AXON without the original context window.
+**Key principle:** CORTEX frames an abstract request once before durable analysis and reuses that brief on resume or replan; AXON is durable task state; SYNAPSE is transient coordination. Interrupted work resumes without repeating discovery or requiring the original context window.
 
 LION keeps lifecycle authority singular: canonical `runs.json` owns run existence, immutable incarnation, active/terminal status, control, and final output. Newly executed exact incarnations may have an adjacent bounded latest-progress sidecar, but it is only an active-run read overlay and local open/closed stale-writer fence. Progress flushes and terminal folds share the canonical namespace lock; terminal canonical state always wins.
 

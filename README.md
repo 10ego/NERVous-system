@@ -22,6 +22,7 @@ NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL,
 
 ## Highlights
 
+- One-time task framing turns abstract requests into concrete goals before deliberation
 - Durable goals and task state that survive compaction, restarts, and interruptions
 - Deliberation, risk triage, and explicit verification for difficult work
 - Parallel coding subagents with orchestration, capacity allocation, and live progress

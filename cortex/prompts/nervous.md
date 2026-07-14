@@ -12,14 +12,15 @@ Default mode: drain the active NERVous context. Keep progressing until every wor
 
 - Start by checking CORTEX config and applying invocation config tokens if supplied; users can also persist defaults with `/nervous:config` before invoking this prompt.
 - Check CORTEX for existing incomplete goals before creating new unrelated goals.
-- If this prompt introduces new work, capture it in CORTEX, then include it in the same drain loop.
+- If this prompt introduces new work, perform one bounded task-framing pass before `cortex analyze`: inspect relevant project context when useful; make the objective, scope, non-goals, assumptions, success criteria, candidate options, and any MAGI decision concrete. Ask the user only about ambiguity that blocks a responsible goal; record non-blocking uncertainty as assumptions or open questions. Persist the result in `cortex analyze.framing`, then include the goal in the same drain loop.
+- Framing happens once for new work. Do not repeat it when resuming, replanning, retrying, or revisiting an existing goal; use the durable framing already stored on the goal.
 - Check CORTEX config/risk_gate_mode, then drain/list goals; for each workable CORTEX goal: set/resume it, inspect linked AXON tasks, execute ready/retry/revisit work, verify against success criteria, and complete it when verified.
 - Persist durable subtasks/status in AXON.
 - Use SYNAPSE only for short coordination/risk notes.
 - Use GANGLION to allocate capable LION workers, and CEREBEL to orchestrate/record worker waves.
 - Delegate narrow implementation or review work to LION when it reduces risk or context load; use `model_role="review"` for LION review/QA assignments.
 - Escalate blockers, security/data-loss/regression risk, or unsafe uncertainty to AMYGDALA unless risk_gate_mode has explicit approval evidence (`auto_deliberate`, `user_accepted`, or dangerous `disabled`).
-- Use MAGI for hard, ambiguous, risky, or architecturally significant decisions before planning; consider MAGI final review for high-impact completed goals.
+- Use MAGI for hard, ambiguous, risky, or architecturally significant decisions before planning. Before convening, ensure the framed objective, scope, success criteria, and `decision_needed` are concrete; map framing context, constraints, candidate options, and decision needed into the MAGI call. Consider MAGI final review for high-impact completed goals.
 - Record failed work with retryability; record skipped work with next_revisit_at/unblock conditions; revisit due skipped work and use `cortex reopen` when resolved so it can be replanned/completed.
 - Repeat until no workable CORTEX goals remain. Final answer: completed goals, waiting/retry/skipped/cancelled goals, and evidence.
 - Keep the answer concise: component → action/status → evidence.

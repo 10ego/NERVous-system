@@ -608,6 +608,16 @@ export class NervousDashboard implements Component {
 		this.title(lines, width, `CORTEX ${g.id}: ${g.intent.goal}`);
 		pushWrapped(lines, "Status", g.status, width, this.theme);
 		pushWrapped(lines, "Intent", g.intent.intent_summary, width, this.theme);
+		if (g.intent.framing) {
+			const framing = g.intent.framing;
+			if (framing.context.length) pushWrapped(lines, "Frame context", framing.context.join(" | "), width, this.theme);
+			if (framing.scope.length) pushWrapped(lines, "Frame scope", framing.scope.join(" | "), width, this.theme);
+			if (framing.non_goals.length) pushWrapped(lines, "Frame non-goals", framing.non_goals.join(" | "), width, this.theme);
+			if (framing.assumptions.length) pushWrapped(lines, "Frame assumptions", framing.assumptions.join(" | "), width, this.theme);
+			if (framing.open_questions.length) pushWrapped(lines, "Frame questions", framing.open_questions.join(" | "), width, this.theme);
+			if (framing.candidate_options.length) pushWrapped(lines, "Frame options", framing.candidate_options.join(" | "), width, this.theme);
+			if (framing.decision_needed) pushWrapped(lines, "Frame decision", framing.decision_needed, width, this.theme);
+		}
 		pushWrapped(lines, "Success", g.intent.success_criteria.join(" | "), width, this.theme);
 		pushWrapped(lines, "Risks", g.intent.risks.map((r) => `${r.severity}:${r.description}`).join(" | "), width, this.theme);
 		pushWrapped(lines, "MAGI", g.intent.needs_magi || g.plan?.magi_used ? `needed:${g.intent.needs_magi} used:${Boolean(g.plan?.magi_used)} ${g.plan?.magi_output_ref ?? ""}` : "not used", width, this.theme);
