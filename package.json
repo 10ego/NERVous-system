@@ -62,7 +62,7 @@
     ],
     "prompts": [
       "magi/prompts",
-      "cortex/prompts",
+      "cortex/prompts/cortex.md",
       "lion/prompts",
       "cerebel/prompts",
       "ganglion/prompts",

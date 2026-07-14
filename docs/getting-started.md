@@ -10,7 +10,7 @@ Install the full NERVous System pi package from npm:
 pi install npm:nervous-system
 ```
 
-This installs the root pi package and enables all NERVous extensions, skills, and prompt templates: MAGI, AXON, SYNAPSE, CORTEX, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard.
+This installs and loads the root pi package resources: MAGI, AXON, SYNAPSE, CORTEX, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard. The component tools remain inactive and absent from the model's ordinary tool prompt until `/nervous` explicitly activates them.
 
 ## Turn the suite on or off
 
@@ -21,7 +21,7 @@ Keep the package installed and use the persistent control command:
 /nervous:config enabled=true   # reload it with the suite enabled again
 ```
 
-When disabled, NERVous removes its tools, workflow commands, skills, and prompt templates. It leaves only `/nervous:config` available so you can turn it back on. The user-level setting is stored in `~/.pi/agent/nervous.json`; Pi's existing trusted project package settings continue to control which package resources are available per repository.
+When disabled, NERVous removes its component tools, workflow commands, skills, and prompt templates. The always-loaded controller leaves `/nervous:config` available so you can turn the suite back on; `/nervous` remains as an inert entry point that reports that no component tools are enabled. The user-level setting is stored in `~/.pi/agent/nervous.json`; Pi's existing trusted project package settings continue to control which package resources are available per repository.
 
 `pi config` remains an alternative for enabling or disabling individual package resources across any installed pi package.
 
@@ -33,11 +33,17 @@ pi list
 
 ## Start a workflow
 
-NERVous components are opt-in. When loaded, their prompt guidance tells the agent to use or mention them only for explicit NERVous, durable-state, orchestration, delegation, coordination, or risk-triage requests. The CORTEX package ships a `/nervous` prompt template for explicit activation:
+NERVous components are runtime-gated. In a fresh session chain, their tools, schemas, snippets, and tool-specific guidelines are removed from Pi's active tool set. The root controller owns an exact interactive/RPC `/nervous` extension command:
 
 ```text
 /nervous implement this feature with durable planning and worker delegation
 ```
+
+If another run is already streaming, the command waits for it to become idle before enabling any NERVous capability or dispatching the bundled workflow prompt. Activation adds only the NERVous tools that were present in the operator's initial active-tool selection; excluded components remain blocked.
+
+Activation is persisted on the current session branch. Later prompts in that chain continue to use the coordinated NERVous workflow, including after resume or compaction. A new session—or tree navigation to a branch before the activation marker—starts with NERVous inactive. Merely mentioning `/nervous`, requesting orchestration in prose, or injecting `/nervous` from another extension does not activate the suite.
+
+A tool-call guard rejects NERVous calls outside an activated chain and rejects configured component exclusions inside one. The controller mutates only NERVous tools when entering or leaving a branch, so unrelated tool changes and lease-time revocations are not overwritten.
 
 For a read-only state browser, run:
 

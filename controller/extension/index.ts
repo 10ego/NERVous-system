@@ -2,16 +2,18 @@
  * NERVous System's always-loaded control plane.
  *
  * The root manifest keeps this extension enabled even while the rest of the
- * package is disabled. It owns `/nervous:config`, which safely restricts or
- * restores Pi's normal package-resource selection and then reloads Pi.
+ * package is disabled. It owns `/nervous:config` for package-resource selection
+ * and `/nervous` for branch-persistent, coordinated tool activation.
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { markNervousRootControlPlane, registerNervousConfigCommand } from "../../cortex/extension/index.ts";
+import { installNervousActivationGate } from "./activation-gate.ts";
 import { setRootPackageEnabled } from "./package-toggle.ts";
 
 export default function nervousControlPlane(pi: ExtensionAPI): void {
 	const releaseRootControlPlane = markNervousRootControlPlane(pi);
+	installNervousActivationGate(pi);
 	// Pi keeps its event bus across resource reloads, so release this generation's
 	// ownership before the next extension set is loaded.
 	pi.on("session_shutdown", releaseRootControlPlane);

@@ -2,7 +2,7 @@
 
 A durable multi-agent orchestration and coding-agent coordination framework for [pi](https://pi.dev). NERVous System helps coding agents **plan, delegate, coordinate, execute, recover from interruptions, and review** work continuously.
 
-**You can just give it a task description and walk away.**
+**Invoke `/nervous`, give it a task description, and walk away.**
 
 Find it in the [pi package directory](https://pi.dev/packages) by searching for **multi-agent orchestration**, **coding-agent coordination**, **subagent delegation**, **durable task planning**, **workflow recovery**, or **risk triage**.
 
@@ -18,7 +18,7 @@ Then start a durable workflow:
 /nervous implement this feature with durable planning and worker delegation
 ```
 
-NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard. Keep it installed but turn the suite off or back on with `/nervous:config enabled=false` or `/nervous:config enabled=true`; the command reloads the current session and remains available while the suite is off.
+NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard. Its model tools are inactive in a fresh session chain. An exact `/nervous [task]` command activates the operator-permitted component set after any current run becomes idle, then keeps the coordinated workflow available for later turns on that branch. Keep the package installed but turn its runtime resources off or back on with `/nervous:config enabled=false` or `/nervous:config enabled=true`.
 
 ## Highlights
 

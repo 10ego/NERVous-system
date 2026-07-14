@@ -76,11 +76,12 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `
 - **`/cortex:resume`** — current goal + a "what's next" hint.
 - **`/nervous:config`** — open a TUI menu or show/set persistent drain/risk defaults and shared NERVous model defaults. When CORTEX is loaded through the root NERVous System package, it also controls suite enablement: `enabled=false` reloads with the suite disabled, while the config command remains so `enabled=true` can turn it back on.
 
-### Skill + prompt template
+### Skill and workflow entry points
 
 - `/skill:cortex` — force-load the workflow skill.
 - **`/cortex <request>`** — run the full CORTEX workflow end-to-end.
-- **`/nervous [drain=...] [risk=...] [policy=...] <request>`** — run the drain workflow and optionally ask the agent to apply invocation drain/risk config first.
+- **Root `nervous-system` package:** `/nervous [drain=...] [risk=...] [policy=...] <request>` is an extension command. It waits for any current run to become idle, activates the operator-permitted NERVous tool subset, records activation on the current session branch, and dispatches the bundled drain workflow. Descendant turns and resumed sessions on that branch remain activated.
+- **Standalone `@nervous-system/cortex` package:** `/nervous ...` remains a prompt template. The standalone package does not load the root activation controller or impose root-suite tool gating.
 
 ---
 
@@ -139,9 +140,9 @@ cortex get_config
 cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="auto_deliberate"
 ```
 
-In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, drain policy, and model defaults. When CORTEX is loaded through the root NERVous System package, the menu also includes suite enablement: `enabled=false` unloads NERVous tools, workflow commands, skills, and prompts while retaining `/nervous:config`; `enabled=true` reloads the complete suite. Standalone CORTEX keeps its own configuration surface and rejects suite toggles. When pi's model registry is available, model rows open a searchable picker. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
+In TUI mode, empty `/nervous:config` opens a settings-style menu for drain mode, risk gate, drain policy, and model defaults. When CORTEX is loaded through the root NERVous System package, the menu also includes suite enablement: `enabled=false` unloads component tools, workflow commands, skills, and prompts while retaining `/nervous:config` plus an inert `/nervous` command that reports the disabled configuration; `enabled=true` reloads the complete suite. Standalone CORTEX keeps its own configuration surface and rejects suite toggles. When pi's model registry is available, model rows open a searchable picker. Selected values apply immediately; Esc closes the menu. Use `/nervous:config show` for markdown output. Outside TUI, empty `/nervous:config` falls back to markdown.
 
-For one-off prompt invocation, include config tokens in `/nervous` arguments; the prompt instructs the agent to apply them first:
+For per-invocation settings, include config tokens in `/nervous` arguments; the dispatched workflow applies them first. In the root package, those tokens configure that invocation while the session branch itself remains NERVous-activated for later turns:
 
 ```text
 /nervous risk=user_accepted drain=always implement the migration
