@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/10ego/NERVous-system/compare/v1.5.0...v1.6.0) (2026-07-15)
+
+
+### Features
+
+* **cortex:** add one-time task framing ([#44](https://github.com/10ego/NERVous-system/issues/44)) ([74b4dfa](https://github.com/10ego/NERVous-system/commit/74b4dfaa3b27dfcd3d9feede13c741efff5942d2))
+
 ## [1.5.0](https://github.com/10ego/NERVous-system/compare/v1.4.0...v1.5.0) (2026-07-14)
 
 
