@@ -107,5 +107,5 @@ export function installNervousActivationGate(pi: ExtensionAPI): void {
 		}
 	});
 
-	installNervousTransportRecovery(pi, () => chainActive);
+	installNervousTransportRecovery(pi, () => chainActive && permittedNervousTools.size > 0);
 }

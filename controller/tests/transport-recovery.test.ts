@@ -64,6 +64,14 @@ describe("NERVous transport recovery", () => {
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "aborted", errorMessage: "WebSocket error" })), false);
 	});
 
+	it("does not reinject raw provider diagnostics into the recovery prompt", async () => {
+		const h = harness();
+		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "connection error: secret-provider-detail" })] });
+		assert.match(h.sent[0]!.message.content, /connection error/);
+		assert.doesNotMatch(h.sent[0]!.message.content, /secret-provider-detail/);
+		assert.equal(h.sent[0]!.message.details.error, "connection error");
+	});
+
 	it("does not recover inactive workflows or successful turns", async () => {
 		const h = harness(false);
 		await h.emit("agent_end", { messages: [websocketFailure] });

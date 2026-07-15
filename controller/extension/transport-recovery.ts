@@ -33,9 +33,13 @@ function unresolvedToolCallIds(messages: readonly unknown[], assistant: Assistan
 		.map((part) => part.id!);
 }
 
-function boundedError(message: AssistantFailure): string {
-	const error = message.errorMessage?.trim() || "provider transport failure";
-	return error.length > 200 ? `${error.slice(0, 199)}…` : error;
+function transportErrorLabel(message: AssistantFailure): string {
+	const error = message.errorMessage ?? "";
+	if (/websocket/i.test(error)) return "WebSocket error";
+	if (/timed? out|timeout/i.test(error)) return "transport timeout";
+	if (/connection|socket|other side closed|reset before headers/i.test(error)) return "connection error";
+	if (/network|fetch failed/i.test(error)) return "network error";
+	return "provider transport failure";
 }
 
 /**
@@ -66,18 +70,19 @@ export function installNervousTransportRecovery(pi: ExtensionAPI, isWorkflowActi
 
 		recoveryQueued = true;
 		const unresolved = unresolvedToolCallIds(event.messages, assistant);
+		const errorLabel = transportErrorLabel(assistant);
 		const replayGuard = unresolved.length
 			? " The interrupted response contained unresolved tool calls; do not assume they ran."
 			: "";
 		pi.sendMessage({
 			customType: NERVOUS_TRANSPORT_RECOVERY_MESSAGE,
 			content: [
-				`NERVous automatic recovery: the previous turn ended because of a transient transport failure (${boundedError(assistant)}).`,
+				`NERVous automatic recovery: the previous turn ended because of a transient transport failure (${errorLabel}).`,
 				`Continue the active workflow from durable state.${replayGuard}`,
 				"Before reissuing side-effecting work, inspect durable state and reuse any committed result so workers or mutations are not duplicated.",
 			].join(" "),
 			display: true,
-			details: { attempt: 1, max_attempts: 1, error: boundedError(assistant), unresolved_tool_call_ids: unresolved },
+			details: { attempt: 1, max_attempts: 1, error: errorLabel, unresolved_tool_call_ids: unresolved },
 		}, { triggerTurn: true, deliverAs: "steer" });
 	});
 }
