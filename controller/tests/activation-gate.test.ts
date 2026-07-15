@@ -5,7 +5,7 @@ import { NERVOUS_ACTIVATION_ENTRY, NERVOUS_PROMPT_SIGNATURE } from "../extension
 
 type Handler = (event: any, ctx: any) => any;
 
-function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdle?: () => Promise<void>; autoRetryEnabled?: boolean; retryReadError?: Error } = {}) {
+function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdle?: () => Promise<void>; autoRetryEnabled?: boolean; maxRetries?: number; retryReadError?: Error } = {}) {
 	let active = [...(options.initialActive ?? ["read", "bash", "other", ...NERVOUS_TOOL_NAMES])];
 	let branch = [...(options.branch ?? [])];
 	const handlers = new Map<string, Handler[]>();
@@ -23,9 +23,9 @@ function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdl
 		sendUserMessage(text: string) { sent.push(text); },
 	};
 	installNervousActivationGate(pi, {
-		isAutoRetryEnabled: () => {
+		getAutoRetryPolicy: () => {
 			if (options.retryReadError) throw options.retryReadError;
-			return options.autoRetryEnabled ?? true;
+			return { enabled: options.autoRetryEnabled ?? true, maxRetries: options.maxRetries ?? 3 };
 		},
 	});
 	const ctx = {
@@ -158,6 +158,17 @@ describe("explicit NERVous activation gate", () => {
 		assert.equal(h.branch().some((entry) => entry.customType === NERVOUS_ACTIVATION_ENTRY), false);
 		assert.match(h.notifications[0]!.message, /native auto-retry is disabled/);
 		assert.match(h.notifications[0]!.message, /No NERVous workflow was started/);
+	});
+
+	it("refuses to activate when Pi native auto-retry has no attempt budget", async () => {
+		const h = harness({ autoRetryEnabled: true, maxRetries: 0 });
+		await h.emit("session_start", { reason: "startup" });
+		await h.command("unattended work");
+		assert.deepEqual(h.sent, []);
+		assert.deepEqual(h.active(), ["read", "bash", "other"]);
+		assert.equal(h.branch().some((entry) => entry.customType === NERVOUS_ACTIVATION_ENTRY), false);
+		assert.match(h.notifications[0]!.message, /no retry attempts configured/);
+		assert.match(h.notifications[0]!.message, /retry\.maxRetries to at least 1/);
 	});
 
 	it("fails closed when Pi native retry settings cannot be verified", async () => {

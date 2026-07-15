@@ -35,15 +35,18 @@ function branchHasNervousActivation(entries: readonly unknown[]): boolean {
 	);
 }
 
+interface NativeRetryPolicy { enabled: boolean; maxRetries: number }
+
 interface ActivationGateOptions {
-	isAutoRetryEnabled?: (ctx: ExtensionCommandContext) => boolean;
+	getAutoRetryPolicy?: (ctx: ExtensionCommandContext) => NativeRetryPolicy;
 }
 
-function fileBackedAutoRetryEnabled(ctx: ExtensionCommandContext): boolean {
+function fileBackedAutoRetryPolicy(ctx: ExtensionCommandContext): NativeRetryPolicy {
 	const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
 	const errors = settings.drainErrors();
 	if (errors.length) throw new AggregateError(errors.map((entry) => entry.error), "Pi retry settings could not be read");
-	return settings.getRetryEnabled();
+	const retry = settings.getRetrySettings();
+	return { enabled: retry.enabled, maxRetries: retry.maxRetries };
 }
 
 /**
@@ -100,14 +103,18 @@ export function installNervousActivationGate(pi: ExtensionAPI, options: Activati
 				ctx.ui.notify("No NERVous tools are enabled. Run /nervous:config enabled=true or adjust Pi's active tool selection.", "error");
 				return;
 			}
-			let autoRetryEnabled: boolean;
-			try { autoRetryEnabled = (options.isAutoRetryEnabled ?? fileBackedAutoRetryEnabled)(ctx); }
+			let retryPolicy: NativeRetryPolicy;
+			try { retryPolicy = (options.getAutoRetryPolicy ?? fileBackedAutoRetryPolicy)(ctx); }
 			catch (error) {
 				ctx.ui.notify(`Could not verify Pi native auto-retry (${error instanceof Error ? error.message : String(error)}). No NERVous workflow was started.`, "error");
 				return;
 			}
-			if (!autoRetryEnabled) {
+			if (!retryPolicy.enabled) {
 				ctx.ui.notify("Pi native auto-retry is disabled. Enable it in Pi settings and rerun /nervous. No NERVous workflow was started.", "warning");
+				return;
+			}
+			if (!Number.isFinite(retryPolicy.maxRetries) || retryPolicy.maxRetries < 1) {
+				ctx.ui.notify("Pi native auto-retry has no retry attempts configured. Set retry.maxRetries to at least 1 and rerun /nervous. No NERVous workflow was started.", "warning");
 				return;
 			}
 			activateChain(!chainActive);
