@@ -21,6 +21,7 @@ Follow this flow for each goal. Each step uses a tool.
 ```
 0. frame     → inspect + elaborate once (new work only; no tool or lifecycle phase)
 1. analyze   → cortex analyze          (framed intent → durable Goal)
+   refine?   → cortex refine           (repair reported MAGI gaps in place)
 2. magi?     → magi (if needs_magi, or the decision is hard/risky/architectural)
 3. plan      → cortex plan             (subtasks; ref MAGI rec if used)
 4. create    → axon create (per subtask) → cortex link (record ids)
@@ -37,6 +38,8 @@ This is a bounded intake activity, not a new CORTEX status or recurring research
 
 ### 1. Analyze intent (`cortex analyze`)
 Call `cortex analyze` with the user's `prompt` plus your structured analysis: `intent_summary`, `goal`, `success_criteria[]`, `constraints[]`, `risks[]` (`{description, severity}`), `expected_output`, optional `framing` (`context`, `scope`, `non_goals`, `assumptions`, `open_questions`, `candidate_options`, `decision_needed`), and `complexity` (low|medium|high). Set `needs_magi` when the task is hard/ambiguous/risky/architectural (a heuristic suggests it for high complexity or high-severity risks; you can override). The tool returns a goal id and persists the analysis durably.
+
+If analyze reports that a MAGI-required goal is missing its objective, scope, success criteria, or `decision_needed`, repair that same goal with `cortex refine goal_id=...`. Refine partially updates only supplied intent/framing fields, preserves the goal id and omitted data, and is allowed only while the goal is still `analyzed`. Do not call analyze again and create a duplicate goal.
 
 ### 2. Convene MAGI? (only if `needs_magi`)
 If the goal's `needs_magi` is true, first ensure its objective, scope, success criteria, and `framing.decision_needed` are concrete. Then call the **magi** tool, mapping framing context into `context`, goal constraints into `constraints`, candidate options into `options`, and the exact decision into `decision_needed`. Carry its `final_recommendation` into planning. Otherwise skip to plan. Do **not** convene MAGI for simple, well-understood tasks.

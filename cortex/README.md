@@ -34,6 +34,7 @@ Or add to `settings.json`:
 ```
 0. frame     → inspect and elaborate the request once (new work only)
 1. analyze   → cortex analyze          (framed intent → durable Goal)
+   refine?   → cortex refine           (repair reported MAGI gaps in place)
 2. magi?     → magi tool (only if needs_magi and the brief is ready)
 3. plan      → cortex plan             (subtasks; ref MAGI rec if used)
 4. create    → axon create (per subtask) → cortex link (record ids)
@@ -55,6 +56,7 @@ Call `cortex get` with `goal_id: "current"` (or `/cortex:resume`). It returns th
 
 ```text
 cortex analyze prompt="Build a simple todo API with tests" goal="..." success_criteria=["...","..."] risks=[{...}] framing={scope:["CRUD API"],non_goals:["authentication"],assumptions:["in-memory storage"],decision_needed:"Choose the API structure"} complexity="medium"
+cortex refine goal_id="goal-001" success_criteria=["..."] framing={scope:["CRUD API"],decision_needed:"Choose the API structure"}
 cortex plan goal_id="goal-001" subtasks=[{title="Scaffold"},{title="Tests",dependencies=["Scaffold"]}]
 cortex link goal_id="goal-001" links=[{plan_id="plan-001",axon_task_id="task-001"}]
 cortex verify goal_id="goal-001" checks=[{criterion="...",passed=true,evidence="..."}] all_axon_complete=true
@@ -68,7 +70,9 @@ cortex get goal_id="current"
 cortex summary
 ```
 
-Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `accept_risk`, `record_failure`, `reopen`, `cancel`, `drain`, `get_config`, `set_config`, `get`, `list`, `summary`, `set_current`.
+Actions: `analyze`, `refine`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `accept_risk`, `record_failure`, `reopen`, `cancel`, `drain`, `get_config`, `set_config`, `get`, `list`, `summary`, `set_current`.
+
+`refine` repairs a persisted, MAGI-required goal whose analyze response reports missing objective, scope, success criteria, or `decision_needed`. It updates only supplied intent/framing fields, keeps the existing goal id, and is accepted only while the goal remains `analyzed`; call it before MAGI or planning instead of creating a duplicate goal.
 
 ### Commands
 
@@ -121,7 +125,7 @@ Actions: `analyze`, `plan`, `link`, `verify`, `complete`, `block`, `escalate`, `
 }
 ```
 
-**Goal lifecycle:** `analyzed → planned → executing → verified → completed`, with `needs_replan` looping back to `planned`, and `cancel` from any non-terminal status. `verify` with `approve` → `verified` (ready for MAGI review); failing checks → `needs_replan`. Drain mode can move any non-terminal goal to `blocked` (resumable after evidence/dependency resolution) or `needs_amygdala` (unsafe uncertainty/risk escalated to AMYGDALA).
+**Goal lifecycle:** `analyzed → planned → executing → verified → completed`, with `needs_replan` looping back to `planned`, and `cancel` from any non-terminal status. `refine` amends intent/framing in place while status remains `analyzed`; it is not a lifecycle transition. `verify` with `approve` → `verified` (ready for MAGI review); failing checks → `needs_replan`. Drain mode can move any non-terminal goal to `blocked` (resumable after evidence/dependency resolution) or `needs_amygdala` (unsafe uncertainty/risk escalated to AMYGDALA).
 
 ---
 
