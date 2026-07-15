@@ -1,4 +1,9 @@
 import * as assert from "node:assert";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { AuthStorage, createAgentSession, DefaultResourceLoader, ModelRegistry, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { describe, it } from "vitest";
 import {
 	installNervousTransportRecovery,
@@ -57,11 +62,20 @@ describe("NERVous transport recovery", () => {
 		assert.deepEqual(h.sent[0]!.options, { triggerTurn: true, deliverAs: "steer" });
 	});
 
-	it("recognizes diagnostic and common transport failures but not arbitrary errors", () => {
+	it("recognizes diagnostic, phrase, and canonical Node transport failures", () => {
 		assert.equal(isTransientTransportFailure(websocketFailure), true);
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "socket hang up" })), true);
+		for (const errorMessage of ["socket hang up", "read ECONNRESET", "connect ECONNREFUSED", "connect ETIMEDOUT"]) {
+			assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage })), true, errorMessage);
+		}
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "invalid API key" })), false);
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "aborted", errorMessage: "WebSocket error" })), false);
+	});
+
+	it("does not classify generic terminated or premature validation failures as transport errors", () => {
+		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "invalid request terminated by validator" })), false);
+		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "premature end of JSON input" })), false);
+		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "response was terminated" })), true);
+		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "prematurely closed response" })), true);
 	});
 
 	it("does not reinject raw provider diagnostics into the recovery prompt", async () => {
@@ -110,5 +124,74 @@ describe("NERVous transport recovery", () => {
 		});
 		assert.deepEqual(h.sent[0]!.message.details.unresolved_tool_call_ids, []);
 		assert.doesNotMatch(h.sent[0]!.message.content, /do not assume they ran/);
+	});
+
+	it("starts a continuation from agent_end steering when native retries are disabled", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-transport-recovery-"));
+		const model: any = {
+			id: "recovery-test", name: "Recovery Test", api: "recovery-test", provider: "recovery-test", baseUrl: "http://localhost",
+			reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 16_000, maxTokens: 1_000,
+		};
+		const authStorage = AuthStorage.inMemory();
+		authStorage.setRuntimeApiKey(model.provider, "test-key");
+		const modelRegistry = ModelRegistry.inMemory(authStorage);
+		const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
+		const resourceLoader = new DefaultResourceLoader({
+			cwd: dir,
+			agentDir: dir,
+			settingsManager,
+			extensionFactories: [(pi) => installNervousTransportRecovery(pi, () => true)],
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+		});
+		await resourceLoader.reload();
+		let callCount = 0;
+		const { session } = await createAgentSession({
+			cwd: dir,
+			agentDir: dir,
+			model,
+			authStorage,
+			modelRegistry,
+			settingsManager,
+			resourceLoader,
+			sessionManager: SessionManager.inMemory(dir),
+			noTools: "all",
+		});
+		session.agent.streamFn = () => {
+			callCount++;
+			const response: any = {
+				role: "assistant",
+				content: callCount === 1 ? [] : [{ type: "text", text: "recovered" }],
+				api: model.api,
+				provider: model.provider,
+				model: model.id,
+				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+				stopReason: callCount === 1 ? "error" : "stop",
+				errorMessage: callCount === 1 ? "WebSocket error" : undefined,
+				timestamp: Date.now(),
+			};
+			const stream = createAssistantMessageEventStream();
+			queueMicrotask(() => {
+				if (response.stopReason === "error") stream.push({ type: "error", reason: "error", error: response });
+				else stream.push({ type: "done", reason: "stop", message: response });
+				stream.end(response);
+			});
+			return stream;
+		};
+		try {
+			await session.bindExtensions({ mode: "rpc" });
+			await session.prompt("start workflow");
+			const messages = session.agent.state.messages as any[];
+			assert.equal(callCount, 2, "agent_end steering must drive one continuation");
+			assert.ok(messages.some((message) => message.role === "custom" && message.customType === NERVOUS_TRANSPORT_RECOVERY_MESSAGE));
+			assert.equal(messages.at(-1)?.role, "assistant");
+			assert.equal(messages.at(-1)?.content?.[0]?.text, "recovered");
+		} finally {
+			session.dispose();
+			await fs.rm(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -2,7 +2,7 @@ import type { AgentEndEvent, ExtensionAPI } from "@earendil-works/pi-coding-agen
 
 export const NERVOUS_TRANSPORT_RECOVERY_MESSAGE = "nervous:transport-recovery";
 
-const TRANSPORT_ERROR_RE = /websocket|network(?:\s+error)?|connection(?:\s+(?:error|lost|closed|reset|refused))?|socket hang up|fetch failed|other side closed|reset before headers|stream ended before|ended without|http2 request did not get a response|premature|terminated|timed? out|timeout/i;
+const TRANSPORT_ERROR_RE = /websocket|network(?:\s+error)?|connection(?:\s+(?:error|lost|closed|reset|refused))?|socket hang up|fetch failed|other side closed|reset before headers|stream ended before|ended without|http2 request did not get a response|premature(?:ly)?\s+(?:closed|ended|end of (?:stream|response))|(?:stream|connection|socket|response)(?:\s+was)?\s+terminated|timed? out|timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EHOSTUNREACH/i;
 
 interface AssistantFailure {
 	role: "assistant";
@@ -36,8 +36,8 @@ function unresolvedToolCallIds(messages: readonly unknown[], assistant: Assistan
 function transportErrorLabel(message: AssistantFailure): string {
 	const error = message.errorMessage ?? "";
 	if (/websocket/i.test(error)) return "WebSocket error";
-	if (/timed? out|timeout/i.test(error)) return "transport timeout";
-	if (/connection|socket|other side closed|reset before headers/i.test(error)) return "connection error";
+	if (/timed? out|timeout|ETIMEDOUT/i.test(error)) return "transport timeout";
+	if (/connection|socket|other side closed|reset before headers|ECONNRESET|ECONNREFUSED|EPIPE|ENETUNREACH|EHOSTUNREACH/i.test(error)) return "connection error";
 	if (/network|fetch failed/i.test(error)) return "network error";
 	return "provider transport failure";
 }
