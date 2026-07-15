@@ -148,6 +148,20 @@ describe("NERVous transport recovery", () => {
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "prematurely closed response" })), true);
 	});
 
+	it("recovers immediately when Pi does not classify the canonical error as retryable", async () => {
+		const h = harness(true, { enabled: true, maxRetries: 3 });
+		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "write EPIPE" })] });
+		assert.equal(h.sent.length, 1);
+	});
+
+	it("counts native attempts even when the preceding error was not a transport failure", async () => {
+		const h = harness(true, { enabled: true, maxRetries: 1 });
+		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "503 service unavailable" })] });
+		assert.equal(h.sent.length, 0);
+		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "WebSocket error" })] });
+		assert.equal(h.sent.length, 1);
+	});
+
 	it("does not reinject raw provider diagnostics into the recovery prompt", async () => {
 		const h = harness();
 		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "connection error: secret-provider-detail" })] });
@@ -223,7 +237,7 @@ describe("NERVous transport recovery", () => {
 	it("continues only after the configured native retry budget is exhausted", async () => {
 		const h = await createRecoverySession(
 			{ enabled: true, maxRetries: 1, baseDelayMs: 1 },
-			[{ error: "WebSocket error" }, { error: "read ECONNRESET" }, { text: "recovered" }],
+			[{ error: "WebSocket error" }, { error: "WebSocket error" }, { text: "recovered" }],
 		);
 		try {
 			await h.session.prompt("start workflow");

@@ -1,4 +1,5 @@
 import { SettingsManager, type AgentEndEvent, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isContextOverflow, type AssistantMessage } from "@earendil-works/pi-ai";
 
 export const NERVOUS_TRANSPORT_RECOVERY_MESSAGE = "nervous:transport-recovery";
 
@@ -13,6 +14,9 @@ const TRANSPORT_ERROR_PATTERNS = [
 	/timed? out|timeout/i,
 	/\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EHOSTUNREACH)\b/i,
 ];
+
+const NATIVE_RETRY_ERROR_RE = /overloaded|provider.?returned.?error|rate.?limit|too many requests|429|500|502|503|504|service.?unavailable|server.?error|internal.?error|network.?error|connection.?error|connection.?refused|connection.?lost|websocket.?closed|websocket.?error|other side closed|fetch failed|upstream.?connect|reset before headers|socket hang up|ended without|stream ended before message_stop|http2 request did not get a response|timed? out|timeout|terminated|retry delay/i;
+const NON_RETRYABLE_LIMIT_RE = /GoUsageLimitError|FreeUsageLimitError|Monthly usage limit reached|available balance|insufficient_quota|out of budget|quota exceeded|billing/i;
 
 interface AssistantFailure {
 	role: "assistant";
@@ -34,6 +38,13 @@ export function isTransientTransportFailure(message: AssistantFailure | undefine
 	if (!message || message.stopReason !== "error") return false;
 	if (message.diagnostics?.some((diagnostic) => diagnostic.type === "provider_transport_failure")) return true;
 	return typeof message.errorMessage === "string" && TRANSPORT_ERROR_PATTERNS.some((pattern) => pattern.test(message.errorMessage!));
+}
+
+function isNativeRetryableFailure(message: AssistantFailure | undefined, contextWindow: number): boolean {
+	if (!message || message.stopReason !== "error" || !message.errorMessage) return false;
+	if (isContextOverflow(message as AssistantMessage, contextWindow)) return false;
+	if (NON_RETRYABLE_LIMIT_RE.test(message.errorMessage)) return false;
+	return NATIVE_RETRY_ERROR_RE.test(message.errorMessage);
 }
 
 function unresolvedToolCallIds(messages: readonly unknown[], assistant: AssistantFailure): string[] {
@@ -78,9 +89,9 @@ export function installNervousTransportRecovery(
 ): void {
 	let recoveryQueued = false;
 	let recoveryStarted = false;
-	let consecutiveTransportFailures = 0;
+	let nativeRetryableFailures = 0;
 
-	const reset = (): void => { recoveryQueued = false; recoveryStarted = false; consecutiveTransportFailures = 0; };
+	const reset = (): void => { recoveryQueued = false; recoveryStarted = false; nativeRetryableFailures = 0; };
 	pi.on("session_start", reset);
 	pi.on("session_tree", reset);
 	pi.on("message_start", (event) => {
@@ -89,7 +100,7 @@ export function installNervousTransportRecovery(
 	});
 	pi.on("message_end", (event) => {
 		if (event.message.role !== "assistant" || event.message.stopReason === "error") return;
-		consecutiveTransportFailures = 0;
+		nativeRetryableFailures = 0;
 		// Do not reopen a queued one-shot until its recovery message has actually
 		// started; unrelated successful messages cannot create a duplicate nudge.
 		if (recoveryStarted) reset();
@@ -97,11 +108,12 @@ export function installNervousTransportRecovery(
 	pi.on("agent_end", (event: AgentEndEvent, ctx) => {
 		if (!isWorkflowActive() || recoveryQueued) return;
 		const assistant = lastAssistant(event.messages);
+		const nativeRetryable = isNativeRetryableFailure(assistant, ctx.model?.contextWindow ?? 0);
+		if (nativeRetryable) nativeRetryableFailures++;
 		if (!assistant || !isTransientTransportFailure(assistant)) return;
 
-		consecutiveTransportFailures++;
 		const retryPolicy = (options.getRetryPolicy ?? effectiveRetryPolicy)(ctx);
-		if (retryPolicy.enabled && consecutiveTransportFailures <= retryPolicy.maxRetries) return;
+		if (nativeRetryable && retryPolicy.enabled && nativeRetryableFailures <= retryPolicy.maxRetries) return;
 
 		recoveryQueued = true;
 		const unresolved = unresolvedToolCallIds(event.messages, assistant);
