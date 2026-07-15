@@ -23,7 +23,7 @@ function assistant(overrides: Record<string, unknown> = {}): any {
 	};
 }
 
-function harness(active = true) {
+function harness(active = true, retryPolicy = { enabled: false, maxRetries: 0 }) {
 	let workflowActive = active;
 	const handlers = new Map<string, Handler[]>();
 	const sent: Array<{ message: any; options: any }> = [];
@@ -31,7 +31,7 @@ function harness(active = true) {
 		on(event: string, handler: Handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
 		sendMessage(message: any, options: any) { sent.push({ message, options }); },
 	};
-	installNervousTransportRecovery(pi, () => workflowActive);
+	installNervousTransportRecovery(pi, () => workflowActive, { getRetryPolicy: () => retryPolicy });
 	return {
 		sent,
 		setActive(value: boolean) { workflowActive = value; },
@@ -47,6 +47,73 @@ const websocketFailure = assistant({
 	diagnostics: [{ type: "provider_transport_failure" }],
 	content: [{ type: "toolCall", id: "call-lion", name: "lion", arguments: { action: "run" } }],
 });
+
+interface IntegrationResponse { text?: string; error?: string }
+
+async function createRecoverySession(retry: { enabled: boolean; maxRetries: number; baseDelayMs?: number }, responses: IntegrationResponse[]) {
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-transport-recovery-"));
+	const model: any = {
+		id: "recovery-test", name: "Recovery Test", api: "recovery-test", provider: "recovery-test", baseUrl: "http://localhost",
+		reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 16_000, maxTokens: 1_000,
+	};
+	const authStorage = AuthStorage.inMemory();
+	authStorage.setRuntimeApiKey(model.provider, "test-key");
+	const modelRegistry = ModelRegistry.inMemory(authStorage);
+	const settingsManager = SettingsManager.inMemory({ retry, compaction: { enabled: false } });
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: dir,
+		agentDir: dir,
+		settingsManager,
+		extensionFactories: [(pi) => installNervousTransportRecovery(pi, () => true, {
+			getRetryPolicy: () => ({ enabled: retry.enabled, maxRetries: retry.maxRetries }),
+		})],
+		noExtensions: true,
+		noSkills: true,
+		noPromptTemplates: true,
+		noThemes: true,
+		noContextFiles: true,
+	});
+	await resourceLoader.reload();
+	let callCount = 0;
+	const { session } = await createAgentSession({
+		cwd: dir,
+		agentDir: dir,
+		model,
+		authStorage,
+		modelRegistry,
+		settingsManager,
+		resourceLoader,
+		sessionManager: SessionManager.inMemory(dir),
+		noTools: "all",
+	});
+	session.agent.streamFn = () => {
+		const responseSpec = responses[callCount++] ?? { error: "unexpected extra model call" };
+		const response: any = {
+			role: "assistant",
+			content: responseSpec.text === undefined ? [] : [{ type: "text", text: responseSpec.text }],
+			api: model.api,
+			provider: model.provider,
+			model: model.id,
+			usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
+			stopReason: responseSpec.error ? "error" : "stop",
+			errorMessage: responseSpec.error,
+			timestamp: Date.now(),
+		};
+		const stream = createAssistantMessageEventStream();
+		queueMicrotask(() => {
+			if (response.stopReason === "error") stream.push({ type: "error", reason: "error", error: response });
+			else stream.push({ type: "done", reason: "stop", message: response });
+			stream.end(response);
+		});
+		return stream;
+	};
+	await session.bindExtensions({ mode: "rpc" });
+	return {
+		session,
+		callCount: () => callCount,
+		async cleanup() { session.dispose(); await fs.rm(dir, { recursive: true, force: true }); },
+	};
+}
 
 describe("NERVous transport recovery", () => {
 	it("queues one visible steering nudge for an active workflow transport failure", async () => {
@@ -71,9 +138,12 @@ describe("NERVous transport recovery", () => {
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "aborted", errorMessage: "WebSocket error" })), false);
 	});
 
-	it("does not classify generic terminated or premature validation failures as transport errors", () => {
+	it("recognizes exact undici termination without broad network or connection matches", () => {
+		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "TypeError: terminated" })), true);
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "invalid request terminated by validator" })), false);
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "premature end of JSON input" })), false);
+		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "Invalid connection string" })), false);
+		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "Network access denied by policy" })), false);
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "response was terminated" })), true);
 		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "prematurely closed response" })), true);
 	});
@@ -127,71 +197,40 @@ describe("NERVous transport recovery", () => {
 	});
 
 	it("starts a continuation from agent_end steering when native retries are disabled", async () => {
-		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-transport-recovery-"));
-		const model: any = {
-			id: "recovery-test", name: "Recovery Test", api: "recovery-test", provider: "recovery-test", baseUrl: "http://localhost",
-			reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 16_000, maxTokens: 1_000,
-		};
-		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey(model.provider, "test-key");
-		const modelRegistry = ModelRegistry.inMemory(authStorage);
-		const settingsManager = SettingsManager.inMemory({ retry: { enabled: false }, compaction: { enabled: false } });
-		const resourceLoader = new DefaultResourceLoader({
-			cwd: dir,
-			agentDir: dir,
-			settingsManager,
-			extensionFactories: [(pi) => installNervousTransportRecovery(pi, () => true)],
-			noExtensions: true,
-			noSkills: true,
-			noPromptTemplates: true,
-			noThemes: true,
-			noContextFiles: true,
-		});
-		await resourceLoader.reload();
-		let callCount = 0;
-		const { session } = await createAgentSession({
-			cwd: dir,
-			agentDir: dir,
-			model,
-			authStorage,
-			modelRegistry,
-			settingsManager,
-			resourceLoader,
-			sessionManager: SessionManager.inMemory(dir),
-			noTools: "all",
-		});
-		session.agent.streamFn = () => {
-			callCount++;
-			const response: any = {
-				role: "assistant",
-				content: callCount === 1 ? [] : [{ type: "text", text: "recovered" }],
-				api: model.api,
-				provider: model.provider,
-				model: model.id,
-				usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
-				stopReason: callCount === 1 ? "error" : "stop",
-				errorMessage: callCount === 1 ? "WebSocket error" : undefined,
-				timestamp: Date.now(),
-			};
-			const stream = createAssistantMessageEventStream();
-			queueMicrotask(() => {
-				if (response.stopReason === "error") stream.push({ type: "error", reason: "error", error: response });
-				else stream.push({ type: "done", reason: "stop", message: response });
-				stream.end(response);
-			});
-			return stream;
-		};
+		const h = await createRecoverySession({ enabled: false, maxRetries: 3 }, [{ error: "WebSocket error" }, { text: "recovered" }]);
 		try {
-			await session.bindExtensions({ mode: "rpc" });
-			await session.prompt("start workflow");
-			const messages = session.agent.state.messages as any[];
-			assert.equal(callCount, 2, "agent_end steering must drive one continuation");
+			await h.session.prompt("start workflow");
+			const messages = h.session.agent.state.messages as any[];
+			assert.equal(h.callCount(), 2, "agent_end steering must drive one continuation");
 			assert.ok(messages.some((message) => message.role === "custom" && message.customType === NERVOUS_TRANSPORT_RECOVERY_MESSAGE));
-			assert.equal(messages.at(-1)?.role, "assistant");
 			assert.equal(messages.at(-1)?.content?.[0]?.text, "recovered");
-		} finally {
-			session.dispose();
-			await fs.rm(dir, { recursive: true, force: true });
-		}
+		} finally { await h.cleanup(); }
+	});
+
+	it("does not continue when an operator cancels native retry backoff", async () => {
+		const h = await createRecoverySession({ enabled: true, maxRetries: 3, baseDelayMs: 100 }, [{ error: "WebSocket error" }]);
+		const unsubscribe = h.session.subscribe((event) => {
+			if (event.type === "auto_retry_start") queueMicrotask(() => h.session.abortRetry());
+		});
+		try {
+			await h.session.prompt("start workflow");
+			const messages = h.session.agent.state.messages as any[];
+			assert.equal(h.callCount(), 1);
+			assert.equal(messages.some((message) => message.role === "custom" && message.customType === NERVOUS_TRANSPORT_RECOVERY_MESSAGE), false);
+		} finally { unsubscribe(); await h.cleanup(); }
+	});
+
+	it("continues only after the configured native retry budget is exhausted", async () => {
+		const h = await createRecoverySession(
+			{ enabled: true, maxRetries: 1, baseDelayMs: 1 },
+			[{ error: "WebSocket error" }, { error: "read ECONNRESET" }, { text: "recovered" }],
+		);
+		try {
+			await h.session.prompt("start workflow");
+			const messages = h.session.agent.state.messages as any[];
+			assert.equal(h.callCount(), 3);
+			assert.ok(messages.some((message) => message.role === "custom" && message.customType === NERVOUS_TRANSPORT_RECOVERY_MESSAGE));
+			assert.equal(messages.at(-1)?.content?.[0]?.text, "recovered");
+		} finally { await h.cleanup(); }
 	});
 });

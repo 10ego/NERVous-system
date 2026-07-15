@@ -1,8 +1,18 @@
-import type { AgentEndEvent, ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, type AgentEndEvent, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 export const NERVOUS_TRANSPORT_RECOVERY_MESSAGE = "nervous:transport-recovery";
 
-const TRANSPORT_ERROR_RE = /websocket|network(?:\s+error)?|connection(?:\s+(?:error|lost|closed|reset|refused))?|socket hang up|fetch failed|other side closed|reset before headers|stream ended before|ended without|http2 request did not get a response|premature(?:ly)?\s+(?:closed|ended|end of (?:stream|response))|(?:stream|connection|socket|response)(?:\s+was)?\s+terminated|timed? out|timeout|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EHOSTUNREACH/i;
+const TRANSPORT_ERROR_PATTERNS = [
+	/websocket/i,
+	/\bnetwork (?:error|failure|connection (?:lost|closed|reset|refused))\b/i,
+	/\bconnection (?:error|lost|closed|reset|refused|timed? out)\b/i,
+	/socket hang up|fetch failed|other side closed|reset before headers|stream ended before|ended without|http2 request did not get a response/i,
+	/premature(?:ly)?\s+(?:closed|ended|end of (?:stream|response))/i,
+	/(?:stream|connection|socket|response)(?:\s+was)?\s+terminated/i,
+	/(?:^|typeerror:\s*)terminated\s*$/i,
+	/timed? out|timeout/i,
+	/\b(?:ECONNRESET|ECONNREFUSED|ETIMEDOUT|EPIPE|ENETUNREACH|EHOSTUNREACH)\b/i,
+];
 
 interface AssistantFailure {
 	role: "assistant";
@@ -23,7 +33,7 @@ function lastAssistant(messages: readonly unknown[]): AssistantFailure | undefin
 export function isTransientTransportFailure(message: AssistantFailure | undefined): boolean {
 	if (!message || message.stopReason !== "error") return false;
 	if (message.diagnostics?.some((diagnostic) => diagnostic.type === "provider_transport_failure")) return true;
-	return typeof message.errorMessage === "string" && TRANSPORT_ERROR_RE.test(message.errorMessage);
+	return typeof message.errorMessage === "string" && TRANSPORT_ERROR_PATTERNS.some((pattern) => pattern.test(message.errorMessage!));
 }
 
 function unresolvedToolCallIds(messages: readonly unknown[], assistant: AssistantFailure): string[] {
@@ -42,16 +52,35 @@ function transportErrorLabel(message: AssistantFailure): string {
 	return "provider transport failure";
 }
 
+interface RetryPolicy { enabled: boolean; maxRetries: number }
+
+function effectiveRetryPolicy(ctx: ExtensionContext): RetryPolicy {
+	try {
+		const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() }).getRetrySettings();
+		return { enabled: settings.enabled, maxRetries: Math.max(0, settings.maxRetries) };
+	} catch (error) {
+		console.warn(`[nervous-system/controller] transport recovery could not read retry policy: ${error instanceof Error ? error.message : String(error)}`);
+		// Fail closed: never bypass a native retry/cancellation path when its policy
+		// cannot be established.
+		return { enabled: true, maxRetries: Number.MAX_SAFE_INTEGER };
+	}
+}
+
 /**
  * Queue one workflow-scoped continuation when the provider transport terminates
- * an active NERVous turn. A steering message joins Pi's native retry when enabled
- * and drives a continuation itself when native retries are disabled or exhausted.
+ * an active NERVous turn. Native retry owns its configured attempt budget; NERVous
+ * intervenes only when native retries are disabled or all attempts are exhausted.
  */
-export function installNervousTransportRecovery(pi: ExtensionAPI, isWorkflowActive: () => boolean): void {
+export function installNervousTransportRecovery(
+	pi: ExtensionAPI,
+	isWorkflowActive: () => boolean,
+	options: { getRetryPolicy?: (ctx: ExtensionContext) => RetryPolicy } = {},
+): void {
 	let recoveryQueued = false;
 	let recoveryStarted = false;
+	let consecutiveTransportFailures = 0;
 
-	const reset = (): void => { recoveryQueued = false; recoveryStarted = false; };
+	const reset = (): void => { recoveryQueued = false; recoveryStarted = false; consecutiveTransportFailures = 0; };
 	pi.on("session_start", reset);
 	pi.on("session_tree", reset);
 	pi.on("message_start", (event) => {
@@ -59,14 +88,20 @@ export function installNervousTransportRecovery(pi: ExtensionAPI, isWorkflowActi
 		if (event.message.role === "custom" && event.message.customType === NERVOUS_TRANSPORT_RECOVERY_MESSAGE) recoveryStarted = true;
 	});
 	pi.on("message_end", (event) => {
-		// A native retry may succeed before the queued fallback is consumed. Only
-		// reopen the one-shot gate after the recovery message itself has started.
-		if (recoveryStarted && event.message.role === "assistant" && event.message.stopReason !== "error") reset();
+		if (event.message.role !== "assistant" || event.message.stopReason === "error") return;
+		consecutiveTransportFailures = 0;
+		// Do not reopen a queued one-shot until its recovery message has actually
+		// started; unrelated successful messages cannot create a duplicate nudge.
+		if (recoveryStarted) reset();
 	});
-	pi.on("agent_end", (event: AgentEndEvent) => {
+	pi.on("agent_end", (event: AgentEndEvent, ctx) => {
 		if (!isWorkflowActive() || recoveryQueued) return;
 		const assistant = lastAssistant(event.messages);
 		if (!assistant || !isTransientTransportFailure(assistant)) return;
+
+		consecutiveTransportFailures++;
+		const retryPolicy = (options.getRetryPolicy ?? effectiveRetryPolicy)(ctx);
+		if (retryPolicy.enabled && consecutiveTransportFailures <= retryPolicy.maxRetries) return;
 
 		recoveryQueued = true;
 		const unresolved = unresolvedToolCallIds(event.messages, assistant);
