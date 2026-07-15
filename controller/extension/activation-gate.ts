@@ -1,6 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { buildNervousInvocation, NERVOUS_ACTIVATION_ENTRY, NERVOUS_PROMPT_SIGNATURE } from "./nervous-command.ts";
-import { installNervousTransportRecovery } from "./transport-recovery.ts";
+import { installNervousTransportPauseNotice, NERVOUS_TRANSPORT_RESUME_PROMPT } from "./transport-recovery.ts";
 
 /** Tools exposed by the root NERVous suite. Standalone component packages remain unaffected. */
 export const NERVOUS_TOOL_NAMES = [
@@ -94,6 +94,18 @@ export function installNervousActivationGate(pi: ExtensionAPI): void {
 		},
 	});
 
+	pi.registerCommand("nervous:resume", {
+		description: "Explicitly resume an active NERVous workflow after an interruption",
+		handler: async (_args, ctx) => {
+			await ctx.waitForIdle();
+			if (!chainActive || permittedNervousTools.size === 0) {
+				ctx.ui.notify("No active NERVous workflow is available to resume. Run /nervous <request> first.", "error");
+				return;
+			}
+			pi.sendUserMessage(NERVOUS_TRANSPORT_RESUME_PROMPT);
+		},
+	});
+
 	// Defense in depth: visibility is not authorization, and tools excluded by the
 	// operator remain forbidden even if another extension makes them visible.
 	pi.on("tool_call", (event) => {
@@ -107,5 +119,5 @@ export function installNervousActivationGate(pi: ExtensionAPI): void {
 		}
 	});
 
-	installNervousTransportRecovery(pi, () => chainActive && permittedNervousTools.size > 0);
+	installNervousTransportPauseNotice(pi, () => chainActive && permittedNervousTools.size > 0);
 }

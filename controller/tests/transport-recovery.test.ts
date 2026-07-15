@@ -6,24 +6,18 @@ import { AuthStorage, createAgentSession, DefaultResourceLoader, ModelRegistry, 
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { describe, it } from "vitest";
 import {
-	installNervousTransportRecovery,
+	installNervousTransportPauseNotice,
 	isTransientTransportFailure,
-	NERVOUS_TRANSPORT_RECOVERY_MESSAGE,
+	NERVOUS_TRANSPORT_PAUSE_MESSAGE,
 } from "../extension/transport-recovery.ts";
 
 type Handler = (event: any, ctx: any) => any;
 
 function assistant(overrides: Record<string, unknown> = {}): any {
-	return {
-		role: "assistant",
-		content: [],
-		stopReason: "stop",
-		timestamp: 1,
-		...overrides,
-	};
+	return { role: "assistant", content: [], stopReason: "stop", timestamp: 1, ...overrides };
 }
 
-function harness(active = true, retryPolicy = { enabled: false, maxRetries: 0 }) {
+function harness(active = true) {
 	let workflowActive = active;
 	const handlers = new Map<string, Handler[]>();
 	const sent: Array<{ message: any; options: any }> = [];
@@ -31,7 +25,7 @@ function harness(active = true, retryPolicy = { enabled: false, maxRetries: 0 })
 		on(event: string, handler: Handler) { handlers.set(event, [...(handlers.get(event) ?? []), handler]); },
 		sendMessage(message: any, options: any) { sent.push({ message, options }); },
 	};
-	installNervousTransportRecovery(pi, () => workflowActive, { getRetryPolicy: () => retryPolicy });
+	installNervousTransportPauseNotice(pi, () => workflowActive);
 	return {
 		sent,
 		setActive(value: boolean) { workflowActive = value; },
@@ -51,7 +45,7 @@ const websocketFailure = assistant({
 interface IntegrationResponse { text?: string; error?: string }
 
 async function createRecoverySession(retry: { enabled: boolean; maxRetries: number; baseDelayMs?: number }, responses: IntegrationResponse[]) {
-	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-transport-recovery-"));
+	const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-transport-pause-"));
 	const model: any = {
 		id: "recovery-test", name: "Recovery Test", api: "recovery-test", provider: "recovery-test", baseUrl: "http://localhost",
 		reasoning: false, input: ["text"], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 16_000, maxTokens: 1_000,
@@ -64,9 +58,7 @@ async function createRecoverySession(retry: { enabled: boolean; maxRetries: numb
 		cwd: dir,
 		agentDir: dir,
 		settingsManager,
-		extensionFactories: [(pi) => installNervousTransportRecovery(pi, () => true, {
-			getRetryPolicy: () => ({ enabled: retry.enabled, maxRetries: retry.maxRetries }),
-		})],
+		extensionFactories: [(pi) => installNervousTransportPauseNotice(pi, () => true)],
 		noExtensions: true,
 		noSkills: true,
 		noPromptTemplates: true,
@@ -115,136 +107,101 @@ async function createRecoverySession(retry: { enabled: boolean; maxRetries: numb
 	};
 }
 
-describe("NERVous transport recovery", () => {
-	it("queues one visible steering nudge for an active workflow transport failure", async () => {
+function hasPauseMessage(messages: any[]): boolean {
+	return messages.some((message) => message.role === "custom" && message.customType === NERVOUS_TRANSPORT_PAUSE_MESSAGE);
+}
+
+describe("NERVous settled transport pause", () => {
+	it("waits for true settlement before showing a non-triggering release valve", async () => {
 		const h = harness();
 		await h.emit("agent_end", { messages: [websocketFailure] });
-
-		assert.equal(h.sent.length, 1);
-		assert.equal(h.sent[0]!.message.customType, NERVOUS_TRANSPORT_RECOVERY_MESSAGE);
-		assert.equal(h.sent[0]!.message.display, true);
-		assert.match(h.sent[0]!.message.content, /Continue the active workflow from durable state/);
-		assert.match(h.sent[0]!.message.content, /do not assume they ran/);
-		assert.deepEqual(h.sent[0]!.message.details.unresolved_tool_call_ids, ["call-lion"]);
-		assert.deepEqual(h.sent[0]!.options, { triggerTurn: true, deliverAs: "steer" });
-	});
-
-	it("recognizes diagnostic, phrase, and canonical Node transport failures", () => {
-		assert.equal(isTransientTransportFailure(websocketFailure), true);
-		for (const errorMessage of ["socket hang up", "read ECONNRESET", "connect ECONNREFUSED", "connect ETIMEDOUT"]) {
-			assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage })), true, errorMessage);
-		}
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "invalid API key" })), false);
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "aborted", errorMessage: "WebSocket error" })), false);
-	});
-
-	it("recognizes exact undici termination without broad network or connection matches", () => {
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "TypeError: terminated" })), true);
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "invalid request terminated by validator" })), false);
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "premature end of JSON input" })), false);
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "Invalid connection string" })), false);
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "Network access denied by policy" })), false);
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "response was terminated" })), true);
-		assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage: "prematurely closed response" })), true);
-	});
-
-	it("recovers immediately when Pi does not classify the canonical error as retryable", async () => {
-		const h = harness(true, { enabled: true, maxRetries: 3 });
-		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "write EPIPE" })] });
-		assert.equal(h.sent.length, 1);
-	});
-
-	it("counts native attempts even when the preceding error was not a transport failure", async () => {
-		const h = harness(true, { enabled: true, maxRetries: 1 });
-		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "503 service unavailable" })] });
 		assert.equal(h.sent.length, 0);
-		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "WebSocket error" })] });
+
+		await h.emit("agent_settled");
 		assert.equal(h.sent.length, 1);
+		assert.equal(h.sent[0]!.message.customType, NERVOUS_TRANSPORT_PAUSE_MESSAGE);
+		assert.match(h.sent[0]!.message.content, /\/nervous:resume/);
+		assert.deepEqual(h.sent[0]!.message.details.unresolved_tool_call_ids, ["call-lion"]);
+		assert.deepEqual(h.sent[0]!.options, { triggerTurn: false });
 	});
 
-	it("does not reinject raw provider diagnostics into the recovery prompt", async () => {
+	it("lets native retry success clear the pending pause", async () => {
 		const h = harness();
-		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "connection error: secret-provider-detail" })] });
-		assert.match(h.sent[0]!.message.content, /connection error/);
-		assert.doesNotMatch(h.sent[0]!.message.content, /secret-provider-detail/);
-		assert.equal(h.sent[0]!.message.details.error, "connection error");
-	});
-
-	it("does not recover inactive workflows or successful turns", async () => {
-		const h = harness(false);
 		await h.emit("agent_end", { messages: [websocketFailure] });
-		h.setActive(true);
-		await h.emit("agent_end", { messages: [assistant()] });
+		await h.emit("agent_end", { messages: [assistant({ content: [{ type: "text", text: "recovered" }] })] });
+		await h.emit("agent_settled");
 		assert.deepEqual(h.sent, []);
 	});
 
-	it("stays one-shot across native retries and a failed recovery attempt", async () => {
+	it("does not mislabel a later non-transport failure", async () => {
 		const h = harness();
 		await h.emit("agent_end", { messages: [websocketFailure] });
-		await h.emit("message_end", { message: assistant() });
-		await h.emit("agent_end", { messages: [websocketFailure] });
-		await h.emit("message_start", { message: { role: "custom", customType: NERVOUS_TRANSPORT_RECOVERY_MESSAGE } });
-		await h.emit("agent_end", { messages: [websocketFailure] });
-		assert.equal(h.sent.length, 1, "native or recovery failures must not recursively queue nudges");
+		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "invalid API key" })] });
+		await h.emit("agent_settled");
+		assert.deepEqual(h.sent, []);
 	});
 
-	it("re-arms after recovery succeeds or a human starts a new turn", async () => {
+	it("shows at most one notice and never starts a model turn", async () => {
 		const h = harness();
 		await h.emit("agent_end", { messages: [websocketFailure] });
-		await h.emit("message_start", { message: { role: "custom", customType: NERVOUS_TRANSPORT_RECOVERY_MESSAGE } });
-		await h.emit("message_end", { message: assistant() });
-		await h.emit("agent_end", { messages: [websocketFailure] });
-		assert.equal(h.sent.length, 2);
-
-		await h.emit("message_start", { message: { role: "user", content: [{ type: "text", text: "continue" }] } });
-		await h.emit("agent_end", { messages: [websocketFailure] });
-		assert.equal(h.sent.length, 3);
+		await h.emit("agent_settled");
+		await h.emit("agent_settled");
+		assert.equal(h.sent.length, 1);
+		assert.equal(h.sent[0]!.options.triggerTurn, false);
 	});
 
-	it("does not label a tool call unresolved when its result is already present", async () => {
+	it("does not notify inactive workflows", async () => {
+		const h = harness(false);
+		await h.emit("agent_end", { messages: [websocketFailure] });
+		h.setActive(true);
+		await h.emit("agent_settled");
+		assert.deepEqual(h.sent, []);
+	});
+
+	it("recognizes canonical transport forms without broad policy matches", () => {
+		for (const errorMessage of ["socket hang up", "read ECONNRESET", "connect ETIMEDOUT", "TypeError: terminated"]) {
+			assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage })), true, errorMessage);
+		}
+		for (const errorMessage of ["invalid API key", "Invalid connection string", "Network access denied by policy", "premature end of JSON input"]) {
+			assert.equal(isTransientTransportFailure(assistant({ stopReason: "error", errorMessage })), false, errorMessage);
+		}
+	});
+
+	it("uses a safe error label instead of raw provider diagnostics", async () => {
 		const h = harness();
-		await h.emit("agent_end", {
-			messages: [websocketFailure, { role: "toolResult", toolCallId: "call-lion", toolName: "lion", content: [], isError: false }],
-		});
-		assert.deepEqual(h.sent[0]!.message.details.unresolved_tool_call_ids, []);
-		assert.doesNotMatch(h.sent[0]!.message.content, /do not assume they ran/);
+		await h.emit("agent_end", { messages: [assistant({ stopReason: "error", errorMessage: "connection error: secret-provider-detail" })] });
+		await h.emit("agent_settled");
+		assert.match(h.sent[0]!.message.content, /connection error/);
+		assert.doesNotMatch(h.sent[0]!.message.content, /secret-provider-detail/);
 	});
 
-	it("starts a continuation from agent_end steering when native retries are disabled", async () => {
-		const h = await createRecoverySession({ enabled: false, maxRetries: 3 }, [{ error: "WebSocket error" }, { text: "recovered" }]);
+	it("settles with a manual notice when native retry is disabled", async () => {
+		const h = await createRecoverySession({ enabled: false, maxRetries: 3 }, [{ error: "WebSocket error" }]);
 		try {
 			await h.session.prompt("start workflow");
-			const messages = h.session.agent.state.messages as any[];
-			assert.equal(h.callCount(), 2, "agent_end steering must drive one continuation");
-			assert.ok(messages.some((message) => message.role === "custom" && message.customType === NERVOUS_TRANSPORT_RECOVERY_MESSAGE));
-			assert.equal(messages.at(-1)?.content?.[0]?.text, "recovered");
+			assert.equal(h.callCount(), 1);
+			assert.equal(hasPauseMessage(h.session.agent.state.messages as any[]), true);
 		} finally { await h.cleanup(); }
 	});
 
-	it("does not continue when an operator cancels native retry backoff", async () => {
+	it("does not notify when native retry succeeds", async () => {
+		const h = await createRecoverySession({ enabled: true, maxRetries: 1, baseDelayMs: 1 }, [{ error: "WebSocket error" }, { text: "recovered" }]);
+		try {
+			await h.session.prompt("start workflow");
+			assert.equal(h.callCount(), 2);
+			assert.equal(hasPauseMessage(h.session.agent.state.messages as any[]), false);
+		} finally { await h.cleanup(); }
+	});
+
+	it("turns retry cancellation into a manual notice rather than automatic work", async () => {
 		const h = await createRecoverySession({ enabled: true, maxRetries: 3, baseDelayMs: 100 }, [{ error: "WebSocket error" }]);
 		const unsubscribe = h.session.subscribe((event) => {
 			if (event.type === "auto_retry_start") queueMicrotask(() => h.session.abortRetry());
 		});
 		try {
 			await h.session.prompt("start workflow");
-			const messages = h.session.agent.state.messages as any[];
 			assert.equal(h.callCount(), 1);
-			assert.equal(messages.some((message) => message.role === "custom" && message.customType === NERVOUS_TRANSPORT_RECOVERY_MESSAGE), false);
+			assert.equal(hasPauseMessage(h.session.agent.state.messages as any[]), true);
 		} finally { unsubscribe(); await h.cleanup(); }
-	});
-
-	it("continues only after the configured native retry budget is exhausted", async () => {
-		const h = await createRecoverySession(
-			{ enabled: true, maxRetries: 1, baseDelayMs: 1 },
-			[{ error: "WebSocket error" }, { error: "WebSocket error" }, { text: "recovered" }],
-		);
-		try {
-			await h.session.prompt("start workflow");
-			const messages = h.session.agent.state.messages as any[];
-			assert.equal(h.callCount(), 3);
-			assert.ok(messages.some((message) => message.role === "custom" && message.customType === NERVOUS_TRANSPORT_RECOVERY_MESSAGE));
-			assert.equal(messages.at(-1)?.content?.[0]?.text, "recovered");
-		} finally { await h.cleanup(); }
 	});
 });

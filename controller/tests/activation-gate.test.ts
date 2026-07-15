@@ -36,6 +36,7 @@ function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdl
 		setActive(names: string[]) { active = [...names]; },
 		setBranch(entries: any[]) { branch = [...entries]; },
 		async command(args: string) { await commands.get("nervous").handler(args, ctx); },
+		async resume() { await commands.get("nervous:resume").handler("", ctx); },
 		async emit(event: string, payload: any = {}) {
 			const results = [];
 			for (const handler of handlers.get(event) ?? []) results.push(await handler({ type: event, ...payload }, ctx));
@@ -141,6 +142,24 @@ describe("explicit NERVous activation gate", () => {
 		const [result] = await h.emit("tool_call", { toolName: "cortex", toolCallId: "call-3", input: {} });
 		assert.equal(result.block, true);
 		assert.match(result.reason, /\/nervous/);
+	});
+
+	it("resumes an active workflow only through an explicit command", async () => {
+		const h = harness();
+		await h.emit("session_start", { reason: "startup" });
+		await h.command("durable work");
+		const before = h.sent.length;
+		await h.resume();
+		assert.equal(h.sent.length, before + 1);
+		assert.match(h.sent.at(-1)!, /inspect durable CORTEX, AXON, CEREBEL, and LION state/);
+	});
+
+	it("rejects manual resume outside an active workflow", async () => {
+		const h = harness();
+		await h.emit("session_start", { reason: "startup" });
+		await h.resume();
+		assert.deepEqual(h.sent, []);
+		assert.match(h.notifications[0]!.message, /No active NERVous workflow/);
 	});
 
 	it("reports disabled suite configuration instead of dispatching", async () => {
