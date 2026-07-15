@@ -5,7 +5,7 @@ import { NERVOUS_ACTIVATION_ENTRY, NERVOUS_PROMPT_SIGNATURE } from "../extension
 
 type Handler = (event: any, ctx: any) => any;
 
-function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdle?: () => Promise<void> } = {}) {
+function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdle?: () => Promise<void>; autoRetryEnabled?: boolean; maxRetries?: number; retryReadError?: Error } = {}) {
 	let active = [...(options.initialActive ?? ["read", "bash", "other", ...NERVOUS_TOOL_NAMES])];
 	let branch = [...(options.branch ?? [])];
 	const handlers = new Map<string, Handler[]>();
@@ -22,7 +22,12 @@ function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdl
 		appendEntry(customType: string, data: unknown) { branch.push({ type: "custom", customType, data }); },
 		sendUserMessage(text: string) { sent.push(text); },
 	};
-	installNervousActivationGate(pi);
+	installNervousActivationGate(pi, {
+		getAutoRetryPolicy: () => {
+			if (options.retryReadError) throw options.retryReadError;
+			return { enabled: options.autoRetryEnabled ?? true, maxRetries: options.maxRetries ?? 3 };
+		},
+	});
 	const ctx = {
 		sessionManager: { getBranch: () => [...branch] },
 		waitForIdle: options.waitForIdle ?? (async () => {}),
@@ -36,6 +41,7 @@ function harness(options: { initialActive?: string[]; branch?: any[]; waitForIdl
 		setActive(names: string[]) { active = [...names]; },
 		setBranch(entries: any[]) { branch = [...entries]; },
 		async command(args: string) { await commands.get("nervous").handler(args, ctx); },
+		async resume() { await commands.get("nervous:resume").handler("", ctx); },
 		async emit(event: string, payload: any = {}) {
 			const results = [];
 			for (const handler of handlers.get(event) ?? []) results.push(await handler({ type: event, ...payload }, ctx));
@@ -141,6 +147,55 @@ describe("explicit NERVous activation gate", () => {
 		const [result] = await h.emit("tool_call", { toolName: "cortex", toolCallId: "call-3", input: {} });
 		assert.equal(result.block, true);
 		assert.match(result.reason, /\/nervous/);
+	});
+
+	it("refuses to activate or dispatch when Pi native auto-retry is disabled", async () => {
+		const h = harness({ autoRetryEnabled: false });
+		await h.emit("session_start", { reason: "startup" });
+		await h.command("unattended work");
+		assert.deepEqual(h.sent, []);
+		assert.deepEqual(h.active(), ["read", "bash", "other"]);
+		assert.equal(h.branch().some((entry) => entry.customType === NERVOUS_ACTIVATION_ENTRY), false);
+		assert.match(h.notifications[0]!.message, /native auto-retry is disabled/);
+		assert.match(h.notifications[0]!.message, /No NERVous workflow was started/);
+	});
+
+	it("refuses to activate when Pi native auto-retry has no attempt budget", async () => {
+		const h = harness({ autoRetryEnabled: true, maxRetries: 0 });
+		await h.emit("session_start", { reason: "startup" });
+		await h.command("unattended work");
+		assert.deepEqual(h.sent, []);
+		assert.deepEqual(h.active(), ["read", "bash", "other"]);
+		assert.equal(h.branch().some((entry) => entry.customType === NERVOUS_ACTIVATION_ENTRY), false);
+		assert.match(h.notifications[0]!.message, /no retry attempts configured/);
+		assert.match(h.notifications[0]!.message, /retry\.maxRetries to at least 1/);
+	});
+
+	it("fails closed when Pi native retry settings cannot be verified", async () => {
+		const h = harness({ retryReadError: new Error("bad settings") });
+		await h.emit("session_start", { reason: "startup" });
+		await h.command("unattended work");
+		assert.deepEqual(h.sent, []);
+		assert.deepEqual(h.active(), ["read", "bash", "other"]);
+		assert.match(h.notifications[0]!.message, /Could not verify Pi native auto-retry/);
+	});
+
+	it("resumes an active workflow only through an explicit command", async () => {
+		const h = harness();
+		await h.emit("session_start", { reason: "startup" });
+		await h.command("durable work");
+		const before = h.sent.length;
+		await h.resume();
+		assert.equal(h.sent.length, before + 1);
+		assert.match(h.sent.at(-1)!, /inspect durable CORTEX, AXON, CEREBEL, and LION state/);
+	});
+
+	it("rejects manual resume outside an active workflow", async () => {
+		const h = harness();
+		await h.emit("session_start", { reason: "startup" });
+		await h.resume();
+		assert.deepEqual(h.sent, []);
+		assert.match(h.notifications[0]!.message, /No active NERVous workflow/);
 	});
 
 	it("reports disabled suite configuration instead of dispatching", async () => {

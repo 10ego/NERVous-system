@@ -39,11 +39,13 @@ NERVous components are runtime-gated. In a fresh session chain, their tools, sch
 /nervous implement this feature with durable planning and worker delegation
 ```
 
-If another run is already streaming, the command waits for it to become idle before enabling any NERVous capability or dispatching the bundled workflow prompt. Activation adds only the NERVous tools that were present in the operator's initial active-tool selection; excluded components remain blocked.
+If another run is already streaming, the command waits for it to become idle before enabling any NERVous capability or dispatching the bundled workflow prompt. It then verifies Pi's native auto-retry setting. When retry is disabled, unreadable, or configured with fewer than one retry attempt, no workflow starts and no activation marker is written; enable retry with `maxRetries >= 1` in Pi settings and rerun `/nervous`. Activation adds only the NERVous tools that were present in the operator's initial active-tool selection; excluded components remain blocked.
 
 For new work, CORTEX first performs one bounded task-framing pass: it inspects relevant project context when useful and makes the objective, scope, non-goals, assumptions, success criteria, candidate options, and any MAGI decision concrete before persisting the goal with `cortex analyze`. It asks for clarification only when ambiguity blocks a responsible goal definition. If analyze reports a missing MAGI framing field, `cortex refine` repairs that same analyzed goal in place before deliberation instead of creating a duplicate. The framing is stored with the goal and is not repeated on resume, retry, revisit, or replan.
 
 Activation is persisted on the current session branch. Later prompts in that chain continue to use the coordinated NERVous workflow, including after resume or compaction. A new session—or tree navigation to a branch before the activation marker—starts with NERVous inactive. Merely mentioning `/nervous`, requesting orchestration in prose, or injecting `/nervous` from another extension does not activate the suite.
+
+Pi owns native transport retries. If a transient transport failure remains when Pi fully settles, NERVous displays a pause notice without starting more work. Run `/nervous:resume` to reconcile durable state and continue explicitly.
 
 A tool-call guard rejects NERVous calls outside an activated chain and rejects configured component exclusions inside one. The controller mutates only NERVous tools when entering or leaving a branch, so unrelated tool changes and lease-time revocations are not overwritten.
 
