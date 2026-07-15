@@ -67,6 +67,49 @@ describe("dashboard extension factory", () => {
 		assert.equal(commands.some((c) => c.name === "nervous"), false, "dashboard does not register the /nervous activation command");
 	});
 
+	it("shows persisted CORTEX task framing in goal details", () => {
+		const goal = {
+			id: "goal-001",
+			prompt: "abstract request",
+			status: "analyzed",
+			intent: {
+				goal: "Concrete goal",
+				intent_summary: "Framed intent",
+				success_criteria: ["observable result"],
+				constraints: [],
+				risks: [],
+				expected_output: "result",
+				complexity: "medium",
+				needs_magi: true,
+				framing: {
+					context: ["existing service"],
+					scope: ["new endpoint"],
+					non_goals: ["authentication"],
+					assumptions: ["current storage remains"],
+					open_questions: ["follow-up pagination"],
+					candidate_options: ["extend", "extract"],
+					decision_needed: "Choose the integration shape.",
+				},
+			},
+			axon_task_ids: [],
+			created_at: "2026-07-14T00:00:00.000Z",
+			updated_at: "2026-07-14T00:00:00.000Z",
+		};
+		const dashboard = new NervousDashboard(
+			emptyDashboardData({ goals: [goal] }),
+			{ requestRender() {} } as any,
+			theme,
+			() => undefined,
+			async () => emptyDashboardData({ goals: [goal] }),
+		);
+		(dashboard as any).detail = { kind: "cortex", item: goal };
+		const rendered = dashboard.render(240).join("\n");
+		assert.match(rendered, /Frame scope.*new endpoint/);
+		assert.match(rendered, /Frame non-goals.*authentication/);
+		assert.match(rendered, /Frame decision.*Choose the integration shape/);
+		dashboard.dispose();
+	});
+
 	it("auto-refreshes while open and cleans up its timer", async () => {
 		vi.useFakeTimers();
 		const refresh = vi.fn().mockResolvedValue(emptyDashboardData({ runs: [{ id: "run-001", status: "running" }] }));

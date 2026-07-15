@@ -19,7 +19,9 @@ First call `cortex get_config`, then apply any explicit `/nervous` invocation co
 Follow this flow for each goal. Each step uses a tool.
 
 ```
-1. analyze   → cortex analyze          (intent → durable Goal; for new work only)
+0. frame     → inspect + elaborate once (new work only; no tool or lifecycle phase)
+1. analyze   → cortex analyze          (framed intent → durable Goal)
+   refine?   → cortex refine           (repair reported MAGI gaps in place)
 2. magi?     → magi (if needs_magi, or the decision is hard/risky/architectural)
 3. plan      → cortex plan             (subtasks; ref MAGI rec if used)
 4. create    → axon create (per subtask) → cortex link (record ids)
@@ -29,11 +31,18 @@ Follow this flow for each goal. Each step uses a tool.
 8. complete  → cortex complete; continue to the next incomplete CORTEX goal
 ```
 
+### 0. Frame new work once
+Before `cortex analyze`, turn the request into a concrete task brief. Inspect relevant repository or operational context when useful, then make the objective, scope, non-goals, assumptions, success criteria, candidate options, and the exact decision MAGI would need to make explicit. Ask the user only when an unknown blocks a responsible goal definition; otherwise record uncertainty as a non-blocking assumption or open question.
+
+This is a bounded intake activity, not a new CORTEX status or recurring research loop. Run it once for new work only. On resume, replan, retry, or revisit, use the framing already persisted on the goal.
+
 ### 1. Analyze intent (`cortex analyze`)
-Call `cortex analyze` with the user's `prompt` plus your structured analysis: `intent_summary`, `goal`, `success_criteria[]`, `constraints[]`, `risks[]` (`{description, severity}`), `expected_output`, `complexity` (low|medium|high). Set `needs_magi` when the task is hard/ambiguous/risky/architectural (a heuristic suggests it for high complexity or high-severity risks; you can override). The tool returns a goal id and persists the analysis durably.
+Call `cortex analyze` with the user's `prompt` plus your structured analysis: `intent_summary`, `goal`, `success_criteria[]`, `constraints[]`, `risks[]` (`{description, severity}`), `expected_output`, optional `framing` (`context`, `scope`, `non_goals`, `assumptions`, `open_questions`, `candidate_options`, `decision_needed`), and `complexity` (low|medium|high). Set `needs_magi` when the task is hard/ambiguous/risky/architectural (a heuristic suggests it for high complexity or high-severity risks; you can override). The tool returns a goal id and persists the analysis durably.
+
+If analyze reports that a MAGI-required goal is missing its objective, scope, success criteria, or `decision_needed`, repair that same goal with `cortex refine goal_id=...`. Refine partially updates only supplied intent/framing fields, preserves the goal id and omitted data, and is allowed only while the goal is still `analyzed`. Do not call analyze again and create a duplicate goal.
 
 ### 2. Convene MAGI? (only if `needs_magi`)
-If the goal's `needs_magi` is true, call the **magi** tool with the issue (and the goal's context/constraints/options). Then carry its `final_recommendation` into planning. Otherwise skip to plan. Do **not** convene MAGI for simple, well-understood tasks.
+If the goal's `needs_magi` is true, first ensure its objective, scope, success criteria, and `framing.decision_needed` are concrete. Then call the **magi** tool, mapping framing context into `context`, goal constraints into `constraints`, candidate options into `options`, and the exact decision into `decision_needed`. Carry its `final_recommendation` into planning. Otherwise skip to plan. Do **not** convene MAGI for simple, well-understood tasks.
 
 ### 3. Plan (`cortex plan`)
 Call `cortex plan` with the goal id and a list of `subtasks` (`title`, `description`, `dependencies`, `priority`). If MAGI was used, set `magi_used=true` and `magi_output_ref`. The tool assigns plan-ids (`plan-001`…) and resolves dependency titles to plan-ids.
@@ -60,7 +69,7 @@ If you've been interrupted or your context was compacted, call **`cortex get`** 
 ## Key principles
 
 - **AXON is durable state** (the plan + status — source of truth). **SYNAPSE is transient** coordination. **CORTEX** holds the goal/intent/verification that ties them together. Don't duplicate: reference ids.
-- **Capture intent before acting.** A 30-second `cortex analyze` makes the work resumable and verifiable.
+- **Frame once, then capture intent before acting.** A bounded framing pass followed by `cortex analyze` makes abstract work concrete, resumable, and verifiable without repeating discovery later.
 - **Default to draining all workable incomplete goals** in the active NERVous context after explicit NERVous activation; stop only when goals are completed, cancelled, or waiting with explicit revisit/retry evidence.
 - **Respect `risk_gate_mode`.** `strict` blocks risky work; `auto_deliberate` needs MAGI/AMYGDALA approval evidence; `user_accepted` needs scoped user acceptance; `disabled` requires explicit dangerous opt-in evidence and must be called out.
 - **MAGI is for hard calls, not routine work.** Respect its `needs_magi` signal and also use MAGI when a decision is clearly hard, risky, ambiguous, or architectural.

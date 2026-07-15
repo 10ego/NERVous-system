@@ -68,6 +68,16 @@ describe("explicit NERVous activation gate", () => {
 		assert.deepEqual(h.active(), ["read", "bash", "other", ...NERVOUS_TOOL_NAMES]);
 		assert.equal(h.sent.length, 1);
 		assert.match(h.sent[0]!, /Invocation arguments: implement the feature/);
+		assert.match(h.sent[0]!, /one bounded task-framing pass before `cortex analyze`/);
+		assert.match(h.sent[0]!, /Do not repeat it when resuming, replanning, retrying, or revisiting/);
+		assert.ok(
+			h.sent[0]!.indexOf("one bounded task-framing pass") < h.sent[0]!.indexOf("Persist the result in `cortex analyze.framing`"),
+			"the invocation frames new work before durable analysis",
+		);
+		assert.ok(
+			h.sent[0]!.indexOf("one bounded task-framing pass") < h.sent[0]!.indexOf("Use MAGI for hard"),
+			"the invocation frames new work before MAGI deliberation",
+		);
 	});
 
 	it("keeps the coordinated workflow active for later turns in the same chain", async () => {

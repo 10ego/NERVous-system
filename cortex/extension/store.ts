@@ -26,6 +26,7 @@ import {
 	type Retryability,
 	type RiskAcceptance,
 	type RiskGateMode,
+	type TaskFraming,
 	type VerificationReport,
 	VERIFY_RECOMMENDATIONS,
 	type VerifyRecommendation,
@@ -70,10 +71,13 @@ export interface AnalyzeInput {
 	constraints?: string[];
 	risks?: Array<{ description: string; severity?: string }>;
 	expected_output?: string;
+	framing?: Partial<TaskFraming>;
 	complexity?: string;
 	needs_magi?: boolean;
 	magi_rationale?: string;
 }
+
+export type RefineInput = Omit<AnalyzeInput, "prompt">;
 
 export interface PlanSubtaskInput {
 	title: string;
@@ -163,6 +167,40 @@ function asPriority(v: unknown): Priority {
 const RETRYABILITIES = ["unknown", "retryable", "not_retryable"] as const;
 function asRetryability(v: unknown): Retryability {
 	return (RETRYABILITIES as readonly string[]).includes(v as string) ? (v as Retryability) : "unknown";
+}
+
+function cleanStrings(value: unknown): string[] {
+	return Array.isArray(value)
+		? value.filter((item): item is string => typeof item === "string").map((item) => item.trim()).filter(Boolean)
+		: [];
+}
+
+function normalizeFraming(value: unknown): TaskFraming | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const raw = value as Record<string, unknown>;
+	const framing: TaskFraming = {
+		context: cleanStrings(raw.context),
+		scope: cleanStrings(raw.scope),
+		non_goals: cleanStrings(raw.non_goals),
+		assumptions: cleanStrings(raw.assumptions),
+		open_questions: cleanStrings(raw.open_questions),
+		candidate_options: cleanStrings(raw.candidate_options),
+		decision_needed: typeof raw.decision_needed === "string" && raw.decision_needed.trim()
+			? raw.decision_needed.trim()
+			: undefined,
+	};
+	return framing.context.length || framing.scope.length || framing.non_goals.length || framing.assumptions.length ||
+		framing.open_questions.length || framing.candidate_options.length || framing.decision_needed
+		? framing
+		: undefined;
+}
+
+function mergeFraming(current: TaskFraming | undefined, patch: Partial<TaskFraming>): TaskFraming | undefined {
+	const merged: Record<string, unknown> = current ? { ...current } : {};
+	for (const key of ["context", "scope", "non_goals", "assumptions", "open_questions", "candidate_options", "decision_needed"] as const) {
+		if (patch[key] !== undefined) merged[key] = patch[key];
+	}
+	return normalizeFraming(merged);
 }
 
 /* ----------------------------- store ----------------------------------- */
@@ -297,6 +335,7 @@ export class GoalStore {
 				constraints: strArr(intent.constraints),
 				risks,
 				expected_output: str(intent.expected_output),
+				framing: normalizeFraming(intent.framing),
 				complexity: asComplexity(intent.complexity),
 				needs_magi: typeof intent.needs_magi === "boolean" ? intent.needs_magi : false,
 				magi_rationale: typeof intent.magi_rationale === "string" ? intent.magi_rationale : undefined,
@@ -458,6 +497,7 @@ export class GoalStore {
 			constraints: input.constraints ?? [],
 			risks: (input.risks ?? []).map((r) => ({ description: r.description, severity: asSeverity(r.severity) })),
 			expected_output: input.expected_output ?? "",
+			framing: normalizeFraming(input.framing),
 			complexity: asComplexity(input.complexity),
 			needs_magi: input.needs_magi ?? this.heuristicNeedsMagi(input),
 			magi_rationale: input.magi_rationale,
@@ -475,6 +515,31 @@ export class GoalStore {
 		this.current_goal_id = id;
 		this.meta.updated_at = now();
 		return clone(goal);
+	}
+
+	refine(goalId: string, input: RefineInput): Goal {
+		const g = this.require(goalId);
+		if (g.status !== "analyzed") {
+			throw new CortexError("invalid_transition", `Cannot refine goal ${goalId} from status "${g.status}"; refinement must happen before planning.`);
+		}
+		if (!Object.values(input).some((value) => value !== undefined)) {
+			throw new CortexError("invalid_arg", "Refine requires at least one intent or framing field.");
+		}
+		if (input.intent_summary !== undefined) g.intent.intent_summary = input.intent_summary.trim();
+		if (input.goal !== undefined) g.intent.goal = input.goal.trim();
+		if (input.success_criteria !== undefined) g.intent.success_criteria = cleanStrings(input.success_criteria);
+		if (input.constraints !== undefined) g.intent.constraints = cleanStrings(input.constraints);
+		if (input.risks !== undefined) {
+			g.intent.risks = input.risks.map((risk) => ({ description: risk.description, severity: asSeverity(risk.severity) }));
+		}
+		if (input.expected_output !== undefined) g.intent.expected_output = input.expected_output;
+		if (input.framing !== undefined) g.intent.framing = mergeFraming(g.intent.framing, input.framing);
+		if (input.complexity !== undefined) g.intent.complexity = asComplexity(input.complexity);
+		if (input.needs_magi !== undefined) g.intent.needs_magi = input.needs_magi;
+		if (input.magi_rationale !== undefined) g.intent.magi_rationale = input.magi_rationale;
+		g.updated_at = now();
+		this.meta.updated_at = g.updated_at;
+		return clone(g);
 	}
 
 	plan(goalId: string, input: PlanInput): Goal {

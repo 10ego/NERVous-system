@@ -7,7 +7,7 @@
  *
  * Asks a real model to use the `cortex analyze` tool on the spec's demo scenario
  * ("Build a simple todo API with tests") and verifies a durable goal is created
- * with structured intent (success criteria, risks, complexity, needs_magi).
+ * with one-time task framing and structured intent (success criteria, risks, complexity, needs_magi).
  */
 import * as assert from "node:assert";
 import * as fs from "node:fs";
@@ -42,8 +42,9 @@ RUN("live cortex tool", () => {
 
 		const prompt =
 			`Use the cortex tool with action "analyze" to capture the intent of this request: ` +
-			`"Build a simple todo API with tests." Fill in intent_summary, goal, success_criteria, constraints, risks, ` +
-			`expected_output, complexity, and needs_magi. Then reply with the goal id in one short line.`;
+			`"Build a simple todo API with tests." Frame the request once, then fill in intent_summary, goal, success_criteria, ` +
+			`constraints, risks, expected_output, framing (including scope, non_goals, assumptions, and decision_needed), ` +
+			`complexity, and needs_magi. Then reply with the goal id in one short line.`;
 		const { stdout, code } = await runPi([prompt], dir);
 
 		assert.equal(code, 0, `pi exited ${code}; stdout:\n${stdout}\n`);
@@ -55,6 +56,7 @@ RUN("live cortex tool", () => {
 		assert.match(result!.id, /^goal-\d+$/);
 		assert.ok(result!.intent.goal.length > 0, "goal statement captured");
 		assert.ok(result!.intent.success_criteria.length > 0, "success criteria captured");
+		assert.ok(result!.intent.framing?.scope.length, "task framing captured");
 		assert.ok(["low", "medium", "high"].includes(result!.intent.complexity), "complexity set");
 		assert.equal(typeof result!.intent.needs_magi, "boolean");
 

@@ -1,5 +1,6 @@
 import * as assert from "node:assert";
 import { describe, it } from "vitest";
+import { summarizeGoal } from "../extension/render.ts";
 import { canTransition, GoalStore } from "../extension/store.ts";
 import { CortexError } from "../extension/schema.ts";
 import type { GoalStatus } from "../extension/schema.ts";
@@ -31,11 +32,29 @@ describe("GoalStore — analyze", () => {
 			constraints: ["no deps"],
 			risks: [{ description: "r", severity: "high" }],
 			expected_output: "api + tests",
+			framing: {
+				context: ["existing HTTP service"],
+				scope: ["CRUD endpoints"],
+				non_goals: ["authentication"],
+				assumptions: ["in-memory storage is acceptable"],
+				open_questions: ["pagination can follow later"],
+				candidate_options: ["extend the service", "add a module"],
+				decision_needed: "Choose the integration shape.",
+			},
 			complexity: "high",
 		});
 		assert.deepEqual(g.intent.success_criteria, ["c1", "c2"]);
 		assert.equal(g.intent.risks[0]?.severity, "high");
 		assert.equal(g.intent.complexity, "high");
+		assert.deepEqual(g.intent.framing?.scope, ["CRUD endpoints"]);
+		assert.equal(g.intent.framing?.decision_needed, "Choose the integration shape.");
+		assert.match(summarizeGoal(g), /## Task framing/);
+		assert.match(summarizeGoal(g), /\*\*Non-goals:\*\* authentication/);
+	});
+
+	it("omits an empty framing brief for backward compatibility", () => {
+		const g = store().analyze({ prompt: "p", framing: {} });
+		assert.equal(g.intent.framing, undefined);
 	});
 
 	it("heuristic sets needs_magi for high complexity / high-severity risk", () => {
@@ -49,6 +68,70 @@ describe("GoalStore — analyze", () => {
 
 	it("explicit needs_magi overrides the heuristic", () => {
 		assert.equal(store().analyze({ prompt: "p", complexity: "high", needs_magi: false }).intent.needs_magi, false);
+	});
+});
+
+describe("GoalStore — refine", () => {
+	it("repairs an analyzed goal in place while preserving omitted fields", () => {
+		const s = store();
+		const original = s.analyze({
+			prompt: "abstract",
+			intent_summary: "original summary",
+			goal: "original goal",
+			constraints: ["keep this"],
+			framing: {
+				context: ["existing context"],
+				scope: ["old scope"],
+				assumptions: ["existing assumption"],
+			},
+			needs_magi: true,
+		});
+		const refined = s.refine(original.id, {
+			success_criteria: ["  observable result  "],
+			framing: {
+				scope: ["  repaired scope  "],
+				candidate_options: ["option a", "option b"],
+				decision_needed: "Choose an option.",
+			},
+		});
+		assert.equal(refined.id, original.id);
+		assert.equal(s.all().length, 1);
+		assert.equal(refined.intent.goal, "original goal");
+		assert.deepEqual(refined.intent.constraints, ["keep this"]);
+		assert.deepEqual(refined.intent.success_criteria, ["observable result"]);
+		assert.deepEqual(refined.intent.framing?.context, ["existing context"]);
+		assert.deepEqual(refined.intent.framing?.scope, ["repaired scope"]);
+		assert.deepEqual(refined.intent.framing?.assumptions, ["existing assumption"]);
+		assert.equal(refined.intent.framing?.decision_needed, "Choose an option.");
+	});
+
+	it("allows explicitly supplied framing values to be cleared", () => {
+		const s = store();
+		const goal = s.analyze({
+			prompt: "p",
+			framing: { context: ["preserve"], scope: ["clear"], decision_needed: "clear this" },
+		});
+		const refined = s.refine(goal.id, { framing: { scope: [], decision_needed: "" } });
+		assert.deepEqual(refined.intent.framing?.context, ["preserve"]);
+		assert.deepEqual(refined.intent.framing?.scope, []);
+		assert.equal(refined.intent.framing?.decision_needed, undefined);
+	});
+
+	it("normalizes malformed framing patches", () => {
+		const s = store();
+		const goal = s.analyze({ prompt: "p" });
+		const refined = s.refine(goal.id, {
+			framing: { scope: ["  valid  ", 42, ""] as unknown as string[] },
+		});
+		assert.deepEqual(refined.intent.framing?.scope, ["valid"]);
+	});
+
+	it("requires a field and rejects refinement after planning", () => {
+		const s = store();
+		const goal = s.analyze({ prompt: "p" });
+		assert.throws(() => s.refine(goal.id, {}), CortexError);
+		s.plan(goal.id, { subtasks: [{ title: "started planning" }] });
+		assert.throws(() => s.refine(goal.id, { goal: "too late" }), CortexError);
 	});
 });
 
@@ -375,13 +458,21 @@ describe("GoalStore — current / list / serialization", () => {
 
 	it("round-trips through toJSON/fromJSON", () => {
 		const s = store();
-		const g = s.analyze({ prompt: "p", goal: "g", success_criteria: ["c"], complexity: "high" });
+		const g = s.analyze({
+			prompt: "p",
+			goal: "g",
+			success_criteria: ["c"],
+			complexity: "high",
+			framing: { scope: ["framed scope"], assumptions: ["framed assumption"] },
+		});
 		s.plan(g.id, { subtasks: [{ title: "a" }] });
 		s.link(g.id, [{ plan_id: "plan-001", axon_task_id: "task-001" }]);
 		const back = GoalStore.fromJSON(s.toJSON());
 		assert.equal(back.get(g.id)?.intent.goal, "g");
 		assert.equal(back.get(g.id)?.status, "executing");
 		assert.equal(back.get(g.id)?.plan?.subtasks[0]?.axon_task_id, "task-001");
+		assert.deepEqual(back.get(g.id)?.intent.framing?.scope, ["framed scope"]);
+		assert.deepEqual(back.get(g.id)?.intent.framing?.assumptions, ["framed assumption"]);
 		assert.equal(back.current_goal_id, g.id);
 	});
 
@@ -407,6 +498,29 @@ describe("GoalStore — current / list / serialization", () => {
 		assert.equal(back.drain_runs.get(run.id)?.policy.max_goals, 7);
 		assert.equal(back.drain_runs.get(run.id)?.policy.max_no_progress_iterations, 99);
 		assert.deepEqual(back.drain_runs.get(run.id)?.policy.hard_stop_categories, ["custom_stop"]);
+	});
+
+	it("fromJSON normalizes malformed framing without breaking legacy goals", () => {
+		const s = GoalStore.fromJSON({
+			goals: {
+				"goal-001": {
+					prompt: "legacy",
+					intent: {
+						goal: "legacy",
+						framing: {
+							scope: ["  retained scope  ", 42, ""],
+							assumptions: "not-an-array",
+							decision_needed: 99,
+						},
+					},
+				},
+			},
+		});
+		const framing = s.get("goal-001")?.intent.framing;
+		assert.deepEqual(framing?.scope, ["retained scope"]);
+		assert.deepEqual(framing?.assumptions, []);
+		assert.equal(framing?.decision_needed, undefined);
+		assert.doesNotThrow(() => summarizeGoal(s.get("goal-001")!));
 	});
 
 	it("fromJSON coerces bad enums to safe defaults", () => {

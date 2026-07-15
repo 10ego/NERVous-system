@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { describe, it } from "vitest";
-import factory, { summarizeConfig } from "../extension/index.ts";
+import factory, { magiReadinessGaps, summarizeConfig } from "../extension/index.ts";
 
 interface Captured {
 	tools: Array<Record<string, unknown>>;
@@ -76,6 +76,57 @@ async function settleUiWork(): Promise<void> {
 }
 
 describe("cortex extension factory", () => {
+	it("reports framing gaps before MAGI deliberation", () => {
+		const base = {
+			intent_summary: "summary",
+			goal: "goal",
+			success_criteria: ["criterion"],
+			constraints: [],
+			risks: [],
+			expected_output: "output",
+			complexity: "high" as const,
+			needs_magi: true,
+		};
+		assert.deepEqual(magiReadinessGaps(base), ["scope", "decision_needed"]);
+		assert.deepEqual(magiReadinessGaps({
+			...base,
+			framing: {
+				context: [], scope: ["bounded scope"], non_goals: [], assumptions: [], open_questions: [],
+				candidate_options: ["a", "b"], decision_needed: "Choose an option.",
+			},
+		}), []);
+	});
+
+	it("repairs MAGI readiness gaps through the public refine action", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const cortex = captured.tools.find((tool) => tool.name === "cortex") as any;
+		assert.ok(cortex?.execute);
+		await withTempCortex(async (dir) => {
+			const ctx = { cwd: dir, isProjectTrusted: () => true };
+			const signal = new AbortController().signal;
+			const analyzed = await cortex.execute("call-analyze", {
+				action: "analyze",
+				prompt: "Choose an architecture",
+				complexity: "high",
+			}, signal, undefined, ctx);
+			assert.match(analyzed.content[0]?.text ?? "", /framing is not ready/);
+			const goalId = analyzed.details.goal.id;
+			const refined = await cortex.execute("call-refine", {
+				action: "refine",
+				goal_id: goalId,
+				success_criteria: ["A decision is recorded"],
+				framing: {
+					scope: ["architecture choice"],
+					candidate_options: ["modular monolith", "services"],
+					decision_needed: "Choose the architecture.",
+				},
+			}, signal, undefined, ctx);
+			assert.equal(refined.details.goal.id, goalId);
+			assert.match(refined.content[0]?.text ?? "", /MAGI framing ready/);
+		});
+	});
+
 	it("registers the cortex tool and /cortex* commands without throwing", () => {
 		const { pi, captured } = stubPi();
 		assert.doesNotThrow(() => factory(pi));
@@ -84,10 +135,12 @@ describe("cortex extension factory", () => {
 		assert.ok(cortex, "cortex tool registered");
 		assert.equal(typeof cortex?.execute, "function");
 		assert.ok(cortex?.parameters, "tool has parameters schema");
+		assert.ok((cortex?.parameters as any)?.properties?.framing, "analyze accepts a structured framing brief");
 		assert.ok(cortex?.promptSnippet, "tool has promptSnippet");
-		assert.ok(
-			Array.isArray((cortex?.promptGuidelines as string[]) ?? []) && (cortex?.promptGuidelines as string[]).length > 0,
-		);
+		const guidelines = (cortex?.promptGuidelines as string[]) ?? [];
+		assert.ok(Array.isArray(guidelines) && guidelines.length > 0);
+		assert.match(guidelines.join("\n"), /one bounded task-framing pass/);
+		assert.match(guidelines.join("\n"), /Do not repeat framing on resume or replan/);
 		assert.equal(typeof cortex?.renderCall, "function");
 		assert.equal(typeof cortex?.renderResult, "function");
 
