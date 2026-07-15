@@ -77,6 +77,8 @@ export interface AnalyzeInput {
 	magi_rationale?: string;
 }
 
+export type RefineInput = Omit<AnalyzeInput, "prompt">;
+
 export interface PlanSubtaskInput {
 	title: string;
 	description?: string;
@@ -191,6 +193,14 @@ function normalizeFraming(value: unknown): TaskFraming | undefined {
 		framing.open_questions.length || framing.candidate_options.length || framing.decision_needed
 		? framing
 		: undefined;
+}
+
+function mergeFraming(current: TaskFraming | undefined, patch: Partial<TaskFraming>): TaskFraming | undefined {
+	const merged: Record<string, unknown> = current ? { ...current } : {};
+	for (const key of ["context", "scope", "non_goals", "assumptions", "open_questions", "candidate_options", "decision_needed"] as const) {
+		if (patch[key] !== undefined) merged[key] = patch[key];
+	}
+	return normalizeFraming(merged);
 }
 
 /* ----------------------------- store ----------------------------------- */
@@ -505,6 +515,31 @@ export class GoalStore {
 		this.current_goal_id = id;
 		this.meta.updated_at = now();
 		return clone(goal);
+	}
+
+	refine(goalId: string, input: RefineInput): Goal {
+		const g = this.require(goalId);
+		if (g.status !== "analyzed") {
+			throw new CortexError("invalid_transition", `Cannot refine goal ${goalId} from status "${g.status}"; refinement must happen before planning.`);
+		}
+		if (!Object.values(input).some((value) => value !== undefined)) {
+			throw new CortexError("invalid_arg", "Refine requires at least one intent or framing field.");
+		}
+		if (input.intent_summary !== undefined) g.intent.intent_summary = input.intent_summary.trim();
+		if (input.goal !== undefined) g.intent.goal = input.goal.trim();
+		if (input.success_criteria !== undefined) g.intent.success_criteria = cleanStrings(input.success_criteria);
+		if (input.constraints !== undefined) g.intent.constraints = cleanStrings(input.constraints);
+		if (input.risks !== undefined) {
+			g.intent.risks = input.risks.map((risk) => ({ description: risk.description, severity: asSeverity(risk.severity) }));
+		}
+		if (input.expected_output !== undefined) g.intent.expected_output = input.expected_output;
+		if (input.framing !== undefined) g.intent.framing = mergeFraming(g.intent.framing, input.framing);
+		if (input.complexity !== undefined) g.intent.complexity = asComplexity(input.complexity);
+		if (input.needs_magi !== undefined) g.intent.needs_magi = input.needs_magi;
+		if (input.magi_rationale !== undefined) g.intent.magi_rationale = input.magi_rationale;
+		g.updated_at = now();
+		this.meta.updated_at = g.updated_at;
+		return clone(g);
 	}
 
 	plan(goalId: string, input: PlanInput): Goal {

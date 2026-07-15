@@ -300,6 +300,7 @@ export const GOAL_STATUS_SCHEMA = StringEnum(GOAL_STATUSES);
 
 export const CORTEX_ACTIONS = [
 	"analyze",
+	"refine",
 	"plan",
 	"link",
 	"verify",
@@ -352,22 +353,22 @@ const VerifyCheckSchema = Type.Object({
 export const CortexToolParams = Type.Object({
 	action: StringEnum(CORTEX_ACTIONS, {
 		description:
-			"What to do. analyze/plan/link/verify/complete/block/escalate/accept_risk/record_failure/reopen/cancel/drain/get_config/set_config/get/list/summary/set_current.",
+			"What to do. analyze/refine/plan/link/verify/complete/block/escalate/accept_risk/record_failure/reopen/cancel/drain/get_config/set_config/get/list/summary/set_current.",
 	}),
-	// analyze
+	// analyze/refine
 	prompt: Type.Optional(Type.String({ description: "The user prompt (analyze)." })),
-	intent_summary: Type.Optional(Type.String({ description: "One-paragraph restatement of intent (analyze)." })),
-	goal: Type.Optional(Type.String({ description: "Crisp goal statement (analyze)." })),
-	success_criteria: Type.Optional(Type.Array(Type.String(), { description: "Observable success conditions (analyze)." })),
-	constraints: Type.Optional(Type.Array(Type.String(), { description: "Hard constraints (analyze)." })),
-	risks: Type.Optional(Type.Array(RiskSchema, { description: "Identified risks (analyze)." })),
-	expected_output: Type.Optional(Type.String({ description: "Expected deliverable/output (analyze)." })),
+	intent_summary: Type.Optional(Type.String({ description: "One-paragraph restatement of intent (analyze/refine)." })),
+	goal: Type.Optional(Type.String({ description: "Crisp goal statement (analyze/refine)." })),
+	success_criteria: Type.Optional(Type.Array(Type.String(), { description: "Observable success conditions (analyze/refine)." })),
+	constraints: Type.Optional(Type.Array(Type.String(), { description: "Hard constraints (analyze/refine)." })),
+	risks: Type.Optional(Type.Array(RiskSchema, { description: "Identified risks (analyze/refine)." })),
+	expected_output: Type.Optional(Type.String({ description: "Expected deliverable/output (analyze/refine)." })),
 	framing: Type.Optional(TaskFramingInputSchema),
 	complexity: Type.Optional(COMPLEXITY_SCHEMA),
-	needs_magi: Type.Optional(Type.Boolean({ description: "Whether MAGI should be convened before planning (analyze)." })),
-	magi_rationale: Type.Optional(Type.String({ description: "Why MAGI is/isn't needed (analyze)." })),
-	// plan
-	goal_id: Type.Optional(Type.String({ description: "Goal id (plan/link/verify/complete/cancel/get/set_current)." })),
+	needs_magi: Type.Optional(Type.Boolean({ description: "Whether MAGI should be convened before planning (analyze/refine)." })),
+	magi_rationale: Type.Optional(Type.String({ description: "Why MAGI is/isn't needed (analyze/refine)." })),
+	// refine/plan
+	goal_id: Type.Optional(Type.String({ description: "Goal id (refine/plan/link/verify/complete/cancel/get/set_current)." })),
 	subtasks: Type.Optional(
 		Type.Array(PlannedSubtaskInputSchema, { description: "Planned subtasks (plan)." }),
 	),

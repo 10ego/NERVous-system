@@ -71,6 +71,70 @@ describe("GoalStore — analyze", () => {
 	});
 });
 
+describe("GoalStore — refine", () => {
+	it("repairs an analyzed goal in place while preserving omitted fields", () => {
+		const s = store();
+		const original = s.analyze({
+			prompt: "abstract",
+			intent_summary: "original summary",
+			goal: "original goal",
+			constraints: ["keep this"],
+			framing: {
+				context: ["existing context"],
+				scope: ["old scope"],
+				assumptions: ["existing assumption"],
+			},
+			needs_magi: true,
+		});
+		const refined = s.refine(original.id, {
+			success_criteria: ["  observable result  "],
+			framing: {
+				scope: ["  repaired scope  "],
+				candidate_options: ["option a", "option b"],
+				decision_needed: "Choose an option.",
+			},
+		});
+		assert.equal(refined.id, original.id);
+		assert.equal(s.all().length, 1);
+		assert.equal(refined.intent.goal, "original goal");
+		assert.deepEqual(refined.intent.constraints, ["keep this"]);
+		assert.deepEqual(refined.intent.success_criteria, ["observable result"]);
+		assert.deepEqual(refined.intent.framing?.context, ["existing context"]);
+		assert.deepEqual(refined.intent.framing?.scope, ["repaired scope"]);
+		assert.deepEqual(refined.intent.framing?.assumptions, ["existing assumption"]);
+		assert.equal(refined.intent.framing?.decision_needed, "Choose an option.");
+	});
+
+	it("allows explicitly supplied framing values to be cleared", () => {
+		const s = store();
+		const goal = s.analyze({
+			prompt: "p",
+			framing: { context: ["preserve"], scope: ["clear"], decision_needed: "clear this" },
+		});
+		const refined = s.refine(goal.id, { framing: { scope: [], decision_needed: "" } });
+		assert.deepEqual(refined.intent.framing?.context, ["preserve"]);
+		assert.deepEqual(refined.intent.framing?.scope, []);
+		assert.equal(refined.intent.framing?.decision_needed, undefined);
+	});
+
+	it("normalizes malformed framing patches", () => {
+		const s = store();
+		const goal = s.analyze({ prompt: "p" });
+		const refined = s.refine(goal.id, {
+			framing: { scope: ["  valid  ", 42, ""] as unknown as string[] },
+		});
+		assert.deepEqual(refined.intent.framing?.scope, ["valid"]);
+	});
+
+	it("requires a field and rejects refinement after planning", () => {
+		const s = store();
+		const goal = s.analyze({ prompt: "p" });
+		assert.throws(() => s.refine(goal.id, {}), CortexError);
+		s.plan(goal.id, { subtasks: [{ title: "started planning" }] });
+		assert.throws(() => s.refine(goal.id, { goal: "too late" }), CortexError);
+	});
+});
+
 describe("GoalStore — plan", () => {
 	it("assigns plan ids and resolves dependency titles", () => {
 		const s = store();

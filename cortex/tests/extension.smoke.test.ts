@@ -97,6 +97,36 @@ describe("cortex extension factory", () => {
 		}), []);
 	});
 
+	it("repairs MAGI readiness gaps through the public refine action", async () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		const cortex = captured.tools.find((tool) => tool.name === "cortex") as any;
+		assert.ok(cortex?.execute);
+		await withTempCortex(async (dir) => {
+			const ctx = { cwd: dir, isProjectTrusted: () => true };
+			const signal = new AbortController().signal;
+			const analyzed = await cortex.execute("call-analyze", {
+				action: "analyze",
+				prompt: "Choose an architecture",
+				complexity: "high",
+			}, signal, undefined, ctx);
+			assert.match(analyzed.content[0]?.text ?? "", /framing is not ready/);
+			const goalId = analyzed.details.goal.id;
+			const refined = await cortex.execute("call-refine", {
+				action: "refine",
+				goal_id: goalId,
+				success_criteria: ["A decision is recorded"],
+				framing: {
+					scope: ["architecture choice"],
+					candidate_options: ["modular monolith", "services"],
+					decision_needed: "Choose the architecture.",
+				},
+			}, signal, undefined, ctx);
+			assert.equal(refined.details.goal.id, goalId);
+			assert.match(refined.content[0]?.text ?? "", /MAGI framing ready/);
+		});
+	});
+
 	it("registers the cortex tool and /cortex* commands without throwing", () => {
 		const { pi, captured } = stubPi();
 		assert.doesNotThrow(() => factory(pi));

@@ -149,7 +149,7 @@ export function registerCortexExtension(pi: ExtensionAPI): void {
 		description: [
 			"Main reasoning core: turn a user prompt into a durable goal (intent, success criteria, risks),",
 			"decide whether MAGI is needed, store an execution plan, link AXON tasks, and verify completion.",
-			"Goals persist across compaction/restart. Actions: analyze, plan, link, verify, complete, block, escalate, accept_risk, record_failure, reopen, cancel, drain,",
+			"Goals persist across compaction/restart. Actions: analyze, refine, plan, link, verify, complete, block, escalate, accept_risk, record_failure, reopen, cancel, drain,",
 			"get_config, set_config, get, list, summary, set_current.",
 		].join(" "),
 		promptSnippet: "Run CORTEX: frame new work once, analyze intent into a durable goal, plan, link AXON tasks, verify",
@@ -158,8 +158,8 @@ export function registerCortexExtension(pi: ExtensionAPI): void {
 			"After explicit NERVous activation, check CORTEX config; unless drain_mode=off, default to draining all workable incomplete CORTEX goals, including due revisits and retryable/classification-needed failures.",
 			"When explaining a NERVous workflow, prefer a compact checklist of component → action/status → evidence; avoid verbose restatement.",
 			"Before cortex analyze for new work, perform one bounded task-framing pass: inspect relevant context when useful, make scope/non-goals/assumptions explicit, clarify blocking questions, and identify candidate options plus the decision MAGI would need to make. Do not repeat framing on resume or replan.",
-			"Use the cortex tool action 'analyze' to persist the framed intent, success criteria, constraints, risks, and optional framing brief as a durable goal.",
-			"After cortex analyze, if needs_magi is true or the decision is hard/risky/ambiguous/architectural, ensure the objective, scope, success criteria, and decision_needed are concrete, then pass framing context/constraints/options/decision_needed to magi before cortex plan; otherwise proceed to cortex plan.",
+			"Use the cortex tool action 'analyze' to persist the framed intent, success criteria, constraints, risks, and optional framing brief as a durable goal. If its response reports MAGI readiness gaps, use cortex action 'refine' on the same analyzed goal before deliberation; do not create a duplicate goal.",
+			"After cortex analyze/refine, if needs_magi is true or the decision is hard/risky/ambiguous/architectural, ensure the objective, scope, success criteria, and decision_needed are concrete, then pass framing context/constraints/options/decision_needed to magi before cortex plan; otherwise proceed to cortex plan.",
 			"Use cortex tool action 'plan' to store the execution plan, then create each subtask in AXON (axon create) and record the ids with cortex action 'link'.",
 			"Use cortex tool action 'get' (goal_id 'current') to resume a goal after compaction or restart.",
 			"When AXON work is complete, read the axon board, then use cortex action 'verify' to check against the goal's success criteria before final review.",
@@ -198,6 +198,32 @@ export function registerCortexExtension(pi: ExtensionAPI): void {
 								: `needs_magi=true → framing ready; convene MAGI before planning.`
 							: `proceed to plan.`;
 						return ok(action, `Analyzed ${g.id}: ${g.intent.intent_summary}\n(${next})`, { goal: g });
+					});
+				}
+
+				case "refine": {
+					if (!p.goal_id) return fail(action, "refine requires `goal_id`.");
+					return runOp(store, action, (s) => {
+						const id = resolveGoalId(s, p.goal_id)!;
+						const g = s.refine(id, {
+							intent_summary: p.intent_summary,
+							goal: p.goal,
+							success_criteria: p.success_criteria,
+							constraints: p.constraints,
+							risks: p.risks,
+							expected_output: p.expected_output,
+							framing: p.framing,
+							complexity: p.complexity,
+							needs_magi: p.needs_magi,
+							magi_rationale: p.magi_rationale,
+						});
+						const gaps = g.intent.needs_magi ? magiReadinessGaps(g.intent) : [];
+						const next = g.intent.needs_magi
+							? gaps.length
+								? `MAGI framing still incomplete (${gaps.join(", ")}); refine this goal again before deliberation.`
+								: `MAGI framing ready; convene MAGI before planning.`
+							: `proceed to plan.`;
+						return ok(action, `Refined ${g.id} in place: ${g.intent.intent_summary}\n(${next})`, { goal: g });
 					});
 				}
 
