@@ -1,4 +1,4 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { SettingsManager, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { buildNervousInvocation, NERVOUS_ACTIVATION_ENTRY, NERVOUS_PROMPT_SIGNATURE } from "./nervous-command.ts";
 import { installNervousTransportPauseNotice, NERVOUS_TRANSPORT_RESUME_PROMPT } from "./transport-recovery.ts";
 
@@ -35,12 +35,23 @@ function branchHasNervousActivation(entries: readonly unknown[]): boolean {
 	);
 }
 
+interface ActivationGateOptions {
+	isAutoRetryEnabled?: (ctx: ExtensionCommandContext) => boolean;
+}
+
+function fileBackedAutoRetryEnabled(ctx: ExtensionCommandContext): boolean {
+	const settings = SettingsManager.create(ctx.cwd, undefined, { projectTrusted: ctx.isProjectTrusted() });
+	const errors = settings.drainErrors();
+	if (errors.length) throw new AggregateError(errors.map((entry) => entry.error), "Pi retry settings could not be read");
+	return settings.getRetryEnabled();
+}
+
 /**
  * Keep the root suite invisible in fresh chains. `/nervous` waits for any current
- * run to finish, then activates the operator-permitted subset for the current
- * session branch and persists that chain authorization across future turns.
+ * run to finish, verifies Pi native retry, then activates the operator-permitted
+ * subset for the current session branch and persists that chain authorization.
  */
-export function installNervousActivationGate(pi: ExtensionAPI): void {
+export function installNervousActivationGate(pi: ExtensionAPI, options: ActivationGateOptions = {}): void {
 	let chainActive = false;
 	let permittedNervousTools = new Set<string>();
 
@@ -87,6 +98,16 @@ export function installNervousActivationGate(pi: ExtensionAPI): void {
 			await ctx.waitForIdle();
 			if (permittedNervousTools.size === 0) {
 				ctx.ui.notify("No NERVous tools are enabled. Run /nervous:config enabled=true or adjust Pi's active tool selection.", "error");
+				return;
+			}
+			let autoRetryEnabled: boolean;
+			try { autoRetryEnabled = (options.isAutoRetryEnabled ?? fileBackedAutoRetryEnabled)(ctx); }
+			catch (error) {
+				ctx.ui.notify(`Could not verify Pi native auto-retry (${error instanceof Error ? error.message : String(error)}). No NERVous workflow was started.`, "error");
+				return;
+			}
+			if (!autoRetryEnabled) {
+				ctx.ui.notify("Pi native auto-retry is disabled. Enable it in Pi settings and rerun /nervous. No NERVous workflow was started.", "warning");
 				return;
 			}
 			activateChain(!chainActive);
