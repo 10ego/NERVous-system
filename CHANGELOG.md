@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.0](https://github.com/10ego/NERVous-system/compare/v1.6.0...v1.7.0) (2026-07-15)
+
+
+### Features
+
+* **controller:** add settled transport resume valve ([#46](https://github.com/10ego/NERVous-system/issues/46)) ([039374c](https://github.com/10ego/NERVous-system/commit/039374ca8eb0b30d0305d3f5fe0b90f30a652646))
+
 ## [1.6.0](https://github.com/10ego/NERVous-system/compare/v1.5.0...v1.6.0) (2026-07-15)
 
 
