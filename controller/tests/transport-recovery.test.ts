@@ -44,7 +44,7 @@ const websocketFailure = assistant({
 });
 
 describe("NERVous transport recovery", () => {
-	it("queues one visible follow-up for an active workflow transport failure", async () => {
+	it("queues one visible steering nudge for an active workflow transport failure", async () => {
 		const h = harness();
 		await h.emit("agent_end", { messages: [websocketFailure] });
 
@@ -54,7 +54,7 @@ describe("NERVous transport recovery", () => {
 		assert.match(h.sent[0]!.message.content, /Continue the active workflow from durable state/);
 		assert.match(h.sent[0]!.message.content, /do not assume they ran/);
 		assert.deepEqual(h.sent[0]!.message.details.unresolved_tool_call_ids, ["call-lion"]);
-		assert.deepEqual(h.sent[0]!.options, { triggerTurn: true, deliverAs: "followUp" });
+		assert.deepEqual(h.sent[0]!.options, { triggerTurn: true, deliverAs: "steer" });
 	});
 
 	it("recognizes diagnostic and common transport failures but not arbitrary errors", () => {

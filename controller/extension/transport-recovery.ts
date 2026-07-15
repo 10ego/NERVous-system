@@ -40,8 +40,8 @@ function boundedError(message: AssistantFailure): string {
 
 /**
  * Queue one workflow-scoped continuation when the provider transport terminates
- * an active NERVous turn. Pi's native retry remains authoritative when enabled;
- * this follow-up is the fallback when native retries are disabled or exhausted.
+ * an active NERVous turn. A steering message joins Pi's native retry when enabled
+ * and drives a continuation itself when native retries are disabled or exhausted.
  */
 export function installNervousTransportRecovery(pi: ExtensionAPI, isWorkflowActive: () => boolean): void {
 	let recoveryQueued = false;
@@ -62,22 +62,22 @@ export function installNervousTransportRecovery(pi: ExtensionAPI, isWorkflowActi
 	pi.on("agent_end", (event: AgentEndEvent) => {
 		if (!isWorkflowActive() || recoveryQueued) return;
 		const assistant = lastAssistant(event.messages);
-		if (!isTransientTransportFailure(assistant)) return;
+		if (!assistant || !isTransientTransportFailure(assistant)) return;
 
 		recoveryQueued = true;
-		const unresolved = unresolvedToolCallIds(event.messages, assistant!);
+		const unresolved = unresolvedToolCallIds(event.messages, assistant);
 		const replayGuard = unresolved.length
 			? " The interrupted response contained unresolved tool calls; do not assume they ran."
 			: "";
 		pi.sendMessage({
 			customType: NERVOUS_TRANSPORT_RECOVERY_MESSAGE,
 			content: [
-				`NERVous automatic recovery: the previous turn ended because of a transient transport failure (${boundedError(assistant!)}).`,
+				`NERVous automatic recovery: the previous turn ended because of a transient transport failure (${boundedError(assistant)}).`,
 				`Continue the active workflow from durable state.${replayGuard}`,
 				"Before reissuing side-effecting work, inspect durable state and reuse any committed result so workers or mutations are not duplicated.",
 			].join(" "),
 			display: true,
-			details: { attempt: 1, max_attempts: 1, error: boundedError(assistant!), unresolved_tool_call_ids: unresolved },
-		}, { triggerTurn: true, deliverAs: "followUp" });
+			details: { attempt: 1, max_attempts: 1, error: boundedError(assistant), unresolved_tool_call_ids: unresolved },
+		}, { triggerTurn: true, deliverAs: "steer" });
 	});
 }
