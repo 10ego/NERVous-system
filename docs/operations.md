@@ -57,7 +57,7 @@ When the suite is enabled, its extensions remain loaded but all eight model-call
 
 A tool-call guard rejects all component calls in a fresh chain and rejects operator-excluded components in an activated chain, even if another extension makes them visible. The controller does not restore a whole-tool-set snapshot, so unrelated tool changes and revocations made after activation survive.
 
-While a NERVous chain is active, a transient provider transport failure such as a WebSocket disconnect can queue one visible automatic recovery nudge. Pi's native retry owns its configured attempt budget; NERVous queues nothing during that budget, so cancelling native retry also cancels continuation. The NERVous fallback runs only when native retries are disabled or exhausted. It tells the agent to reconcile durable state and reuse committed results before replaying side effects, especially when the interrupted response contained unresolved tool calls. Recovery is bounded to one attempt until it succeeds or the user starts a new turn, preventing a failed recovery from looping. NERVous does not modify Pi's global `retry.enabled` setting; inactive session chains retain ordinary Pi behavior.
+Pi owns transport retry classification, backoff, attempt limits, and cancellation. If an active NERVous workflow still ends on a transient transport failure, the controller waits for Pi's `agent_settled` event and posts a visible pause notice without starting another model turn. Run `/nervous:resume` to continue explicitly; its recovery prompt first reconciles durable CORTEX, AXON, CEREBEL, and LION state so committed work and active workers are not duplicated. A successful native retry clears the pending notice, while disabled, exhausted, or cancelled retry ends at the manual release valve. NERVous does not modify Pi's persistent retry setting.
 
 This invocation gate is separate from package enablement. Keep NERVous installed while removing its component runtime surface with `/nervous:config enabled=false`. Pi reloads the current session without the component tools, workflow commands, skills, and prompts. The always-loaded controller retains `/nervous:config` and an inert `/nervous` command that reports the disabled configuration. Run `enabled=true` to reload the resources; fresh chains return to their gated state, while a branch carrying an activation marker resumes the coordinated workflow. The user-level setting is persistent and defaults to enabled; Pi's trusted project package settings still determine which package resources apply in that repository.
 
@@ -82,5 +82,7 @@ Suite enablement and CEREBEL's `max_parallel` default are stored at user scope i
 Failed work is recorded with retryability through `cortex record_failure`. Skipped or blocked work gets `next_revisit_at` metadata and can be returned to the workflow with `cortex reopen` after resolution.
 
 ## Compatibility and limitations
+
+The settled transport pause requires Pi 0.80.7 or newer for the extension-facing `agent_settled` lifecycle event.
 
 The workspace is released as one version-aligned distribution. See [RELEASES.md](../RELEASES.md) for the 1.x compatibility commitment, clean-slate state policy, and known architectural limitations.

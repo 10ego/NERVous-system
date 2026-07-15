@@ -45,6 +45,8 @@ For new work, CORTEX first performs one bounded task-framing pass: it inspects r
 
 Activation is persisted on the current session branch. Later prompts in that chain continue to use the coordinated NERVous workflow, including after resume or compaction. A new session—or tree navigation to a branch before the activation marker—starts with NERVous inactive. Merely mentioning `/nervous`, requesting orchestration in prose, or injecting `/nervous` from another extension does not activate the suite.
 
+Pi owns native transport retries. If a transient transport failure remains when Pi fully settles, NERVous displays a pause notice without starting more work. Run `/nervous:resume` to reconcile durable state and continue explicitly.
+
 A tool-call guard rejects NERVous calls outside an activated chain and rejects configured component exclusions inside one. The controller mutates only NERVous tools when entering or leaving a branch, so unrelated tool changes and lease-time revocations are not overwritten.
 
 For a read-only state browser, run:
