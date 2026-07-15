@@ -210,9 +210,9 @@ describe("NERVous root-package enablement", () => {
 		assert.deepEqual(registrations.map((command) => command.name), ["nervous:config"]);
 	});
 
-	it("registers one session_start handler for default tool deactivation", () => {
+	it("registers session-start handlers for tool deactivation and recovery reset", () => {
 		const { pi, captured } = stubPi();
 		factory(pi);
-		assert.equal(captured.handlers.get("session_start")?.length ?? 0, 1);
+		assert.equal(captured.handlers.get("session_start")?.length ?? 0, 2);
 	});
 });
