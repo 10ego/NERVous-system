@@ -21,7 +21,7 @@ describe("npm release package policy", () => {
 	test("accepts the current lifecycle-script-disabled package", () => {
 		assert.equal(current.package.name, "nervous-system");
 		assert.equal(current.package.version, packageJson.version);
-		assert.equal(current.paths.length, 100);
+		assert.equal(current.paths.length, 102);
 	});
 
 	test("rejects unsafe, unexpected, executable, and duplicate package paths", () => {
