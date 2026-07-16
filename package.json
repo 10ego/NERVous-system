@@ -76,9 +76,10 @@
   },
   "scripts": {
     "test": "vitest run && npm run test:tooling",
-    "test:tooling": "node --test tests/tooling/compare-semver.node.mjs tests/tooling/package-contents.node.mjs",
+    "test:tooling": "node --test tests/tooling/compare-semver.node.mjs tests/tooling/package-contents.node.mjs tests/tooling/workflows.node.mjs",
     "verify:package": "node scripts/verify-package-contents.mjs",
     "verify:release-version": "node scripts/verify-release-version.mjs",
+    "verify:workflows": "node scripts/verify-workflows.mjs",
     "test:watch": "vitest",
     "test:magi": "vitest run --dir magi",
     "test:axon": "vitest run --dir axon",
