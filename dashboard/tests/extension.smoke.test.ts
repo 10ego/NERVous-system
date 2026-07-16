@@ -202,6 +202,35 @@ describe("dashboard extension factory", () => {
 		}
 	});
 
+	it("isolates rejected CEREBEL state so the dashboard still opens with healthy components", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-rejected-cerebel-"));
+		const axonPath = path.join(dir, "axon", "ledger.json");
+		const cerebelPath = path.join(dir, "cerebel", "cerebel.json");
+		const oldAxon = process.env.AXON_LEDGER_PATH;
+		const oldCerebel = process.env.CEREBEL_PATH;
+		process.env.AXON_LEDGER_PATH = axonPath;
+		process.env.CEREBEL_PATH = cerebelPath;
+		try {
+			await AxonStore.fromCwd(dir).mutate((ledger) => ledger.create({ title: "healthy task" }));
+			await fs.mkdir(path.dirname(cerebelPath), { recursive: true });
+			await fs.writeFile(cerebelPath, JSON.stringify({ version: 1, waves: {
+				"wave-001": { id: "wave-001", status: "completed", assignments: [{ id: "assign-001", status: "completed", lion_run_id: "run-001" }] },
+			} }));
+			const previous = emptyDashboardData({ waves: [{ id: "stale-wave" }] });
+			const loaded = await loadDashboardData(dir, ["axon", "cerebel"] as any, previous);
+			assert.equal(loaded.tasks[0]?.title, "healthy task");
+			assert.deepEqual(loaded.waves, [], "rejected component must not leave a stale prior snapshot visible");
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /CEREBEL unavailable/);
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /assignment assign-001 has invalid LION provenance/);
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /dashboard did not modify state/);
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /\/nervous:reset/);
+			assert.equal(await fs.readFile(cerebelPath, "utf8").then((raw) => raw.includes("run-001")), true, "dashboard remains read-only");
+		} finally {
+			if (oldAxon === undefined) delete process.env.AXON_LEDGER_PATH; else process.env.AXON_LEDGER_PATH = oldAxon;
+			if (oldCerebel === undefined) delete process.env.CEREBEL_PATH; else process.env.CEREBEL_PATH = oldCerebel;
+		}
+	});
+
 	it("reloads only the changed component and preserves other data and warnings", async () => {
 		const run = { id: "run-new", status: "running" } as any;
 		const previous = emptyDashboardData({

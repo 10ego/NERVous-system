@@ -101,6 +101,24 @@ export async function createDashboardChangeDetector(cwd: string, resolveFile = r
 	};
 }
 
+function clearDashboardComponent(data: DashboardData, component: Tab): void {
+	switch (component) {
+		case "cortex": data.goals = []; return;
+		case "magi": data.magi = []; return;
+		case "axon": data.tasks = []; return;
+		case "synapse": data.notes = []; return;
+		case "lion": data.runs = []; return;
+		case "cerebel": data.waves = []; return;
+		case "ganglion": data.ganglions = []; return;
+		case "amygdala": data.incidents = []; return;
+	}
+}
+
+function dashboardLoadWarning(component: Tab, error: unknown): string {
+	const reason = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 700);
+	return `${component.toUpperCase()} unavailable: ${reason}. The dashboard did not modify state; use /nervous:state to inspect it or /nervous:reset to archive this whole context and start clean.`;
+}
+
 export async function loadDashboardData(cwd: string, components: Tab[] = DASHBOARD_COMPONENTS, previous?: DashboardData): Promise<DashboardData> {
 	const data: DashboardData = previous ? {
 		...previous,
@@ -110,36 +128,41 @@ export async function loadDashboardData(cwd: string, components: Tab[] = DASHBOA
 	} : { goals: [], magi: [], tasks: [], notes: [], runs: [], waves: [], ganglions: [], incidents: [], warnings: [], warningGroups: {} };
 	const warningGroups = data.warningGroups!;
 	await Promise.all([...new Set(components)].map(async (component) => {
-		switch (component) {
-			case "cortex": {
-				const loaded = await CortexStore.fromCwd(cwd).query((store) => store.all().sort((a, b) => b.created_at.localeCompare(a.created_at)));
-				data.goals = loaded.result; warningGroups.cortex = loaded.warnings; return;
+		try {
+			switch (component) {
+				case "cortex": {
+					const loaded = await CortexStore.fromCwd(cwd).query((store) => store.all().sort((a, b) => b.created_at.localeCompare(a.created_at)));
+					data.goals = loaded.result; warningGroups.cortex = loaded.warnings; return;
+				}
+				case "magi": data.magi = await MagiHistoryStore.fromCwd(cwd).list(100); warningGroups.magi = []; return;
+				case "axon": {
+					const loaded = await AxonStore.fromCwd(cwd).query((ledger) => ledger.all());
+					data.tasks = loaded.result; warningGroups.axon = loaded.warnings; return;
+				}
+				case "synapse": {
+					const loaded = await SynapseStore.fromCwd(cwd).query((log) => log.list({ limit: 100 }));
+					data.notes = loaded.result; warningGroups.synapse = loaded.warnings; return;
+				}
+				case "lion": {
+					const loaded = await LionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+					data.runs = loaded.result; warningGroups.lion = loaded.warnings; return;
+				}
+				case "cerebel": {
+					const loaded = await CerebelStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+					data.waves = loaded.result; warningGroups.cerebel = loaded.warnings; return;
+				}
+				case "ganglion": {
+					const loaded = await GanglionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+					data.ganglions = loaded.result; warningGroups.ganglion = loaded.warnings; return;
+				}
+				case "amygdala": {
+					const loaded = await AmygdalaStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+					data.incidents = loaded.result; warningGroups.amygdala = loaded.warnings; return;
+				}
 			}
-			case "magi": data.magi = await MagiHistoryStore.fromCwd(cwd).list(100); warningGroups.magi = []; return;
-			case "axon": {
-				const loaded = await AxonStore.fromCwd(cwd).query((ledger) => ledger.all());
-				data.tasks = loaded.result; warningGroups.axon = loaded.warnings; return;
-			}
-			case "synapse": {
-				const loaded = await SynapseStore.fromCwd(cwd).query((log) => log.list({ limit: 100 }));
-				data.notes = loaded.result; warningGroups.synapse = loaded.warnings; return;
-			}
-			case "lion": {
-				const loaded = await LionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
-				data.runs = loaded.result; warningGroups.lion = loaded.warnings; return;
-			}
-			case "cerebel": {
-				const loaded = await CerebelStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
-				data.waves = loaded.result; warningGroups.cerebel = loaded.warnings; return;
-			}
-			case "ganglion": {
-				const loaded = await GanglionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
-				data.ganglions = loaded.result; warningGroups.ganglion = loaded.warnings; return;
-			}
-			case "amygdala": {
-				const loaded = await AmygdalaStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
-				data.incidents = loaded.result; warningGroups.amygdala = loaded.warnings; return;
-			}
+		} catch (error) {
+			clearDashboardComponent(data, component);
+			warningGroups[component] = [dashboardLoadWarning(component, error)];
 		}
 	}));
 	data.warnings = DASHBOARD_COMPONENTS.flatMap((component) => warningGroups[component] ?? []);
