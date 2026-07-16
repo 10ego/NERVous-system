@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.3](https://github.com/10ego/NERVous-system/compare/v1.7.2...v1.7.3) (2026-07-16)
+
+
+### Miscellaneous Chores
+
+* **ci:** upgrade official actions to Node 24 ([#56](https://github.com/10ego/NERVous-system/issues/56)) ([5ae7ac6](https://github.com/10ego/NERVous-system/commit/5ae7ac64c9e7a14c09d821e7bd9aae4fd0ce9efc))
+
 ## [1.7.2](https://github.com/10ego/NERVous-system/compare/v1.7.1...v1.7.2) (2026-07-16)
 
 
