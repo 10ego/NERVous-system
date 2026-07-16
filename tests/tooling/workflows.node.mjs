@@ -58,13 +58,23 @@ describe("release workflow trust boundaries", () => {
 		rejects({ release: replaceOnce(release, "    permissions:\n      contents: read\n    outputs:\n      artifact_digest:", "    permissions:\n      contents: read\n      id-token: write\n    outputs:\n      artifact_digest:") }, /package must not receive OIDC/);
 	});
 
+	test("rejects unreviewed Node versions", () => {
+		rejects({ pullRequest: replaceOnce(pullRequest, "node-version: 24.18.0", "node-version: 24") }, /reviewed Node 24 release/);
+		rejects({ release: replaceFirst(release, "node-version: 24.18.0", "node-version: 22.19.0") }, /reviewed Node 24 release/);
+	});
+
 	test("rejects repository execution in the fresh package boundary", () => {
 		rejects({ release: replaceOnce(release, "      - name: Build one lifecycle-script-disabled tarball", "      - name: Install untrusted code\n        run: npm ci\n\n      - name: Build one lifecycle-script-disabled tarball") }, /must not install dependencies/);
 	});
 
 	test("rejects source checkout or secrets in the OIDC publisher", () => {
 		rejects({ release: replaceOnce(release, "      - name: Set up Node.js for trusted publishing", "      - name: Check out source\n        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0\n\n      - name: Set up Node.js for trusted publishing") }, /must not check out/);
-		rejects({ release: replaceOnce(release, "          ACTION_DOWNLOAD_PATH: ${{ steps.download.outputs.download-path }}", "          ACTION_DOWNLOAD_PATH: ${{ steps.download.outputs.download-path }}\n          NPM_AUTH: ${{ secrets.NPM_AUTH }}") }, /only release may reference one environment secret|publish must not reference secrets/);
+		rejects({ release: replaceOnce(release, "          DOWNLOAD_STEP_PATH: ${{ steps.download.outputs.download_path }}", "          DOWNLOAD_STEP_PATH: ${{ steps.download.outputs.download_path }}\n          NPM_AUTH: ${{ secrets.NPM_AUTH }}") }, /only release may reference one environment secret|publish must not reference secrets/);
+	});
+
+	test("rejects unsafe artifact archive handling", () => {
+		rejects({ release: replaceOnce(release, '[[ "$(sha256sum "$archive" | awk \'{print $1}\')" == "$ARTIFACT_DIGEST" ]] || exit 1', "true") }, /archive digest/);
+		rejects({ release: replaceOnce(release, 'unzip -p "$archive" "$TARBALL_FILENAME" > "$tarball_path"', 'unzip "$archive"') }, /stream exactly one expected tarball/);
 	});
 
 	test("rejects weakening the exact publication command", () => {
