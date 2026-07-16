@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/10ego/NERVous-system/compare/v1.7.0...v1.7.1) (2026-07-16)
+
+
+### Miscellaneous Chores
+
+* **ci:** harden release supply chain ([#50](https://github.com/10ego/NERVous-system/issues/50)) ([fd8b07b](https://github.com/10ego/NERVous-system/commit/fd8b07b5ff2f29f6562791222e78f1e8d17d9a73))
+
 ## [1.7.0](https://github.com/10ego/NERVous-system/compare/v1.6.0...v1.7.0) (2026-07-15)
 
 
