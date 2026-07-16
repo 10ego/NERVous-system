@@ -18,3 +18,4 @@ Choose the path that matches what you need:
 | [Operations](operations.md) | Session-chain activation, live workers, dashboard, runtime state, drain behavior, risk gates, and model defaults |
 | [Benchmark](benchmark.md) | Method, results, interpretation, and limitations |
 | [Release policy](../RELEASES.md) | Compatibility commitments, state policy, and known architectural limitations |
+| [Release operations](releasing.md) | Secure activation, credential migration, normal releases, recovery, and shutdown |
