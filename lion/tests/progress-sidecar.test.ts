@@ -25,7 +25,10 @@ async function exists(filePath: string): Promise<boolean> { try { await fs.lstat
 const execFileAsync = promisify(execFile);
 
 async function flushInChild(runsPath: string, run: Pick<LionRun, "id" | "incarnation_id">, activityPrefix: string): Promise<void> {
-	const vitestCli = require.resolve("vitest/vitest.mjs");
+	const vitestPackagePath = require.resolve("vitest/package.json");
+	const vitestPackage = JSON.parse(await fs.readFile(vitestPackagePath, "utf8")) as { bin?: { vitest?: unknown } };
+	if (typeof vitestPackage.bin?.vitest !== "string") throw new Error("Vitest package does not expose a CLI binary");
+	const vitestCli = path.resolve(path.dirname(vitestPackagePath), vitestPackage.bin.vitest);
 	const fixture = path.join(__dirname, "progress-sidecar-process.fixture.test.ts");
 	await execFileAsync(process.execPath, [vitestCli, "run", fixture, "--reporter=dot"], {
 		cwd: path.resolve(__dirname, ".."),

@@ -33,7 +33,7 @@
     "@types/node": "^22.0.0",
     "typebox": "*",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0"
+    "vitest": "^4.1.10"
   },
   "dependencies": {
     "@nervous-system/state": "1.0.0"
