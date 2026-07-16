@@ -135,7 +135,8 @@ export function formatNervousStateReport(snapshot: NervousContextSnapshot): stri
 		const records = file.recordCount === undefined ? "records unknown" : `${file.recordCount} record(s)`;
 		const open = file.openRecordCount === undefined ? "" : `, ${file.openRecordCount} open`;
 		const invalid = file.parseError ? `, unreadable JSON: ${file.parseError}` : "";
-		lines.push(`- ${file.component.toUpperCase()}: ${records}${open}, ${formatBytes(file.bytes)}, ${file.source}${file.updatedAt ? `, updated ${file.updatedAt}` : ""}${invalid}`);
+		const location = file.source === "override" ? `override \`${file.filePath}\`` : "namespace";
+		lines.push(`- ${file.component.toUpperCase()}: ${records}${open}, ${formatBytes(file.bytes)}, ${location}${file.updatedAt ? `, updated ${file.updatedAt}` : ""}${invalid}`);
 	}
 	lines.push(
 		"",

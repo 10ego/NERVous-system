@@ -222,7 +222,7 @@ describe("dashboard extension factory", () => {
 			assert.deepEqual(loaded.waves, [], "rejected component must not leave a stale prior snapshot visible");
 			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /CEREBEL unavailable/);
 			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /assignment assign-001 has invalid LION provenance/);
-			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /dashboard did not modify state/);
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /state unchanged/);
 			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /\/nervous:reset/);
 			assert.equal(await fs.readFile(cerebelPath, "utf8").then((raw) => raw.includes("run-001")), true, "dashboard remains read-only");
 		} finally {

@@ -116,7 +116,7 @@ function clearDashboardComponent(data: DashboardData, component: Tab): void {
 
 function dashboardLoadWarning(component: Tab, error: unknown): string {
 	const reason = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 700);
-	return `${component.toUpperCase()} unavailable: ${reason}. The dashboard did not modify state; use /nervous:state to inspect it or /nervous:reset to archive this whole context and start clean.`;
+	return `${component.toUpperCase()} unavailable (state unchanged). Recovery: /nervous:state or /nervous:reset. Reason: ${reason}`;
 }
 
 export async function loadDashboardData(cwd: string, components: Tab[] = DASHBOARD_COMPONENTS, previous?: DashboardData): Promise<DashboardData> {
