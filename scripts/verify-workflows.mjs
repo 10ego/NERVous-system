@@ -3,11 +3,11 @@ import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
 const ACTION_PINS = Object.freeze({
-	"actions/checkout": "34e114876b0b11c390a56381ad16ebd13914f8d5",
+	"actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
 	"actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
-	"actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
-	"actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
-	"actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+	"actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
+	"actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
+	"actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
 	"googleapis/release-please-action": "45996ed1f6d02564a971a2fa1b5860e934307cf7",
 });
 

@@ -41,8 +41,8 @@ describe("release workflow trust boundaries", () => {
 	});
 
 	test("rejects mutable or unapproved action references", () => {
-		rejects({ pullRequest: replaceOnce(pullRequest, "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5", "actions/checkout@v4") }, /not pinned/);
-		rejects({ release: replaceOnce(release, "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02", "actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }, /not approved/);
+		rejects({ pullRequest: replaceOnce(pullRequest, "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0", "actions/checkout@v4") }, /not pinned/);
+		rejects({ release: replaceOnce(release, "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a", "actions/upload-artifact@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") }, /not approved/);
 	});
 
 	test("rejects removal of a fail-closed release gate", () => {
@@ -63,7 +63,7 @@ describe("release workflow trust boundaries", () => {
 	});
 
 	test("rejects source checkout or secrets in the OIDC publisher", () => {
-		rejects({ release: replaceOnce(release, "      - name: Set up Node.js for trusted publishing", "      - name: Check out source\n        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5\n\n      - name: Set up Node.js for trusted publishing") }, /must not check out/);
+		rejects({ release: replaceOnce(release, "      - name: Set up Node.js for trusted publishing", "      - name: Check out source\n        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0\n\n      - name: Set up Node.js for trusted publishing") }, /must not check out/);
 		rejects({ release: replaceOnce(release, "          ACTION_DOWNLOAD_PATH: ${{ steps.download.outputs.download-path }}", "          ACTION_DOWNLOAD_PATH: ${{ steps.download.outputs.download-path }}\n          NPM_AUTH: ${{ secrets.NPM_AUTH }}") }, /only release may reference one environment secret|publish must not reference secrets/);
 	});
 
