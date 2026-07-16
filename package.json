@@ -3,6 +3,11 @@
   "version": "1.7.0",
   "description": "NERVous System — durable multi-agent orchestration, coding-agent coordination, and workflow recovery for pi.",
   "license": "MIT",
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/10ego/NERVous-system.git"
@@ -70,7 +75,9 @@
     ]
   },
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run && npm run test:tooling",
+    "test:tooling": "node --test tests/tooling/compare-semver.node.mjs tests/tooling/package-contents.node.mjs",
+    "verify:package": "node scripts/verify-package-contents.mjs",
     "verify:release-version": "node scripts/verify-release-version.mjs",
     "test:watch": "vitest",
     "test:magi": "vitest run --dir magi",
