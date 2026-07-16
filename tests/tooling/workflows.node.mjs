@@ -49,6 +49,10 @@ describe("release workflow trust boundaries", () => {
 		rejects({ release: replaceFirst(release, "vars.NPM_TRUSTED_PUBLISHING_READY == 'true' && ", "") }, /every release job must use gate/);
 	});
 
+	test("rejects the deprecated numeric GitHub App ID input", () => {
+		rejects({ release: replaceOnce(release, "client-id: ${{ vars.NERV_OPS_CLIENT_ID }}", "app-id: ${{ vars.NERV_OPS_APP_ID }}") }, /Client ID variable|deprecated GitHub App ID/);
+	});
+
 	test("rejects credentials or OIDC in validation and packaging", () => {
 		rejects({ release: replaceOnce(release, "    outputs:\n      commit_sha:", "    environment: release-automation\n    outputs:\n      commit_sha:") }, /validate must not enter an environment/);
 		rejects({ release: replaceOnce(release, "    permissions:\n      contents: read\n    outputs:\n      artifact_digest:", "    permissions:\n      contents: read\n      id-token: write\n    outputs:\n      artifact_digest:") }, /package must not receive OIDC/);

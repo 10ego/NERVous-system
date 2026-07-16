@@ -31,7 +31,7 @@ Create both environments with selected deployment branches restricted to branch 
 For `release-automation`:
 
 - Store `NERV_OPS_PRIVATE_KEY` only as an environment secret.
-- Keep `NERV_OPS_APP_ID` as the existing repository variable. The pinned v3 token action supports this deprecated input while migration to the App Client ID is scheduled.
+- Store the App Client ID as the repository variable `NERV_OPS_CLIENT_ID`. The Client ID is an identifier, not a secret.
 - Do not configure an approval gate that could block routine Release Please operation.
 
 For `npm-publish`:
