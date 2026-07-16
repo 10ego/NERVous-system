@@ -8,7 +8,7 @@ const ACTION_PINS = Object.freeze({
 	"actions/download-artifact": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
 	"actions/setup-node": "49933ea5288caeca8642d1e84afbd3f7d6820020",
 	"actions/upload-artifact": "ea165f8d65b6e75b540449e92b4886f43607fa02",
-	"googleapis/release-please-action": "5c625bfb5d1ff62eadeeb3772007f7f66fdcf071",
+	"googleapis/release-please-action": "45996ed1f6d02564a971a2fa1b5860e934307cf7",
 });
 
 function invariant(condition, message) {
@@ -73,6 +73,8 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	const publish = jobBlock(release, "publish");
 
 	assertIncludes(releaseJob, "environment: release-automation", "App key must be scoped to release-automation");
+	assertIncludes(releaseJob, "client-id: ${{ vars.NERV_OPS_CLIENT_ID }}", "App token must use the non-secret Client ID variable");
+	invariant(!/(?:NERV_OPS_APP_ID|\bapp-id:)/.test(releaseJob), "deprecated GitHub App ID inputs are forbidden");
 	assertIncludes(releaseJob, "permission-contents: write", "App token must request contents write explicitly");
 	assertIncludes(releaseJob, "permission-pull-requests: write", "App token must request pull-requests write explicitly");
 	invariant(occurrences(release, /\bsecrets(?:\.|\[)/g) === 1, "only release may reference one environment secret");
