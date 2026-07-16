@@ -152,7 +152,7 @@ jobs:
           }
 
       - name: Check out exact release tag
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ steps.target.outputs.tag }}
           fetch-depth: 0
@@ -186,7 +186,7 @@ jobs:
           echo "commit_sha=$head_commit" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node.js
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.7.0
           cache: npm
@@ -313,7 +313,7 @@ jobs:
       tarball_sha256: ${{ steps.pack.outputs.tarball_sha256 }}
     steps:
       - name: Check out exact release tag in fresh runner
-        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.validate.outputs.tag }}
           fetch-depth: 0
@@ -336,7 +336,7 @@ jobs:
           git merge-base --is-ancestor "$EXPECTED_COMMIT_SHA" refs/remotes/origin/main
 
       - name: Set up Node.js without dependency cache
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.7.0
 
@@ -416,7 +416,7 @@ jobs:
 
       - name: Upload exact release tarball
         id: upload
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ steps.pack.outputs.artifact_name }}
           path: ${{ steps.pack.outputs.tarball_path }}
@@ -452,7 +452,7 @@ jobs:
       id-token: write
     steps:
       - name: Set up Node.js for trusted publishing
-        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24.7.0
           registry-url: https://registry.npmjs.org
@@ -520,7 +520,7 @@ jobs:
 
       - name: Download exact current-run artifact
         id: download
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           artifact-ids: ${{ needs.package.outputs.artifact_id }}
           github-token: ${{ github.token }}
