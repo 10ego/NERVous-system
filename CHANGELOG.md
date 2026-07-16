@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.2](https://github.com/10ego/NERVous-system/compare/v1.7.1...v1.7.2) (2026-07-16)
+
+
+### Miscellaneous Chores
+
+* **ci:** migrate release actions to Node 24 ([#54](https://github.com/10ego/NERVous-system/issues/54)) ([a8fb8ac](https://github.com/10ego/NERVous-system/commit/a8fb8acd02952f036531ca3fa0e019d36cd1e376))
+
 ## [1.7.1](https://github.com/10ego/NERVous-system/compare/v1.7.0...v1.7.1) (2026-07-16)
 
 
