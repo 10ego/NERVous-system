@@ -5,7 +5,6 @@ import { pathToFileURL } from "node:url";
 const ACTION_PINS = Object.freeze({
 	"actions/checkout": "9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
 	"actions/create-github-app-token": "bcd2ba49218906704ab6c1aa796996da409d3eb1",
-	"actions/download-artifact": "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c",
 	"actions/setup-node": "820762786026740c76f36085b0efc47a31fe5020",
 	"actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
 	"googleapis/release-please-action": "45996ed1f6d02564a971a2fa1b5860e934307cf7",
@@ -54,6 +53,7 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 	assertIncludes(pullRequest, "npm ci --ignore-scripts", "pull-request dependency installation must disable lifecycle scripts");
 	assertIncludes(pullRequest, "npm run verify:workflows", "pull-request CI must verify workflow policy");
 	assertIncludes(pullRequest, "npm run verify:package", "pull-request CI must inspect the package with scripts disabled");
+	invariant(occurrences(pullRequest, /^\s+node-version: 24\.18\.0$/gm) === 1, "pull-request CI must use the reviewed Node 24 release");
 	assertIncludes(pullRequest, "ACTIONLINT_VERSION: 1.7.7", "actionlint must be pinned");
 	assertIncludes(pullRequest, "ACTIONLINT_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757", "actionlint archive checksum must be pinned");
 
@@ -99,9 +99,15 @@ export function verifyWorkflowSources({ pullRequest, release, packageJson, allWo
 
 	assertIncludes(publish, "environment: npm-publish", "publish must use the npm-publish environment");
 	assertIncludes(publish, "      actions: read\n      id-token: write", "publish must have exactly artifact read and OIDC permissions");
+	invariant(occurrences(release, /^\s+node-version: 24\.18\.0$/gm) === 3, "release execution must use the reviewed Node 24 release");
 	invariant(!/actions\/checkout@/.test(publish), "publish must not check out repository source");
+	invariant(!/actions\/download-artifact@/.test(publish), "publish must avoid the deprecated artifact extraction dependency");
 	invariant(!/\bsecrets(?:\.|\[)/.test(publish), "publish must not reference secrets");
 	invariant(!/\bnpm\s+(?:ci|install|test|run|pack)\b/.test(publish), "publish must not install dependencies, execute repository scripts, or build packages");
+	assertIncludes(publish, '"repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$archive"', "publish must download only the validated artifact ID");
+	assertIncludes(publish, '[[ "$(sha256sum "$archive" | awk \'{print $1}\')" == "$ARTIFACT_DIGEST" ]] || exit 1', "publish must verify the artifact archive digest before inspection");
+	assertIncludes(publish, '[[ "${entries[0]}" == "$TARBALL_FILENAME" ]] || exit 1', "publish must require exactly the expected archive entry");
+	invariant(occurrences(publish, /^\s+unzip -p "\$archive" "\$TARBALL_FILENAME" > "\$tarball_path"$/gm) === 1, "publish must stream exactly one expected tarball from the artifact archive");
 	invariant(occurrences(release, /^\s+npm publish "\$TARBALL_PATH" --access public --provenance --tag "\$DIST_TAG" --ignore-scripts$/gm) === 1, "workflow must publish one exact tarball with provenance and scripts disabled");
 	invariant(occurrences(release, /\bnpm publish\b/g) === 1, "release workflow must contain one npm publish command");
 	invariant(occurrences(release, /^\s+id-token: write$/gm) === 1, "only publish may receive OIDC");
