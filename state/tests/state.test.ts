@@ -6,9 +6,7 @@ import * as path from "node:path";
 import { describe, it } from "vitest";
 import {
 	applyNervousModelPatch,
-	formatNervousStateReport,
 	getNervousModel,
-	inspectNervousContext,
 	loadNervousConfig,
 	readUserNervousConfig,
 	resolveNervousModel,
@@ -36,23 +34,6 @@ function withEnv<T>(env: Record<string, string | undefined>, fn: () => T): T {
 	}
 }
 
-async function withEnvAsync<T>(env: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
-	const old: Record<string, string | undefined> = {};
-	for (const key of Object.keys(env)) old[key] = process.env[key];
-	try {
-		for (const [key, value] of Object.entries(env)) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
-		return await fn();
-	} finally {
-		for (const [key, value] of Object.entries(old)) {
-			if (value === undefined) delete process.env[key];
-			else process.env[key] = value;
-		}
-	}
-}
-
 describe("NERVous state resolver", () => {
 	it("uses global root with project and context namespaces", () => {
 		withEnv({ NERVOUS_STATE_ROOT: "/tmp/nervous", NERVOUS_PROJECT: "My Repo", NERVOUS_CONTEXT: "Upload API" }, () => {
@@ -71,45 +52,6 @@ describe("NERVous state resolver", () => {
 		withEnv({ NERVOUS_PROJECT: "Project A", NERVOUS_CONTEXT: "Branch/One" }, () => {
 			assert.equal(resolveProjectSlug("/tmp/proj"), "project-a");
 			assert.equal(resolveContextSlug("/tmp/proj"), "branch-one");
-		});
-	});
-
-	it("reports durable lifetime, transient retention, and record volume without mutating state", async () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-state-inventory-"));
-		await withEnvAsync({ NERVOUS_STATE_ROOT: root, NERVOUS_PROJECT: "Project A", NERVOUS_CONTEXT: "Main", SYNAPSE_TTL_MS: undefined, SYNAPSE_MAX_NOTES: undefined }, async () => {
-			const contextDir = path.join(root, "project-a", "main");
-			fs.mkdirSync(path.join(contextDir, "cortex"), { recursive: true });
-			fs.mkdirSync(path.join(contextDir, "synapse"), { recursive: true });
-			fs.mkdirSync(path.join(root, "project-a", "another-work"), { recursive: true });
-			fs.writeFileSync(path.join(contextDir, "cortex", "cortex.json"), JSON.stringify({ updated_at: "2026-07-16T00:00:00.000Z", goals: {
-				"goal-001": { status: "completed" },
-				"goal-002": { status: "executing" },
-			} }));
-			fs.writeFileSync(path.join(contextDir, "synapse", "synapse.json"), JSON.stringify({ notes: [{ id: "note-001" }] }));
-
-			const snapshot = await inspectNervousContext(root);
-			assert.equal(snapshot.files.find((file) => file.component === "cortex")?.recordCount, 2);
-			assert.equal(snapshot.files.find((file) => file.component === "cortex")?.openRecordCount, 1);
-			assert.deepEqual(snapshot.otherContexts, ["another-work"]);
-			const report = formatNervousStateReport(snapshot);
-			assert.match(report, /have no TTL and remain until the whole context is explicitly reset/);
-			assert.match(report, /SYNAPSE is transient: 1d TTL, 1000 notes/);
-			assert.match(report, /Dashboard\/list limits only display up to 100 recent records; they do not delete/);
-			assert.match(report, /CORTEX: 2 record\(s\), 1 open/);
-			assert.match(report, /Other work contexts: 1 \(another-work\)/);
-			assert.equal(fs.existsSync(path.join(contextDir, "cortex", "cortex.json")), true);
-		});
-	});
-
-	it("surfaces malformed JSON and explicit path overrides in diagnostics", async () => {
-		const root = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-state-invalid-"));
-		const override = path.join(root, "legacy-cerebel.json");
-		fs.writeFileSync(override, "{not-json");
-		await withEnvAsync({ NERVOUS_STATE_ROOT: root, NERVOUS_PROJECT: "p", NERVOUS_CONTEXT: "c", CEREBEL_PATH: override }, async () => {
-			const snapshot = await inspectNervousContext(root);
-			const cerebel = snapshot.files.find((file) => file.component === "cerebel");
-			assert.equal(cerebel?.source, "override");
-			assert.match(cerebel?.parseError ?? "", /JSON/);
 		});
 	});
 });

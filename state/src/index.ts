@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync, realpathSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import * as fs from "node:fs/promises";
 import { homedir } from "node:os";
 import * as path from "node:path";
 
@@ -16,48 +15,6 @@ export interface NervousStateInfo {
 const PI_CONFIG_DIR_NAME = ".pi";
 const PI_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const NERVOUS_CONFIG_FILENAME = "nervous.json";
-
-export const NERVOUS_DASHBOARD_RECORD_LIMIT = 100;
-export const NERVOUS_DEFAULT_SYNAPSE_TTL_MS = 24 * 60 * 60 * 1000;
-export const NERVOUS_DEFAULT_SYNAPSE_MAX_NOTES = 1000;
-
-export const NERVOUS_STATE_COMPONENTS = [
-	{ component: "cortex", filename: "cortex.json", env: "CORTEX_PATH", collection: "goals", terminal: ["completed", "cancelled"] },
-	{ component: "magi", filename: "history.json", env: "MAGI_HISTORY_PATH", collection: "records", terminal: [] },
-	{ component: "axon", filename: "ledger.json", env: "AXON_LEDGER_PATH", collection: "tasks", terminal: ["completed", "failed", "cancelled"] },
-	{ component: "synapse", filename: "synapse.json", env: "SYNAPSE_PATH", collection: "notes", terminal: [] },
-	{ component: "lion", filename: "runs.json", env: "LION_RUNS_PATH", collection: "runs", terminal: ["completed", "blocked", "failed", "aborted"] },
-	{ component: "cerebel", filename: "cerebel.json", env: "CEREBEL_PATH", collection: "waves", terminal: ["completed", "cancelled"] },
-	{ component: "ganglion", filename: "ganglion.json", env: "GANGLION_PATH", collection: "ganglions", terminal: ["completed", "cancelled"] },
-	{ component: "amygdala", filename: "amygdala.json", env: "AMYGDALA_PATH", collection: "incidents", terminal: ["resolved", "accepted"] },
-] as const;
-
-export type NervousStateComponent = (typeof NERVOUS_STATE_COMPONENTS)[number]["component"];
-
-export interface NervousStateFileSnapshot {
-	component: NervousStateComponent;
-	filePath: string;
-	source: "namespace" | "override";
-	exists: boolean;
-	bytes: number;
-	updatedAt?: string;
-	recordCount?: number;
-	openRecordCount?: number;
-	parseError?: string;
-}
-
-export interface NervousContextSnapshot {
-	root: string;
-	project: string;
-	context: string;
-	projectDir: string;
-	contextDir: string;
-	files: NervousStateFileSnapshot[];
-	totalBytes: number;
-	otherContexts: string[];
-	archiveCount: number;
-	synapseRetention: { ttlMs: number; maxNotes: number };
-}
 
 export const NERVOUS_MODEL_KEYS = [
 	"lion.default",
@@ -123,75 +80,6 @@ export function resolveNervousStateInfo(cwd: string, component: string, filename
 export function resolveRoot(): string {
 	const configured = process.env.NERVOUS_STATE_ROOT;
 	return configured ? path.resolve(configured) : path.join(homedir(), PI_CONFIG_DIR_NAME, "nervous");
-}
-
-/**
- * Read-only inventory for the active project/context namespace. This deliberately
- * parses only enough structure to explain retention and volume; component stores
- * remain the semantic validators for their own durable schemas.
- */
-export async function inspectNervousContext(cwd: string): Promise<NervousContextSnapshot> {
-	const root = resolveRoot();
-	const project = resolveProjectSlug(cwd);
-	const context = resolveContextSlug(cwd);
-	const projectDir = path.join(root, project);
-	const contextDir = path.join(projectDir, context);
-	const files = await Promise.all(NERVOUS_STATE_COMPONENTS.map((definition) => inspectStateFile(cwd, definition)));
-	const entries = await readDirectoryNames(projectDir);
-	const otherContexts = entries
-		.filter((entry) => entry !== context && entry !== ".archive")
-		.sort();
-	const archives = await readDirectoryNames(path.join(projectDir, ".archive"));
-	return {
-		root,
-		project,
-		context,
-		projectDir,
-		contextDir,
-		files,
-		totalBytes: files.reduce((total, file) => total + file.bytes, 0),
-		otherContexts,
-		archiveCount: archives.length,
-		synapseRetention: {
-			ttlMs: nonNegativeEnvNumber("SYNAPSE_TTL_MS", NERVOUS_DEFAULT_SYNAPSE_TTL_MS),
-			maxNotes: nonNegativeEnvNumber("SYNAPSE_MAX_NOTES", NERVOUS_DEFAULT_SYNAPSE_MAX_NOTES),
-		},
-	};
-}
-
-export function formatNervousStateReport(snapshot: NervousContextSnapshot): string {
-	const ttl = snapshot.synapseRetention.ttlMs === 0 ? "no TTL" : formatDuration(snapshot.synapseRetention.ttlMs);
-	const cap = snapshot.synapseRetention.maxNotes === 0 ? "no count cap" : `${snapshot.synapseRetention.maxNotes} notes`;
-	const lines = [
-		"# NERVous state",
-		`- Namespace: \`${snapshot.project}/${snapshot.context}\``,
-		`- Active directory: \`${snapshot.contextDir}\``,
-		`- Canonical state size: ${formatBytes(snapshot.totalBytes)}`,
-		"",
-		"## Retention",
-		"- CORTEX, MAGI, AXON, LION, CEREBEL, GANGLION, and AMYGDALA are durable: they have no TTL and remain until the whole context is explicitly reset.",
-		`- SYNAPSE is transient: ${ttl}, ${cap}; expiry is applied on its next mutation or explicit prune.`,
-		`- Dashboard/list limits only display up to ${NERVOUS_DASHBOARD_RECORD_LIMIT} recent records; they do not delete stored data.`,
-		"",
-		"## Active files",
-	];
-	for (const file of snapshot.files) {
-		if (!file.exists) {
-			lines.push(`- ${file.component.toUpperCase()}: empty (${file.source})`);
-			continue;
-		}
-		const records = file.recordCount === undefined ? "records unknown" : `${file.recordCount} record(s)`;
-		const open = file.openRecordCount === undefined ? "" : `, ${file.openRecordCount} open`;
-		const invalid = file.parseError ? `, unreadable JSON: ${file.parseError}` : "";
-		lines.push(`- ${file.component.toUpperCase()}: ${records}${open}, ${formatBytes(file.bytes)}, ${file.source}${file.updatedAt ? `, updated ${file.updatedAt}` : ""}${invalid}`);
-	}
-	lines.push(
-		"",
-		`Other work contexts: ${snapshot.otherContexts.length}${snapshot.otherContexts.length ? ` (${snapshot.otherContexts.join(", ")})` : ""}.`,
-		`Reset archives: ${snapshot.archiveCount}.`,
-		"Use a distinct `NERVOUS_CONTEXT` for concurrently resumable work. Use `/nervous:reset` when this namespace should start clean.",
-	);
-	return lines.join("\n");
 }
 
 export function getPiAgentDir(): string {
@@ -437,74 +325,6 @@ function projectExplicitlyUnsets(resolution: NervousConfigResolution, key: Nervo
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-async function inspectStateFile(
-	cwd: string,
-	definition: (typeof NERVOUS_STATE_COMPONENTS)[number],
-): Promise<NervousStateFileSnapshot> {
-	const override = process.env[definition.env];
-	const filePath = resolveNervousStateFile(cwd, definition.component, definition.filename, definition.env);
-	const source = override && path.isAbsolute(override) ? "override" as const : "namespace" as const;
-	let stat;
-	try {
-		stat = await fs.stat(filePath);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { component: definition.component, filePath, source, exists: false, bytes: 0 };
-		return { component: definition.component, filePath, source, exists: true, bytes: 0, parseError: boundedError(error) };
-	}
-	const snapshot: NervousStateFileSnapshot = { component: definition.component, filePath, source, exists: true, bytes: stat.size };
-	try {
-		const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
-		if (!isPlainObject(parsed)) throw new Error("top-level value is not an object");
-		const meta = isPlainObject(parsed.meta) ? parsed.meta : undefined;
-		const updatedAt = typeof parsed.updated_at === "string" ? parsed.updated_at : typeof meta?.updated_at === "string" ? meta.updated_at : undefined;
-		if (updatedAt) snapshot.updatedAt = updatedAt;
-		const collection = parsed[definition.collection];
-		const records = Array.isArray(collection) ? collection : isPlainObject(collection) ? Object.values(collection) : undefined;
-		if (records) {
-			snapshot.recordCount = records.length;
-			if (definition.terminal.length > 0) {
-				const terminal = new Set<string>(definition.terminal);
-				snapshot.openRecordCount = records.filter((record) => !isPlainObject(record) || typeof record.status !== "string" || !terminal.has(record.status)).length;
-			}
-		}
-	} catch (error) {
-		snapshot.parseError = boundedError(error);
-	}
-	return snapshot;
-}
-
-async function readDirectoryNames(dir: string): Promise<string[]> {
-	try {
-		return (await fs.readdir(dir, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-		return [];
-	}
-}
-
-function nonNegativeEnvNumber(name: string, fallback: number): number {
-	const raw = process.env[name];
-	if (raw === undefined || !Number.isFinite(Number(raw))) return fallback;
-	return Math.max(0, Number(raw));
-}
-
-function boundedError(error: unknown): string {
-	return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 300);
-}
-
-function formatBytes(bytes: number): string {
-	if (bytes < 1024) return `${bytes} B`;
-	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
-	return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-}
-
-function formatDuration(ms: number): string {
-	if (ms % (24 * 60 * 60 * 1000) === 0) return `${ms / (24 * 60 * 60 * 1000)}d TTL`;
-	if (ms % (60 * 60 * 1000) === 0) return `${ms / (60 * 60 * 1000)}h TTL`;
-	if (ms % (60 * 1000) === 0) return `${ms / (60 * 1000)}m TTL`;
-	return `${ms}ms TTL`;
 }
 
 function hash(value: string): string {
