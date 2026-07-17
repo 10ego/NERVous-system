@@ -202,6 +202,46 @@ describe("dashboard extension factory", () => {
 		}
 	});
 
+	it("isolates rejected CEREBEL state so the dashboard still opens with healthy components", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "dashboard-rejected-cerebel-"));
+		const axonPath = path.join(dir, "axon", "ledger.json");
+		const cerebelPath = path.join(dir, "cerebel", "cerebel.json");
+		const oldAxon = process.env.AXON_LEDGER_PATH;
+		const oldCerebel = process.env.CEREBEL_PATH;
+		process.env.AXON_LEDGER_PATH = axonPath;
+		process.env.CEREBEL_PATH = cerebelPath;
+		try {
+			await AxonStore.fromCwd(dir).mutate((ledger) => ledger.create({ title: "healthy task" }));
+			await fs.mkdir(path.dirname(cerebelPath), { recursive: true });
+			await fs.writeFile(cerebelPath, JSON.stringify({ version: 1, waves: {
+				"wave-001": { id: "wave-001", status: "completed", assignments: [{ id: "assign-001", status: "completed", lion_run_id: "run-001" }] },
+			} }));
+			const previous = emptyDashboardData({ waves: [{ id: "stale-wave" }] });
+			const loaded = await loadDashboardData(dir, ["axon", "cerebel"] as any, previous);
+			assert.equal(loaded.tasks[0]?.title, "healthy task");
+			assert.deepEqual(loaded.waves, [], "rejected component must not leave a stale prior snapshot visible");
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /CEREBEL unavailable/);
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /assignment assign-001 has invalid LION provenance/);
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /state unchanged/);
+			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /\/nervous:reset/);
+			assert.deepEqual(loaded.failedComponents, ["cerebel"]);
+			assert.equal(await fs.readFile(cerebelPath, "utf8").then((raw) => raw.includes("run-001")), true, "dashboard remains read-only");
+		} finally {
+			if (oldAxon === undefined) delete process.env.AXON_LEDGER_PATH; else process.env.AXON_LEDGER_PATH = oldAxon;
+			if (oldCerebel === undefined) delete process.env.CEREBEL_PATH; else process.env.CEREBEL_PATH = oldCerebel;
+		}
+	});
+
+	it("retries a transient component read before isolating it", async () => {
+		const run = { id: "run-recovered", status: "running" } as any;
+		const query = vi.fn().mockRejectedValueOnce(new Error("rename window")).mockRejectedValueOnce(new Error("rename window")).mockResolvedValue({ result: [run], warnings: [] });
+		vi.spyOn(LionStore, "fromCwd").mockReturnValue({ query } as any);
+		const loaded = await loadDashboardData(process.cwd(), ["lion"], undefined, { retryDelayMs: 0 });
+		assert.equal(query.mock.calls.length, 3);
+		assert.equal(loaded.runs[0]?.id, "run-recovered");
+		assert.deepEqual(loaded.failedComponents, []);
+	});
+
 	it("reloads only the changed component and preserves other data and warnings", async () => {
 		const run = { id: "run-new", status: "running" } as any;
 		const previous = emptyDashboardData({
@@ -229,6 +269,52 @@ describe("dashboard extension factory", () => {
 		dashboard.dispose();
 	});
 
+	it("retries an isolated component failure without another fingerprint change", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValue([]);
+		const refresh = vi.fn().mockResolvedValue(emptyDashboardData({ runs: [{ id: "recovered" }], failedComponents: [] }));
+		const dashboard = new NervousDashboard(emptyDashboardData({ failedComponents: ["lion"] }), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
+		await vi.advanceTimersByTimeAsync(100);
+		assert.deepEqual(refresh.mock.calls[0]?.[0], ["lion"]);
+		assert.equal(changeDetector.mock.calls.length, 1, "retry does not require another fingerprint change");
+		assert.equal((dashboard as any).data.runs[0]?.id, "recovered");
+		dashboard.dispose();
+	});
+
+	it("backs off repeated isolated component failures", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValue([]);
+		const rejected = emptyDashboardData({ failedComponents: ["cerebel"] });
+		const refresh = vi.fn().mockResolvedValue(rejected);
+		const dashboard = new NervousDashboard(rejected, { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, maxAutoRefreshMs: 800, changeDetector });
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(refresh.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(199);
+		assert.equal(refresh.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(refresh.mock.calls.length, 2);
+		await vi.advanceTimersByTimeAsync(399);
+		assert.equal(refresh.mock.calls.length, 2);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(refresh.mock.calls.length, 3);
+		assert.equal(changeDetector.mock.calls.length, 3, "healthy component changes remain observable during backoff");
+		dashboard.dispose();
+	});
+
+	it("resets failure backoff when a new fingerprint change appears", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce(["axon"]).mockResolvedValue([]);
+		const rejected = emptyDashboardData({ failedComponents: ["cerebel"] });
+		const refresh = vi.fn().mockResolvedValue(rejected);
+		const dashboard = new NervousDashboard(rejected, { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, maxAutoRefreshMs: 800, changeDetector });
+		await vi.advanceTimersByTimeAsync(300);
+		assert.equal(refresh.mock.calls.length, 2);
+		assert.deepEqual(refresh.mock.calls[1]?.[0], ["cerebel", "axon"]);
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(refresh.mock.calls.length, 3, "new state returns retries to the prompt interval");
+		dashboard.dispose();
+	});
+
 	it("retries a detected change after a transient reload failure", async () => {
 		vi.useFakeTimers();
 		const changeDetector = vi.fn().mockResolvedValueOnce(true).mockResolvedValue(false);
@@ -238,7 +324,7 @@ describe("dashboard extension factory", () => {
 		assert.equal(refresh.mock.calls.length, 1);
 		await vi.advanceTimersByTimeAsync(100);
 		assert.equal(refresh.mock.calls.length, 2);
-		assert.equal(changeDetector.mock.calls.length, 1, "dirty reload should retry without requiring another fingerprint change");
+		assert.equal(changeDetector.mock.calls.length, 2, "dirty reload should retry without requiring another fingerprint change");
 		assert.equal((dashboard as any).data.runs[0]?.id, "latest");
 		dashboard.dispose();
 	});

@@ -138,6 +138,20 @@ export class FileBackend {
 	}
 
 	async load(): Promise<LoadResult> {
+		return this.loadUnlocked();
+	}
+
+	async mutate<T>(fn: (store: GoalStore) => T): Promise<{ result: T; warnings: string[] }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { store, warnings } = await this.loadUnlocked();
+			const result = fn(store);
+			await this.saveUnlocked(store);
+			return { result, warnings };
+		});
+	}
+
+	private async loadUnlocked(): Promise<LoadResult> {
 		let raw: string;
 		try {
 			raw = await fs.readFile(this.location.cortexPath, "utf8");
@@ -170,20 +184,23 @@ export class FileBackend {
 
 	async save(store: GoalStore): Promise<void> {
 		await fs.mkdir(this.location.dir, { recursive: true });
-		await withLock(this.lockPath, async () => {
-			const data = JSON.stringify(store.toJSON(), null, 2);
-			try {
-				await fs.copyFile(this.location.cortexPath, this.bakPath);
-			} catch (err) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") throw err;
-			}
-			await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
-			await fs.rename(this.tmpPath, this.location.cortexPath);
-		});
+		await withLock(this.lockPath, async () => this.saveUnlocked(store));
+	}
+
+	private async saveUnlocked(store: GoalStore): Promise<void> {
+		const data = JSON.stringify(store.toJSON(), null, 2);
+		try {
+			await fs.copyFile(this.location.cortexPath, this.bakPath);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") throw err;
+		}
+		await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
+		await fs.rename(this.tmpPath, this.location.cortexPath);
 	}
 
 	async wipe(): Promise<void> {
+		await fs.mkdir(this.location.dir, { recursive: true });
 		await withLock(this.lockPath, async () => {
 			try {
 				await fs.copyFile(this.location.cortexPath, this.bakPath);
@@ -221,9 +238,6 @@ export class CortexStore {
 	}
 
 	async mutate<T>(fn: (store: GoalStore) => T): Promise<{ result: T; warnings: string[] }> {
-		const { store, warnings } = await this.backend.load();
-		const result = fn(store);
-		await this.backend.save(store);
-		return { result, warnings };
+		return this.backend.mutate(fn);
 	}
 }

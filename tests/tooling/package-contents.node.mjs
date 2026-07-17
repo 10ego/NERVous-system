@@ -21,7 +21,7 @@ describe("npm release package policy", () => {
 	test("accepts the current lifecycle-script-disabled package", () => {
 		assert.equal(current.package.name, "nervous-system");
 		assert.equal(current.package.version, packageJson.version);
-		assert.equal(current.paths.length, 100);
+		assert.equal(current.paths.length, 102);
 	});
 
 	test("rejects unsafe, unexpected, executable, and duplicate package paths", () => {
@@ -38,9 +38,15 @@ describe("npm release package policy", () => {
 		assert.throws(() => assertPackageContents([...files, files[0]]), /duplicate paths/);
 	});
 
-	test("rejects missing required entry points", () => {
-		const files = current.package.files.filter((file) => file.path !== "controller/extension/index.ts");
-		assert.throws(() => assertPackageContents(files), /missing required path/);
+	test("rejects missing required controller and lifecycle entry points", () => {
+		for (const required of [
+			"controller/extension/index.ts",
+			"controller/extension/state-control.ts",
+			"controller/extension/state-runtime.ts",
+		]) {
+			const files = current.package.files.filter((file) => file.path !== required);
+			assert.throws(() => assertPackageContents(files), /missing required path/);
+		}
 	});
 
 	test("rejects unsafe package metadata and lifecycle scripts", () => {

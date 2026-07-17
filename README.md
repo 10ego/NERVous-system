@@ -18,7 +18,7 @@ Then start a durable workflow:
 /nervous implement this feature with durable planning and worker delegation
 ```
 
-NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard. Its model tools are inactive in a fresh session chain. An exact `/nervous [task]` command activates the operator-permitted component set after any current run becomes idle, then keeps the coordinated workflow available for later turns on that branch. Keep the package installed but turn its runtime resources off or back on with `/nervous:config enabled=false` or `/nervous:config enabled=true`.
+NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL, GANGLION, AMYGDALA, and the dashboard. Its model tools are inactive in a fresh session chain. An exact `/nervous [task]` command activates the operator-permitted component set after any current run becomes idle, then keeps the coordinated workflow available for later turns on that branch. Keep the package installed but turn its runtime resources off or back on with `/nervous:config enabled=false` or `/nervous:config enabled=true`. Use `/nervous:state` to see exactly what the current work context retains and `/nervous:reset` to archive that whole context before unrelated work.
 
 ## Highlights
 
@@ -27,7 +27,7 @@ NERVous installs the complete suite: CORTEX, MAGI, AXON, SYNAPSE, LION, CEREBEL,
 - Pi-native transport retries with an explicit settled-interruption resume valve
 - Deliberation, risk triage, and explicit verification for difficult work
 - Parallel coding subagents with orchestration, capacity allocation, and live progress
-- Project- and context-isolated state with a read-only dashboard
+- Project- and context-isolated state with explicit retention diagnostics, safe reset archives, and a fault-isolated dashboard
 
 ## Documentation
 

@@ -59,6 +59,12 @@ export interface DashboardData {
 	incidents: Incident[];
 	warnings: string[];
 	warningGroups?: Partial<Record<Tab, string[]>>;
+	failedComponents?: Tab[];
+}
+
+export interface DashboardLoadOptions {
+	retryAttempts?: number;
+	retryDelayMs?: number;
 }
 
 const DASHBOARD_STATE_FILES = [
@@ -101,7 +107,30 @@ export async function createDashboardChangeDetector(cwd: string, resolveFile = r
 	};
 }
 
-export async function loadDashboardData(cwd: string, components: Tab[] = DASHBOARD_COMPONENTS, previous?: DashboardData): Promise<DashboardData> {
+function clearDashboardComponent(data: DashboardData, component: Tab): void {
+	switch (component) {
+		case "cortex": data.goals = []; return;
+		case "magi": data.magi = []; return;
+		case "axon": data.tasks = []; return;
+		case "synapse": data.notes = []; return;
+		case "lion": data.runs = []; return;
+		case "cerebel": data.waves = []; return;
+		case "ganglion": data.ganglions = []; return;
+		case "amygdala": data.incidents = []; return;
+	}
+}
+
+function dashboardLoadWarning(component: Tab, error: unknown): string {
+	const reason = (error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").slice(0, 700);
+	return `${component.toUpperCase()} unavailable (state unchanged). Recovery: /nervous:state or /nervous:reset. Reason: ${reason}`;
+}
+
+export async function loadDashboardData(
+	cwd: string,
+	components: Tab[] = DASHBOARD_COMPONENTS,
+	previous?: DashboardData,
+	options: DashboardLoadOptions = {},
+): Promise<DashboardData> {
 	const data: DashboardData = previous ? {
 		...previous,
 		goals: [...previous.goals], magi: [...previous.magi], tasks: [...previous.tasks], notes: [...previous.notes],
@@ -109,41 +138,66 @@ export async function loadDashboardData(cwd: string, components: Tab[] = DASHBOA
 		warningGroups: { ...(previous.warningGroups ?? {}) },
 	} : { goals: [], magi: [], tasks: [], notes: [], runs: [], waves: [], ganglions: [], incidents: [], warnings: [], warningGroups: {} };
 	const warningGroups = data.warningGroups!;
+	const failedComponents = new Set(previous?.failedComponents ?? []);
 	await Promise.all([...new Set(components)].map(async (component) => {
-		switch (component) {
-			case "cortex": {
-				const loaded = await CortexStore.fromCwd(cwd).query((store) => store.all().sort((a, b) => b.created_at.localeCompare(a.created_at)));
-				data.goals = loaded.result; warningGroups.cortex = loaded.warnings; return;
-			}
-			case "magi": data.magi = await MagiHistoryStore.fromCwd(cwd).list(100); warningGroups.magi = []; return;
-			case "axon": {
-				const loaded = await AxonStore.fromCwd(cwd).query((ledger) => ledger.all());
-				data.tasks = loaded.result; warningGroups.axon = loaded.warnings; return;
-			}
-			case "synapse": {
-				const loaded = await SynapseStore.fromCwd(cwd).query((log) => log.list({ limit: 100 }));
-				data.notes = loaded.result; warningGroups.synapse = loaded.warnings; return;
-			}
-			case "lion": {
-				const loaded = await LionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
-				data.runs = loaded.result; warningGroups.lion = loaded.warnings; return;
-			}
-			case "cerebel": {
-				const loaded = await CerebelStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
-				data.waves = loaded.result; warningGroups.cerebel = loaded.warnings; return;
-			}
-			case "ganglion": {
-				const loaded = await GanglionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
-				data.ganglions = loaded.result; warningGroups.ganglion = loaded.warnings; return;
-			}
-			case "amygdala": {
-				const loaded = await AmygdalaStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
-				data.incidents = loaded.result; warningGroups.amygdala = loaded.warnings; return;
-			}
+		try {
+			await retryDashboardRead(async () => {
+				switch (component) {
+				case "cortex": {
+					const loaded = await CortexStore.fromCwd(cwd).query((store) => store.all().sort((a, b) => b.created_at.localeCompare(a.created_at)));
+					data.goals = loaded.result; warningGroups.cortex = loaded.warnings; return;
+				}
+				case "magi": data.magi = await MagiHistoryStore.fromCwd(cwd).list(100); warningGroups.magi = []; return;
+				case "axon": {
+					const loaded = await AxonStore.fromCwd(cwd).query((ledger) => ledger.all());
+					data.tasks = loaded.result; warningGroups.axon = loaded.warnings; return;
+				}
+				case "synapse": {
+					const loaded = await SynapseStore.fromCwd(cwd).query((log) => log.list({ limit: 100 }));
+					data.notes = loaded.result; warningGroups.synapse = loaded.warnings; return;
+				}
+				case "lion": {
+					const loaded = await LionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+					data.runs = loaded.result; warningGroups.lion = loaded.warnings; return;
+				}
+				case "cerebel": {
+					const loaded = await CerebelStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+					data.waves = loaded.result; warningGroups.cerebel = loaded.warnings; return;
+				}
+				case "ganglion": {
+					const loaded = await GanglionStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+					data.ganglions = loaded.result; warningGroups.ganglion = loaded.warnings; return;
+				}
+				case "amygdala": {
+					const loaded = await AmygdalaStore.fromCwd(cwd).query((ledger) => ledger.list({ limit: 100 }));
+					data.incidents = loaded.result; warningGroups.amygdala = loaded.warnings; return;
+				}
+				}
+			}, options);
+			failedComponents.delete(component);
+		} catch (error) {
+			clearDashboardComponent(data, component);
+			warningGroups[component] = [dashboardLoadWarning(component, error)];
+			failedComponents.add(component);
 		}
 	}));
 	data.warnings = DASHBOARD_COMPONENTS.flatMap((component) => warningGroups[component] ?? []);
+	data.failedComponents = [...failedComponents];
 	return data;
+}
+
+async function retryDashboardRead<T>(load: () => Promise<T>, options: DashboardLoadOptions): Promise<T> {
+	const attempts = Math.max(1, Math.floor(options.retryAttempts ?? 3));
+	const retryDelayMs = Math.max(0, options.retryDelayMs ?? 20);
+	let lastError: unknown;
+	for (let attempt = 1; attempt <= attempts; attempt++) {
+		try { return await load(); }
+		catch (error) {
+			lastError = error;
+			if (attempt < attempts && retryDelayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, retryDelayMs));
+		}
+	}
+	throw lastError;
 }
 
 function countByStatus(items: Array<{ status?: string }>): Record<string, number> {
@@ -415,6 +469,8 @@ export class NervousDashboard implements Component {
 		this.maxAutoRefreshMs = Math.max(this.autoRefreshMs, options.maxAutoRefreshMs ?? 8_000);
 		this.changeDetector = options.changeDetector;
 		this.nextAutoRefreshMs = this.autoRefreshMs;
+		for (const component of data.failedComponents ?? []) this.markDirty([component]);
+		this.reloadFailed = this.dirtyVersions.size > 0;
 		this.startAutoRefresh(this.autoRefreshMs);
 	}
 
@@ -734,15 +790,19 @@ export class NervousDashboard implements Component {
 		this.refreshTimer = setTimeout(() => {
 			this.refreshTimer = null;
 			void (async () => {
-				let detected: boolean | Tab[] = this.reloadFailed ? [] : !this.changeDetector;
-				try { if (!this.reloadFailed && this.changeDetector) detected = await this.changeDetector(); }
+				let detected: boolean | Tab[] = !this.changeDetector;
+				try { if (this.changeDetector) detected = await this.changeDetector(); }
 				catch { detected = true; }
 				if (this.closed) return;
 				const components = detected === true ? DASHBOARD_COMPONENTS : detected === false ? [] : detected;
 				if (components.length) this.markDirty(components);
 				const dirty = [...this.dirtyVersions.keys()].filter((component) => !this.refreshing || (this.dirtyVersions.get(component) ?? 0) > (this.inFlightVersions.get(component) ?? -1));
+				const observedFingerprintChange = Boolean(this.changeDetector) && components.length > 0;
+				const retryingFailedLoad = this.reloadFailed && dirty.length > 0 && !observedFingerprintChange;
 				if (dirty.length) this.reload({ showIndicator: false, components: dirty });
-				this.nextAutoRefreshMs = dirty.length ? this.autoRefreshMs : Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
+				this.nextAutoRefreshMs = dirty.length && !retryingFailedLoad
+					? this.autoRefreshMs
+					: Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
 				this.startAutoRefresh(this.nextAutoRefreshMs);
 			})();
 		}, intervalMs);
@@ -779,7 +839,11 @@ export class NervousDashboard implements Component {
 				const selectedKey = this.currentSelectedKey();
 				const detailKey = this.detail ? this.detailKey(this.detail) : null;
 				this.data = data;
-				for (const [component, version] of versions) if ((this.dirtyVersions.get(component) ?? 0) === version) this.dirtyVersions.delete(component);
+				const failed = new Set(data.failedComponents ?? []);
+				for (const [component, version] of versions) {
+					if (!failed.has(component) && (this.dirtyVersions.get(component) ?? 0) === version) this.dirtyVersions.delete(component);
+				}
+				for (const component of failed) if (!this.dirtyVersions.has(component)) this.markDirty([component]);
 				this.reloadFailed = this.dirtyVersions.size > 0;
 				this.restoreSelection(selectedKey);
 				this.restoreDetail(detailKey);

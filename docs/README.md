@@ -5,7 +5,7 @@
 Choose the path that matches what you need:
 
 - **New users:** start with [Getting started](getting-started.md), then review [Operations](operations.md) before changing state or risk settings.
-- **Operators:** use [Operations](operations.md) for activation gating, worker controls, dashboard usage, state isolation, and configuration.
+- **Operators:** use [Operations](operations.md) for activation gating, worker controls, dashboard usage, state retention/reset, isolation, and configuration.
 - **Contributors:** read [Architecture](architecture.md) for the component model, execution flow, repository layout, and package design.
 - **Evaluators:** see the [Benchmark](benchmark.md) for the focused NERVous-versus-baseline comparison.
 

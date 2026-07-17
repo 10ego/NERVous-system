@@ -148,6 +148,20 @@ export class FileBackend {
 	}
 
 	async load(): Promise<LoadResult> {
+		return this.loadUnlocked();
+	}
+
+	async mutate<T>(fn: (ledger: Ledger) => T): Promise<{ result: T; warnings: string[] }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { ledger, warnings } = await this.loadUnlocked();
+			const result = fn(ledger);
+			await this.saveUnlocked(ledger);
+			return { result, warnings };
+		});
+	}
+
+	private async loadUnlocked(): Promise<LoadResult> {
 		let raw: string;
 		try {
 			raw = await fs.readFile(this.location.ledgerPath, "utf8");
@@ -181,22 +195,25 @@ export class FileBackend {
 
 	async save(ledger: Ledger): Promise<void> {
 		await fs.mkdir(this.location.dir, { recursive: true });
-		await withLock(this.lockPath, async () => {
-			const data = JSON.stringify(ledger.toJSON(), null, 2);
-			// Backup the previous good file before replacing it.
-			try {
-				await fs.copyFile(this.location.ledgerPath, this.bakPath);
-			} catch (err) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") throw err; // ignore "no previous file"
-			}
-			await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
-			await fs.rename(this.tmpPath, this.location.ledgerPath);
-		});
+		await withLock(this.lockPath, async () => this.saveUnlocked(ledger));
+	}
+
+	private async saveUnlocked(ledger: Ledger): Promise<void> {
+		const data = JSON.stringify(ledger.toJSON(), null, 2);
+		// Backup the previous good file before replacing it.
+		try {
+			await fs.copyFile(this.location.ledgerPath, this.bakPath);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") throw err; // ignore "no previous file"
+		}
+		await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
+		await fs.rename(this.tmpPath, this.location.ledgerPath);
 	}
 
 	/** Atomic wipe (for /axon:reset). Kept here so it goes through the lock. */
 	async wipe(): Promise<void> {
+		await fs.mkdir(this.location.dir, { recursive: true });
 		await withLock(this.lockPath, async () => {
 			try {
 				await fs.copyFile(this.location.ledgerPath, this.bakPath);
@@ -247,9 +264,6 @@ export class AxonStore {
 	 * needs. The ledger is saved unconditionally when `fn` does not throw.
 	 */
 	async mutate<T>(fn: (ledger: Ledger) => T): Promise<{ result: T; warnings: string[] }> {
-		const { ledger, warnings } = await this.backend.load();
-		const result = fn(ledger);
-		await this.backend.save(ledger);
-		return { result, warnings };
+		return this.backend.mutate(fn);
 	}
 }

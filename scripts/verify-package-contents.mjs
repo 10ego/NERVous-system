@@ -84,6 +84,8 @@ const REQUIRED_PACKAGE_PATHS = Object.freeze([
 	"RELEASES.md",
 	"docs/README.md",
 	"docs/releasing.md",
+	"controller/extension/state-control.ts",
+	"controller/extension/state-runtime.ts",
 	...EXPECTED_EXTENSIONS,
 	...EXPECTED_SKILLS.map((skill) => `${skill}/SKILL.md`),
 	"magi/prompts/deliberate.md",

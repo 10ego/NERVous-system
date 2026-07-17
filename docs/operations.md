@@ -28,9 +28,26 @@ NERVous runtime state is global but isolated by project and work context. By def
 ```
 
 - **Project namespace** prevents cross-repository contamination. It is derived from the git root path; set `NERVOUS_PROJECT=<name>` to override it.
-- **Context namespace** prevents stale completed work from bleeding into a new effort. It defaults to the current git branch, or `default` outside git; set `NERVOUS_CONTEXT=<work-id>` to intentionally start or resume a workstream.
+- **Context namespace** isolates workstreams only when their context names differ. It defaults to the current Git branch, or `default` outside Git, so unrelated work on the same branch shares history; set `NERVOUS_CONTEXT=<work-id>` to intentionally start or resume a distinct workstream.
 - Set `NERVOUS_STATE_ROOT=/path/to/root` to move all NERVous state elsewhere.
 - Existing explicit component paths still win, including `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, and `MAGI_HISTORY_PATH`. LION resolves a direct-file symlink override to one canonical operational target so canonical data, the namespace lock, active ownership, and adjacent `runs.json.progress/` sidecars cannot split namespaces. Cleanup supervision is process-local only; after restart, persisted PID/PGID data is observational and never authorizes reattachment or signaling.
+
+### Retention and context reset
+
+The context is the cleanup boundary. CORTEX, MAGI, AXON, LION, CEREBEL, GANGLION, and AMYGDALA records are durable: they have no age-based expiry and remain until that whole context is explicitly reset. This is required for cross-component references and interruption recovery. SYNAPSE alone is transient; by default it keeps notes for 24 hours with a 1,000-note cap, applied on the next SYNAPSE mutation or explicit prune. Tool and dashboard list limits, where present, limit output only—they never delete stored records.
+
+Because the default context is the Git branch, unrelated tasks repeatedly run on `main` intentionally share one durable namespace. Use a named `NERVOUS_CONTEXT` when workstreams must remain independently resumable, or inspect and reset the current context from Pi:
+
+```text
+/nervous:state                 # namespace, paths, counts, open records, retention, and other contexts
+/nervous:reset                 # TUI confirmation, then archive the entire current context
+/nervous:reset confirm         # explicit confirmation for non-dialog modes
+/nervous:reset force confirm   # only after independently confirming no LION worker process is live
+```
+
+Reset moves every raw artifact in the confirmed namespace—including backups, invalid clean-slate ledgers, and LION progress sidecars—to `<NERVOUS_STATE_ROOT>/<project>/.archive/...` (under `~/.pi/nervous` by default); it does not migrate or partially delete cross-referenced records, and reset inventory does not parse non-LION ledgers. A trusted sibling manifest records the archive's creation-time retention without trusting metadata found inside the raw state. Component stores then recreate an empty namespace on their next write. New archives retain the current `NERVOUS_ARCHIVE_RETENTION_DAYS` policy (30 days by default), and each archive is pruned during a later reset only after its own recorded period elapses. Changing the environment does not shorten older archives; a recorded value of `0` means that archive remains indefinitely.
+
+For safety, reset waits for the main agent to become idle, pins the project/context/path shown at confirmation, and acquires every component writer lock across its complete load→mutate→save transaction before the atomic archive rename. It waits for active component transactions rather than racing them. Once that rename commits, later lock or pruning cleanup failures are returned as warnings alongside the archive path rather than turning the completed reset into an ambiguous failure. Reset is unavailable while explicit component path overrides or symlink-backed namespace state are present. Queued/running LION records—or malformed, unknown-status, or unreadable LION state whose liveness cannot be classified—require `force`; force is not process cancellation and must never be used while a worker may still be alive. Other named/branch contexts are not auto-expired; select the intended `NERVOUS_CONTEXT` before resetting one.
 
 Examples:
 
@@ -47,6 +64,8 @@ NERVOUS_STATE_ROOT="$HOME/.pi/nervous" pi
 
 NERVous does not automatically migrate or delete old repository-local `.pi/` state. If you have existing state you want to keep, copy it into the corresponding global namespace manually. LION also does not backfill sidecars for legacy or null-incarnation runs; their existing inline progress remains readable.
 
+A clean-slate schema rejection such as missing CEREBEL LION incarnation provenance is intentionally not migrated or silently reset. The dashboard now isolates that component, keeps healthy tabs available, and displays the rejection without changing the file. Use `/nervous:state` to verify the selected namespace. If the whole context is obsolete, `/nervous:reset` is the safe recovery path because it archives all mutually related state before starting clean.
+
 ### LION sidecar recovery
 
 `lion/runs.json` is the only lifecycle and identity authority. A progress envelope is visible only when its full namespace/run/incarnation matches an active canonical run. Closed envelopes represent an interrupted terminal fold and remain retryable; terminal canonical records ignore post-commit cleanup orphans. Malformed progress files produce bounded warnings/quarantine and never trigger canonical reset. Cleanup is classification-based: active and unclassifiable files are never removed merely because they are old or storage pressure exists. Run `npm run benchmark:lion-progress` in a source checkout to verify the zero-canonical-I/O flush gate.
@@ -59,7 +78,7 @@ A tool-call guard rejects all component calls in a fresh chain and rejects opera
 
 Pi owns transport retry classification, backoff, attempt limits, and cancellation. If an active NERVous workflow still ends on a transient transport failure, the controller waits for Pi's `agent_settled` event and posts a visible pause notice without starting another model turn. Run `/nervous:resume` to continue explicitly; its recovery prompt first reconciles durable CORTEX, AXON, CEREBEL, and LION state so committed work and active workers are not duplicated. A successful native retry clears the pending notice, while disabled, exhausted, or cancelled retry ends at the manual release valve. NERVous does not modify Pi's persistent retry setting.
 
-This invocation gate is separate from package enablement. Keep NERVous installed while removing its component runtime surface with `/nervous:config enabled=false`. Pi reloads the current session without the component tools, workflow commands, skills, and prompts. The always-loaded controller retains `/nervous:config` and an inert `/nervous` command that reports the disabled configuration. Run `enabled=true` to reload the resources; fresh chains return to their gated state, while a branch carrying an activation marker resumes the coordinated workflow. The user-level setting is persistent and defaults to enabled; Pi's trusted project package settings still determine which package resources apply in that repository.
+This invocation gate is separate from package enablement. Keep NERVous installed while removing its component runtime surface with `/nervous:config enabled=false`. Pi reloads the current session without the component tools, workflow commands, skills, and prompts. The always-loaded controller retains `/nervous:config`, `/nervous:state`, `/nervous:reset`, and an inert `/nervous` command that reports the disabled configuration. Run `enabled=true` to reload the resources; fresh chains return to their gated state, while a branch carrying an activation marker resumes the coordinated workflow. The user-level setting is persistent and defaults to enabled; Pi's trusted project package settings still determine which package resources apply in that repository.
 
 CORTEX drain mode can keep progressing through the active context while preserving durable evidence for work that cannot proceed yet. Configure when drain runs separately from how risky work is authorized, and optionally set default models for NERVous subprocess systems:
 

@@ -210,6 +210,15 @@ describe("NERVous root-package enablement", () => {
 		assert.deepEqual(registrations.map((command) => command.name), ["nervous:config"]);
 	});
 
+	it("keeps state inspection and reset on the always-loaded control plane", () => {
+		const { pi, captured } = stubPi();
+		factory(pi);
+		assert.deepEqual(
+			captured.commands.filter((command) => command.name === "nervous:state" || command.name === "nervous:reset").map((command) => command.name),
+			["nervous:state", "nervous:reset"],
+		);
+	});
+
 	it("registers session-start handlers for tool deactivation and recovery reset", () => {
 		const { pi, captured } = stubPi();
 		factory(pi);

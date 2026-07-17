@@ -21,7 +21,7 @@ Keep the package installed and use the persistent control command:
 /nervous:config enabled=true   # reload it with the suite enabled again
 ```
 
-When disabled, NERVous removes its component tools, workflow commands, skills, and prompt templates. The always-loaded controller leaves `/nervous:config` available so you can turn the suite back on; `/nervous` remains as an inert entry point that reports that no component tools are enabled. The user-level setting is stored in `~/.pi/agent/nervous.json`; Pi's existing trusted project package settings continue to control which package resources are available per repository.
+When disabled, NERVous removes its component tools, workflow commands, skills, and prompt templates. The always-loaded controller leaves `/nervous:config`, `/nervous:state`, and `/nervous:reset` available for configuration and recovery; `/nervous` remains as an inert entry point that reports that no component tools are enabled. The user-level setting is stored in `~/.pi/agent/nervous.json`; Pi's existing trusted project package settings continue to control which package resources are available per repository.
 
 `pi config` remains an alternative for enabling or disabling individual package resources across any installed pi package.
 
@@ -49,13 +49,14 @@ Pi owns native transport retries. If a transient transport failure remains when 
 
 A tool-call guard rejects NERVous calls outside an activated chain and rejects configured component exclusions inside one. The controller mutates only NERVous tools when entering or leaving a branch, so unrelated tool changes and lease-time revocations are not overwritten.
 
-For a read-only state browser, run:
+For a read-only state browser and lifecycle diagnostics, run:
 
 ```text
 /nervous:dashboard
+/nervous:state
 ```
 
-See [Operations](operations.md#dashboard) for dashboard controls and [Architecture](architecture.md) for how the components work together.
+Durable component records do not expire automatically. If you reuse the same Git branch for unrelated work, inspect the selected namespace and run `/nervous:reset` to archive the entire old context before starting clean. SYNAPSE notes are the exception: they default to a 24-hour/1,000-note retention policy. See [Operations](operations.md#retention-and-context-reset) for reset safety, archive retention, explicit path overrides, and clean-slate recovery, and [Architecture](architecture.md) for how the components work together.
 
 ## Update or remove
 
