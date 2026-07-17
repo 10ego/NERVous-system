@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.1](https://github.com/10ego/NERVous-system/compare/v1.8.0...v1.8.1) (2026-07-17)
+
+
+### Bug Fixes
+
+* **lion:** classify reportless worker exits ([#62](https://github.com/10ego/NERVous-system/issues/62)) ([5ef11d8](https://github.com/10ego/NERVous-system/commit/5ef11d870b9b6abb1e506fdb2c6ef2a6cd78406b))
+
 ## [1.8.0](https://github.com/10ego/NERVous-system/compare/v1.7.4...v1.8.0) (2026-07-17)
 
 
