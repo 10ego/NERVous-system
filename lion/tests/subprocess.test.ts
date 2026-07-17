@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "vitest";
-import { boundedPersistedOutput, buildLionSystemPrompt, buildLionUserPrompt, buildTerminalDiagnostic, captureObservationalGit, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, LionRunnerError, parseLionReport, progressFromEvent, sanitizeDiagnosticTail, signalOwnedProcessIfAlive, signalProcessTree, type LionSubprocessDiagnosticContext } from "../extension/subprocess.ts";
+import { boundedPersistedOutput, buildLionSystemPrompt, buildLionUserPrompt, buildTerminalDiagnostic, captureObservationalGit, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, LionRunnerError, OBSERVATIONAL_GIT_CONFIG_ARGS, parseLionReport, progressFromEvent, sanitizeDiagnosticTail, signalOwnedProcessIfAlive, signalProcessTree, type LionSubprocessDiagnosticContext } from "../extension/subprocess.ts";
 import type { Message } from "@earendil-works/pi-ai";
 
 const CHILD_EXIT_TIMEOUT_MS = 2_000;
@@ -297,6 +297,18 @@ describe("LION json runner terminal diagnostics", () => {
 		});
 	});
 
+	it("retains a complete report line after discarding an oversized malformed protocol line", async () => {
+		const report = { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] };
+		const line = "x".repeat(70_000) + "\n" + messageEnd(`\`\`\`json\n${JSON.stringify({ WORKER_REPORT: report })}\n\`\`\``) + "\n";
+		await withFakePi(`process.stdout.write(${JSON.stringify(line)});`, async (dir) => {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			const out = await runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5_000 });
+			if (out.settlement !== "settled") throw new Error("expected settled");
+			assert.equal(out.report?.summary, "done");
+			assert.equal(out.terminal, null);
+		});
+	});
+
 	it("returns a usable report with a null terminal on success", async () => {
 		const report = { outcome: "completed", summary: "done", changed_files: [], tests_run: ["npm test"], blockers: [], next_steps: [] };
 		const assistantText = "```json\n" + JSON.stringify({ WORKER_REPORT: report }) + "\n```";
@@ -383,8 +395,12 @@ describe("LION diagnostic helpers", () => {
 		assert.equal(sanitizeDiagnosticTail("\x1b[31mred\x1b[0m\x00ctrl", 100), "red ctrl");
 		assert.equal(sanitizeDiagnosticTail("x".repeat(10), 5).length, 5);
 		assert.match(sanitizeDiagnosticTail("x".repeat(10), 5), /…$/);
-		assert.match(sanitizeDiagnosticTail("api_key=super-secret", 100), /api_key=\[REDACTED\]/i);
-		assert.equal(sanitizeDiagnosticTail('Authorization: "Bearer super-secret"', 100), "Authorization: \"[REDACTED]");
+		const secrets = sanitizeDiagnosticTail('OPENAI_API_KEY=super-secret GITHUB_TOKEN=second-secret {"api_key":"third-secret"}', 200);
+		assert.equal(secrets.includes("super-secret") || secrets.includes("second-secret") || secrets.includes("third-secret"), false);
+		assert.match(secrets, /OPENAI_API_KEY=\[REDACTED\]/i);
+		assert.match(secrets, /GITHUB_TOKEN=\[REDACTED\]/i);
+		assert.match(secrets, /api_key"\s*:\s*\[REDACTED\]/i);
+		assert.equal(sanitizeDiagnosticTail('Authorization: "Bearer super-secret"', 100), "Authorization: [REDACTED]");
 		assert.equal(boundedPersistedOutput("x".repeat(10), 5), "[truncated 5 leading characters]\nxxxxx");
 	});
 
@@ -404,5 +420,25 @@ describe("LION diagnostic helpers", () => {
 		const git = await captureObservationalGit(dir);
 		assert.equal(git.head, null);
 		assert.equal(git.status, null);
+	});
+
+	it("disables repository fsmonitor integration during observational git capture", async () => {
+		if (process.platform === "win32") return;
+		assert.deepEqual(OBSERVATIONAL_GIT_CONFIG_ARGS, ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]);
+		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lion-fsmonitor-"));
+		runGit(dir, ["init", "--quiet"]);
+		runGit(dir, ["config", "user.email", "lion@example.test"]);
+		runGit(dir, ["config", "user.name", "LION test"]);
+		await fs.promises.writeFile(path.join(dir, "tracked.txt"), "base\n");
+		const marker = path.join(dir, "fsmonitor-ran");
+		const monitor = path.join(dir, "monitor.sh");
+		await fs.promises.writeFile(monitor, `#!/bin/sh\nprintf invoked > ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+		runGit(dir, ["add", "tracked.txt", "monitor.sh"]);
+		runGit(dir, ["commit", "--quiet", "-m", "base"]);
+		runGit(dir, ["config", "core.fsmonitor", monitor]);
+		const git = await captureObservationalGit(dir);
+		assert.match(git.head ?? "", /^[0-9a-f]{40}$/);
+		assert.equal(git.status, null, "a clean porcelain result is represented as null");
+		await assert.rejects(() => fs.promises.access(marker));
 	});
 });

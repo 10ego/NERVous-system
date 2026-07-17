@@ -12,6 +12,7 @@ import {
 	LION_PROGRESS_EVENTS,
 	LION_RUN_STATUSES,
 	coerceLionReport,
+	redactLionDiagnosticText,
 	LION_TERMINAL_DIAGNOSTIC_REASONS,
 	MAX_ACTIVE_TOOL_NAME_CHARS,
 	MAX_LION_REPORT_ITEMS,
@@ -782,7 +783,7 @@ function sanitizeTerminalDiagnosticText(value: string): string {
 	const bounded = value
 		.slice(0, MAX_TERMINAL_DIAGNOSTIC_TAIL_CHARS)
 		.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " ");
-	return bounded.replace(/\b(authorization|api[_-]?key|token|password|secret)\b(\s*[=:]\s*["']?)([^,;\n}]+)/gi, "$1$2[REDACTED]");
+	return redactLionDiagnosticText(bounded);
 }
 
 function optionalNonNegativeInt(value: unknown): number | null {

@@ -12,7 +12,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import { MAX_ACTIVE_TOOL_NAME_CHARS, MAX_ACTIVE_TOOL_NAMES, coerceLionReport, type LionPartialEvidence, type LionProgressSnapshot, type LionReport, type LionRun, type LionTerminalDiagnostic, type LionTerminalDiagnosticReason } from "./schema.ts";
+import { MAX_ACTIVE_TOOL_NAME_CHARS, MAX_ACTIVE_TOOL_NAMES, coerceLionReport, redactLionDiagnosticText, type LionPartialEvidence, type LionProgressSnapshot, type LionReport, type LionRun, type LionTerminalDiagnostic, type LionTerminalDiagnosticReason } from "./schema.ts";
 import { MAX_PROGRESS_TEXT } from "./lifecycle.ts";
 
 const TEXT_PROGRESS_THROTTLE_MS = 1000;
@@ -82,6 +82,8 @@ export class LionRunnerError extends Error {
 export const MAX_DIAGNOSTIC_TAIL_CHARS = 4_000;
 export const MAX_PERSISTED_OUTPUT_CHARS = 16_000;
 const OBSERVATIONAL_GIT_TIMEOUT_MS = 1_500;
+/** Override repository-controlled integrations for timeout recovery reads. */
+export const OBSERVATIONAL_GIT_CONFIG_ARGS = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"] as const;
 
 export interface LionSubprocessDiagnosticContext {
 	stdoutTail: string;
@@ -115,10 +117,7 @@ export function sanitizeDiagnosticTail(text: string, max = MAX_DIAGNOSTIC_TAIL_C
 }
 
 function redactDiagnosticSecrets(text: string): string {
-	// Keyed values are the only persisted raw fragments. Redact through the
-	// field/line boundary so quoted values such as `Bearer secret` do not leak
-	// their second word.
-	return text.replace(/\b(authorization|api[_-]?key|token|password|secret)\b(\s*[=:]\s*["']?)([^,;\n}]+)/gi, "$1$2[REDACTED]");
+	return redactLionDiagnosticText(text);
 }
 
 export function buildTerminalDiagnostic(
@@ -156,7 +155,13 @@ export function buildTerminalDiagnostic(
 export async function captureObservationalGit(cwd: string): Promise<{ head: string | null; status: string | null; changedFiles: string[] }> {
 	const run = (args: string[]): Promise<string | null> =>
 		new Promise((resolve) => {
-			execFile("git", args, { cwd, timeout: OBSERVATIONAL_GIT_TIMEOUT_MS, maxBuffer: 64 * 1024, windowsHide: true }, (err, stdout) => {
+			execFile("git", [...OBSERVATIONAL_GIT_CONFIG_ARGS, ...args], {
+				cwd,
+				timeout: OBSERVATIONAL_GIT_TIMEOUT_MS,
+				maxBuffer: 64 * 1024,
+				windowsHide: true,
+				env: { ...process.env, GIT_CONFIG_COUNT: "0", GIT_OPTIONAL_LOCKS: "0" },
+			}, (err, stdout) => {
 				resolve(err ? null : stdout);
 			});
 		});
@@ -495,15 +500,28 @@ function appendBoundedTail(current: string, chunk: string, maximum = MAX_DIAGNOS
 	return combined.length > maximum ? combined.slice(-maximum) : combined;
 }
 
-/** Drops an oversized unterminated protocol segment rather than retaining an unbounded stream. */
-function appendProtocolBuffer(current: string, chunk: string, onDiscard: () => void): string {
+/**
+ * Splits all complete NDJSON lines before bounding only the unterminated
+ * remainder. A malformed oversized line must not discard a later complete
+ * event received in the same stdout chunk.
+ */
+function consumeProtocolChunk(current: string, chunk: string, onDiscard: () => void): { lines: string[]; remainder: string } {
 	const combined = current + chunk;
-	if (combined.length <= MAX_PROTOCOL_BUFFER_CHARS) return combined;
-	onDiscard();
 	const newline = combined.lastIndexOf("\n");
-	if (newline < 0) return "";
-	const tail = combined.slice(newline + 1);
-	return tail.length <= MAX_PROTOCOL_BUFFER_CHARS ? tail : "";
+	if (newline < 0) {
+		if (combined.length <= MAX_PROTOCOL_BUFFER_CHARS) return { lines: [], remainder: combined };
+		onDiscard();
+		return { lines: [], remainder: "" };
+	}
+	const lines: string[] = [];
+	for (const line of combined.slice(0, newline).split("\n")) {
+		if (line.length > MAX_PROTOCOL_BUFFER_CHARS) onDiscard();
+		else lines.push(line);
+	}
+	const remainder = combined.slice(newline + 1);
+	if (remainder.length <= MAX_PROTOCOL_BUFFER_CHARS) return { lines, remainder };
+	onDiscard();
+	return { lines, remainder: "" };
 }
 
 function observeStructuredToolEvidence(
@@ -734,10 +752,9 @@ function collectMessages(
 		proc.stdout.on("data", (data) => {
 			const chunk = data.toString();
 			stdoutRaw = appendBoundedTail(stdoutRaw, chunk);
-			buffer = appendProtocolBuffer(buffer, chunk, () => { malformedLineCount++; });
-			const lines = buffer.split("\n");
-			buffer = lines.pop() ?? "";
-			for (const line of lines) processLine(line);
+			const protocol = consumeProtocolChunk(buffer, chunk, () => { malformedLineCount++; });
+			buffer = protocol.remainder;
+			for (const line of protocol.lines) processLine(line);
 		});
 		proc.stderr.on("data", (data) => {
 			stderr = appendBoundedTail(stderr, data.toString());

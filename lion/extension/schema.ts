@@ -76,6 +76,15 @@ export interface LionReport {
 export const MAX_LION_REPORT_ITEMS = 100;
 export const MAX_LION_REPORT_TEXT_CHARS = 4_000;
 
+/**
+ * Redacts common keyed credential forms before diagnostic text reaches durable
+ * storage. This intentionally covers JSON keys and environment-style prefixes
+ * such as OPENAI_API_KEY and GITHUB_TOKEN as well as bare Authorization.
+ */
+export function redactLionDiagnosticText(text: string): string {
+	return text.replace(/((?:["']?)(?:(?:[A-Za-z][A-Za-z0-9_-]*[_-])?(?:API[_-]?KEY|TOKEN|PASSWORD|SECRET)|AUTHORIZATION)(?:["']?)\s*[:=]\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|Bearer\s+[^,;\s}\n]+|[^,;\s}\n]+)/gi, "$1[REDACTED]");
+}
+
 /** Returns a safe report only when every required worker-contract field is valid and bounded. */
 export function coerceLionReport(value: unknown): LionReport | null {
 	if (!isRecord(value)) return null;
