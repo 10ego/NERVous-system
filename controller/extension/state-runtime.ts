@@ -201,6 +201,7 @@ export async function archiveNervousContext(
 		const leases = await acquireComponentLocks(lockPaths);
 		let archivePath: string | undefined;
 		let manifestPath: string | undefined;
+		let manifestHandle: Awaited<ReturnType<typeof fs.open>> | undefined;
 		let renamed = false;
 		try {
 			assertExpectedNamespace(resolveNamespace(cwd), options.expectedNamespace ?? namespace);
@@ -214,7 +215,7 @@ export async function archiveNervousContext(
 			const archiveRoot = path.join(namespace.projectDir, ".archive");
 			await assertRealDirectory(namespace.projectDir);
 			await ensureRealDirectory(archiveRoot);
-			({ archivePath, manifestPath } = await reserveArchivePaths(archiveRoot, namespace.context, resetAt));
+			({ archivePath, manifestPath, manifestHandle } = await reserveArchivePaths(archiveRoot, namespace.context, resetAt));
 			const manifest: NervousArchiveManifest = {
 				version: 1,
 				project: namespace.project,
@@ -226,19 +227,25 @@ export async function archiveNervousContext(
 				archiveRetentionDays: assessment.snapshot.archiveRetentionDays,
 				...(options.sessionId ? { sessionId: options.sessionId } : {}),
 			};
-			await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+			try {
+				await manifestHandle.writeFile(`${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8" });
+				await manifestHandle.sync();
+			} finally {
+				await manifestHandle.close();
+				manifestHandle = undefined;
+			}
 			for (const lease of leases) lease.stopHeartbeat();
 			assertExpectedNamespace(resolveNamespace(cwd), options.expectedNamespace ?? namespace);
 			await fs.rename(namespace.contextDir, archivePath);
 			renamed = true;
-			await releaseComponentLocks(leases, namespace.contextDir, archivePath);
+			const warnings = await releaseComponentLocks(leases, namespace.contextDir, archivePath);
 
-			const warnings: string[] = [];
 			let prunedArchivePaths: string[] = [];
 			try { prunedArchivePaths = await pruneNervousArchives(cwd, { now: options.now, exclude: new Set([archivePath]) }); }
 			catch (error) { warnings.push(`context was archived, but expired archives could not be pruned: ${boundedError(error)}`); }
 			return { archivePath, manifestPath, prunedArchivePaths, warnings, assessment };
 		} catch (error) {
+			await manifestHandle?.close().catch(() => undefined);
 			if (!renamed && manifestPath) await fs.unlink(manifestPath).catch(() => undefined);
 			throw error;
 		} finally {
@@ -414,17 +421,20 @@ async function acquireComponentLocks(lockPaths: string[]): Promise<OwnedLockLeas
 		for (const lockPath of lockPaths) leases.push(await acquireOwnedLock(lockPath));
 		return leases;
 	} catch (error) {
-		await Promise.all(leases.map((lease) => lease.releaseAt(lease.path)));
+		await releaseComponentLocks(leases, "");
 		throw error;
 	}
 }
 
-async function releaseComponentLocks(leases: OwnedLockLease[], contextDir: string, archivePath?: string): Promise<void> {
-	await Promise.all(leases.map(async (lease) => {
+async function releaseComponentLocks(leases: OwnedLockLease[], contextDir: string, archivePath?: string): Promise<string[]> {
+	const settled = await Promise.allSettled(leases.map(async (lease) => {
 		lease.stopHeartbeat();
 		const releasePath = archivePath ? path.join(archivePath, path.relative(contextDir, lease.path)) : lease.path;
 		await lease.releaseAt(releasePath);
 	}));
+	return settled.flatMap((result) => result.status === "rejected"
+		? [`context was archived, but a moved writer lock could not be removed: ${boundedError(result.reason)}`]
+		: []);
 }
 
 function contextResetLockPath(namespace: NervousNamespaceRef): string {
@@ -536,7 +546,11 @@ async function ensureRealDirectory(directoryPath: string): Promise<void> {
 	}
 }
 
-async function reserveArchivePaths(archiveRoot: string, context: string, resetAt: string): Promise<{ archivePath: string; manifestPath: string }> {
+async function reserveArchivePaths(
+	archiveRoot: string,
+	context: string,
+	resetAt: string,
+): Promise<{ archivePath: string; manifestPath: string; manifestHandle: Awaited<ReturnType<typeof fs.open>> }> {
 	for (let attempt = 0; attempt < 10; attempt++) {
 		const archiveName = `${context}-${resetAt.replace(/[^0-9TZ]/g, "")}-${randomUUID().slice(0, 8)}`;
 		const archivePath = path.join(archiveRoot, archiveName);
@@ -545,12 +559,22 @@ async function reserveArchivePaths(archiveRoot: string, context: string, resetAt
 			await fs.lstat(archivePath);
 			continue;
 		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-		try {
-			const reservation = await fs.open(manifestPath, "wx", 0o600);
-			await reservation.close();
-			await fs.unlink(manifestPath);
-			return { archivePath, manifestPath };
-		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+		let manifestHandle;
+		try { manifestHandle = await fs.open(manifestPath, "wx", 0o600); }
+		catch (error) { if ((error as NodeJS.ErrnoException).code === "EEXIST") continue; throw error; }
+		let archiveExists = true;
+		try { await fs.lstat(archivePath); }
+		catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") archiveExists = false;
+			else {
+				await manifestHandle.close().catch(() => undefined);
+				await fs.unlink(manifestPath).catch(() => undefined);
+				throw error;
+			}
+		}
+		if (!archiveExists) return { archivePath, manifestPath, manifestHandle };
+		await manifestHandle.close();
+		await fs.unlink(manifestPath);
 	}
 	throw new Error("could not reserve a unique NERVous reset archive path");
 }
@@ -561,6 +585,8 @@ function archiveManifestPath(archivePath: string): string {
 
 async function readArchiveManifest(manifestPath: string): Promise<NervousArchiveManifest | undefined> {
 	try {
+		const stat = await fs.lstat(manifestPath);
+		if (!stat.isFile() || stat.isSymbolicLink()) return undefined;
 		const parsed = JSON.parse(await fs.readFile(manifestPath, "utf8")) as unknown;
 		if (!isPlainObject(parsed)
 			|| parsed.version !== 1

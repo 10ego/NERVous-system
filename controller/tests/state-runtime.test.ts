@@ -111,10 +111,16 @@ describe("NERVous context state runtime", () => {
 			const indefinite = writeArchive(projectDir, "indefinite", manifestFor(contextDir, "2020-01-01T00:00:00.000Z", 0));
 			const long = writeArchive(projectDir, "long", manifestFor(contextDir, "2026-06-01T00:00:00.000Z", 90));
 			const elapsed = writeArchive(projectDir, "elapsed", manifestFor(contextDir, "2026-06-01T00:00:00.000Z", 10));
+			const linked = path.join(projectDir, ".archive", "linked-manifest");
+			const externalManifest = path.join(root, "untrusted-manifest.json");
+			fs.mkdirSync(linked, { recursive: true });
+			fs.writeFileSync(externalManifest, JSON.stringify(manifestFor(contextDir, "2020-01-01T00:00:00.000Z", 1)));
+			fs.symlinkSync(externalManifest, `${linked}${NERVOUS_ARCHIVE_MANIFEST}`);
 			const removed = await pruneNervousArchives(root, { now: new Date("2026-07-16T00:00:00.000Z") });
 			assert.deepEqual(removed, [elapsed]);
 			assert.equal(fs.existsSync(indefinite), true);
 			assert.equal(fs.existsSync(long), true);
+			assert.equal(fs.existsSync(linked), true, "symlink metadata is never trusted for pruning");
 		});
 	});
 
