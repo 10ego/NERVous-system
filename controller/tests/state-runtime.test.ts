@@ -11,6 +11,7 @@ import {
 	inspectNervousContext,
 	NERVOUS_ARCHIVE_MANIFEST,
 	pruneNervousArchives,
+	withNervousOwnedLock,
 } from "../extension/state-runtime.ts";
 
 const ENV_KEYS = [
@@ -200,6 +201,24 @@ describe("NERVous context state runtime", () => {
 			await assert.rejects(() => archiveNervousContext(root, { force: true }), /escape the namespace/);
 			assert.equal(fs.existsSync(path.join(externalContext, "axon", "ledger.json")), true);
 		});
+	});
+
+	it("preserves a committed result when outer lock cleanup fails", async () => {
+		const lockDir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-reset-release-"));
+		const lockPath = path.join(lockDir, "reset.lock");
+		try {
+			const result = await withNervousOwnedLock(lockPath, async () => {
+				fs.chmodSync(lockDir, 0o500);
+				return { archivePath: "/committed/archive", warnings: [] as string[] };
+			}, (committed, error) => {
+				committed.warnings.push(`cleanup warning: ${String(error)}`);
+			});
+			assert.equal(result.archivePath, "/committed/archive");
+			assert.match(result.warnings[0] ?? "", /cleanup warning/);
+		} finally {
+			fs.chmodSync(lockDir, 0o700);
+			fs.rmSync(lockDir, { recursive: true, force: true });
+		}
 	});
 
 	it("coordinates reset with an in-flight component transaction", async () => {

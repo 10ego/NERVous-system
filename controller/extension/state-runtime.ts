@@ -192,7 +192,7 @@ export async function archiveNervousContext(
 ): Promise<NervousResetResult> {
 	const namespace = resolveNamespace(cwd);
 	assertExpectedNamespace(namespace, options.expectedNamespace);
-	return withOwnedLock(contextResetLockPath(namespace), async () => {
+	return withNervousOwnedLock(contextResetLockPath(namespace), async () => {
 		assertExpectedNamespace(resolveNamespace(cwd), options.expectedNamespace ?? namespace);
 		const preflight = await assessNervousContextReset(cwd, options.expectedNamespace ?? namespace);
 		assertResetAllowed(preflight, Boolean(options.force));
@@ -251,6 +251,8 @@ export async function archiveNervousContext(
 		} finally {
 			if (!renamed) await releaseComponentLocks(leases, namespace.contextDir);
 		}
+	}, (result, error) => {
+		result.warnings.push(`context was archived, but the reset coordination lock could not be removed: ${boundedError(error)}`);
 	});
 }
 
@@ -441,10 +443,25 @@ function contextResetLockPath(namespace: NervousNamespaceRef): string {
 	return path.join(namespace.projectDir, `.reset-${namespace.context}.lock`);
 }
 
-async function withOwnedLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+export async function withNervousOwnedLock<T>(
+	lockPath: string,
+	fn: () => Promise<T>,
+	onCommittedReleaseError?: (result: T, error: unknown) => void,
+): Promise<T> {
 	const lease = await acquireOwnedLock(lockPath);
-	try { return await fn(); }
-	finally { await lease.releaseAt(lockPath); }
+	let result: T;
+	try { result = await fn(); }
+	catch (operationError) {
+		// Cleanup must not replace the error that explains why no result exists.
+		await lease.releaseAt(lockPath).catch(() => undefined);
+		throw operationError;
+	}
+	try { await lease.releaseAt(lockPath); }
+	catch (releaseError) {
+		if (!onCommittedReleaseError) throw releaseError;
+		onCommittedReleaseError(result, releaseError);
+	}
+	return result;
 }
 
 async function acquireOwnedLock(lockPath: string): Promise<OwnedLockLease> {
@@ -498,10 +515,10 @@ async function refreshOwnedLock(lockPath: string, owner: string): Promise<void> 
 }
 
 async function unlinkOwnedLock(lockPath: string, owner: string): Promise<void> {
-	try {
-		const current = await readLockInfo(lockPath);
-		if (current?.owner === owner) await fs.unlink(lockPath);
-	} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+	let raw: string;
+	try { raw = await fs.readFile(lockPath, "utf8"); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return; throw error; }
+	if (parseLockInfo(raw)?.owner === owner) await fs.unlink(lockPath);
 }
 
 async function lockFileIsStale(lockPath: string): Promise<boolean> {
