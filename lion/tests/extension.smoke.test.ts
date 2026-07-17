@@ -254,6 +254,43 @@ describe("lion extension factory", () => {
 		}
 	});
 
+	it("fails a direct public JSON run when the worker exits cleanly with no valid WORKER_REPORT", async () => {
+		const { pi, tools } = stubPi();
+		factory(pi);
+		const lion = tools.find((tool) => tool.name === "lion");
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "lion-false-success-"));
+		const binDir = path.join(dir, "bin");
+		await fs.mkdir(binDir);
+		const fakePi = path.join(binDir, "pi");
+		// Worker exits cleanly (code 0) but only emits a plain assistant message
+		// containing no parseable WORKER_REPORT JSON block.
+		const cleanText = "Done. Nothing else to report.";
+		await fs.writeFile(fakePi, `#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({type:"message_end",message:{role:"assistant",content:[{type:"text",text:${JSON.stringify(cleanText)}}]}})+"\\n");\n`);
+		await fs.chmod(fakePi, 0o755);
+		const oldRunsPath = process.env.LION_RUNS_PATH, oldPath = process.env.PATH, oldScript = process.argv[1];
+		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
+		process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+		process.argv[1] = path.join(dir, "missing-pi-entry.js");
+		try {
+			const ctx = { cwd: dir, isProjectTrusted: () => false };
+			const dry = await lion.execute("queue", { action: "run", objective: "emit nothing valid", dry_run: true }, undefined, undefined, ctx);
+			const id = dry.details.run.id;
+			const started = await lion.execute("start", { action: "start", id, timeout_ms: 5_000 }, undefined, undefined, ctx);
+			// Regression guard: a clean exit with no parseable WORKER_REPORT must not
+			// be treated as a success (the false-success bug).
+			assert.equal(started.isError, true, "missing WORKER_REPORT should surface as a tool error");
+			assert.notEqual(started.details.run?.status, "completed", "missing WORKER_REPORT must not be marked completed");
+			assert.equal(started.details.run?.status, "failed");
+			const store = LionStore.fromCwd(dir);
+			const ledgerRun = (await store.query((ledger) => ledger.get(id))).result;
+			assert.equal(ledgerRun?.status, "failed");
+		} finally {
+			process.argv[1] = oldScript;
+			if (oldRunsPath === undefined) delete process.env.LION_RUNS_PATH; else process.env.LION_RUNS_PATH = oldRunsPath;
+			if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+		}
+	});
+
 	it("rejects cancellation of an unknown direct run id", async () => {
 		const { pi, tools } = stubPi();
 		factory(pi);
