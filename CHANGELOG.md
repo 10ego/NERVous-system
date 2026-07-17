@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.8.0](https://github.com/10ego/NERVous-system/compare/v1.7.4...v1.8.0) (2026-07-17)
+
+
+### Features
+
+* **state:** add explicit context retention and reset ([#60](https://github.com/10ego/NERVous-system/issues/60)) ([384a8f9](https://github.com/10ego/NERVous-system/commit/384a8f9a85f406c1d642a62541a1bf967273c89e))
+
 ## [1.7.4](https://github.com/10ego/NERVous-system/compare/v1.7.3...v1.7.4) (2026-07-16)
 
 
