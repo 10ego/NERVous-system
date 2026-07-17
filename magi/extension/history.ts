@@ -33,8 +33,11 @@ function isPidAlive(pid: number): boolean {
 interface LockInfo { pid: number; ts: number; owner?: string }
 
 async function readLock(lockPath: string): Promise<LockInfo | undefined> {
+	let raw: string;
+	try { raw = await fs.readFile(lockPath, "utf8"); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
 	try {
-		const parsed = JSON.parse(await fs.readFile(lockPath, "utf8")) as { pid?: unknown; ts?: unknown; owner?: unknown };
+		const parsed = JSON.parse(raw) as { pid?: unknown; ts?: unknown; owner?: unknown };
 		if (typeof parsed.pid !== "number" || typeof parsed.ts !== "number") return undefined;
 		return { pid: parsed.pid, ts: parsed.ts, ...(typeof parsed.owner === "string" ? { owner: parsed.owner } : {}) };
 	} catch { return undefined; }
