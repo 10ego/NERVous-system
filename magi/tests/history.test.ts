@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "vitest";
-import { MagiHistoryStore } from "../extension/history.ts";
+import { MagiHistoryStore, withMagiHistoryLock } from "../extension/history.ts";
 import type { MagiOutput } from "../extension/schema.ts";
 
 const output: MagiOutput = {
@@ -34,6 +34,8 @@ async function withNamespace<T>(env: Record<string, string>, fn: () => Promise<T
 	}
 }
 
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 describe("MAGI history global project/context namespace", () => {
 	it("shares deliberation history across new store instances in the same project/context", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-magi-"));
@@ -44,6 +46,38 @@ describe("MAGI history global project/context namespace", () => {
 			assert.equal(records[0]?.input.issue, "Should migration continue?");
 			assert.equal(records[0]?.output.individual_opinions[0]?.councillor, "mind");
 		});
+	});
+
+	it("never expires a lock while its owning process is alive", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-magi-lock-"));
+		const lockPath = path.join(dir, "history.json.lock");
+		let releaseFirst!: () => void;
+		const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+		let firstEntered!: () => void;
+		const firstStarted = new Promise<void>((resolve) => { firstEntered = resolve; });
+		const first = withMagiHistoryLock(lockPath, async () => { firstEntered(); await firstGate; });
+		await firstStarted;
+		const owned = JSON.parse(await fs.readFile(lockPath, "utf8"));
+		await fs.writeFile(lockPath, JSON.stringify({ ...owned, ts: Date.now() - 60_000 }));
+
+		let secondEntered = false;
+		const second = withMagiHistoryLock(lockPath, async () => { secondEntered = true; });
+		await delay(1_000);
+		assert.equal(secondEntered, false, "an old timestamp cannot invalidate a live owner");
+		releaseFirst();
+		await first;
+		await second;
+		assert.equal(secondEntered, true);
+	});
+
+	it("does not unlink a successor lock during late owner cleanup", async () => {
+		const dir = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-magi-lock-"));
+		const lockPath = path.join(dir, "history.json.lock");
+		await withMagiHistoryLock(lockPath, async () => {
+			await fs.writeFile(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now(), owner: "successor" }));
+		});
+		assert.equal(JSON.parse(await fs.readFile(lockPath, "utf8")).owner, "successor");
+		await fs.unlink(lockPath);
 	});
 
 	it("serializes concurrent append transactions without losing records", async () => {

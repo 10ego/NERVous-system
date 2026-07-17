@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { resolveNervousStateFile } from "@nervous-system/state";
@@ -18,7 +19,6 @@ interface MagiHistoryFile {
 }
 
 const VERSION = 1;
-const LOCK_STALE_TTL_MS = 30_000;
 const LOCK_MAX_ATTEMPTS = 200;
 const LOCK_DELAY_MS = 25;
 const now = () => new Date().toISOString();
@@ -30,22 +30,39 @@ function isPidAlive(pid: number): boolean {
 	catch (error) { const code = (error as NodeJS.ErrnoException).code; return code !== "ESRCH" && code !== "EINVAL"; }
 }
 
-async function lockIsStale(lockPath: string): Promise<boolean> {
+interface LockInfo { pid: number; ts: number; owner?: string }
+
+async function readLock(lockPath: string): Promise<LockInfo | undefined> {
 	try {
-		const parsed = JSON.parse(await fs.readFile(lockPath, "utf8")) as { pid?: unknown; ts?: unknown };
-		return typeof parsed.pid !== "number" || typeof parsed.ts !== "number" || !isPidAlive(parsed.pid) || Date.now() - parsed.ts > LOCK_STALE_TTL_MS;
-	} catch { return true; }
+		const parsed = JSON.parse(await fs.readFile(lockPath, "utf8")) as { pid?: unknown; ts?: unknown; owner?: unknown };
+		if (typeof parsed.pid !== "number" || typeof parsed.ts !== "number") return undefined;
+		return { pid: parsed.pid, ts: parsed.ts, ...(typeof parsed.owner === "string" ? { owner: parsed.owner } : {}) };
+	} catch { return undefined; }
 }
 
-async function withLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+async function lockIsStale(lockPath: string): Promise<boolean> {
+	const info = await readLock(lockPath);
+	// A large history can keep JSON parsing/stringification synchronous for more
+	// than the old TTL. Never steal a lock while its owning process is alive.
+	return !info || !isPidAlive(info.pid);
+}
+
+async function releaseOwnedLock(lockPath: string, owner: string): Promise<void> {
+	try {
+		if ((await readLock(lockPath))?.owner === owner) await fs.unlink(lockPath);
+	} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+
+export async function withMagiHistoryLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
 	let attempts = 0;
+	const owner = randomUUID();
 	for (;;) {
 		try {
 			const handle = await fs.open(lockPath, "wx", 0o600);
-			await handle.writeFile(JSON.stringify({ pid: process.pid, ts: Date.now() }));
-			await handle.close();
-			try { return await fn(); }
-			finally { await fs.unlink(lockPath).catch(() => undefined); }
+			try { await handle.writeFile(JSON.stringify({ pid: process.pid, ts: Date.now(), owner })); }
+			catch (error) { await fs.unlink(lockPath).catch(() => undefined); throw error; }
+			finally { await handle.close(); }
+			break;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
 			attempts++;
@@ -54,6 +71,8 @@ async function withLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
 			await sleep(LOCK_DELAY_MS);
 		}
 	}
+	try { return await fn(); }
+	finally { await releaseOwnedLock(lockPath, owner).catch(() => undefined); }
 }
 
 export function resolveMagiHistoryPath(cwd: string): string {
@@ -77,7 +96,7 @@ export class MagiHistoryStore {
 
 	async append(input: MagiInput, output: MagiOutput, source: string): Promise<MagiRecord> {
 		await fs.mkdir(path.dirname(this.historyPath), { recursive: true });
-		return withLock(`${this.historyPath}.lock`, async () => {
+		return withMagiHistoryLock(`${this.historyPath}.lock`, async () => {
 			const file = await this.load();
 			const id = nextId(Object.keys(file.records));
 			const record: MagiRecord = { id, input: clone(input), output: clone(output), source, created_at: now() };
