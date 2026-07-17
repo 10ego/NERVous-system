@@ -42,6 +42,7 @@ export function summarizeRun(r: LionRun): string {
 		if (r.report.notes) lines.push("", `**Notes:** ${r.report.notes}`);
 	}
 	if (r.error) lines.push("", `**Error:** ${r.error}`);
+	if (r.terminal_diagnostic) lines.push("", "## Terminal diagnostic", formatTerminalDiagnostic(r.terminal_diagnostic));
 	if (r.output && !r.report) lines.push("", "## Raw output", r.output.slice(0, 4000));
 	return lines.join("\n");
 }
@@ -115,6 +116,26 @@ function formatControl(r: LionRun): string {
 
 function formatSteering(r: LionRun): string {
 	return (r.steering_messages ?? []).map((m) => `${m.id}:${m.status}${m.reason ? ` (${truncate(m.reason, 40)})` : ""}`).join(" · ");
+}
+
+function formatTerminalDiagnostic(d: NonNullable<LionRun["terminal_diagnostic"]>): string {
+	const bits: string[] = [`reason: ${d.reason}`];
+	if (typeof d.exit_code === "number") bits.push(`exit_code: ${d.exit_code}`);
+	if (d.signal) bits.push(`signal: ${d.signal}`);
+	if (d.timed_out) bits.push("timed_out: true");
+	if (typeof d.tool_uses === "number" && d.tool_uses > 0) bits.push(`tool_uses: ${d.tool_uses}`);
+	if (typeof d.turn_count === "number" && d.turn_count > 0) bits.push(`turns: ${d.turn_count}`);
+	if (typeof d.message_count === "number" && d.message_count > 0) bits.push(`messages: ${d.message_count}`);
+	if (typeof d.malformed_line_count === "number" && d.malformed_line_count > 0) bits.push(`malformed_lines: ${d.malformed_line_count}`);
+	if (d.last_tool_action) bits.push(`last_tool: ${truncate(d.last_tool_action, 80)}`);
+	if (d.git_head) bits.push(`git_head: ${d.git_head} (observational)`);
+	if (d.git_status) bits.push(`git_status: ${truncate(d.git_status, 120)} (observational)`);
+	if (d.partial_evidence?.changed_files.length) bits.push(`changed: ${d.partial_evidence.changed_files.map((file) => `\`${file}\``).join(", ")} (observational)`);
+	if (d.partial_evidence?.tests_run.length) bits.push(`tests: ${d.partial_evidence.tests_run.join(", ")} (observational)`);
+	if (d.stdout_tail) bits.push(`stdout_tail:\n\`\`\`text\n${d.stdout_tail}\n\`\`\``);
+	if (d.stderr_tail) bits.push(`stderr_tail:\n\`\`\`text\n${d.stderr_tail}\n\`\`\``);
+	if (d.output_tail) bits.push(`final_output_tail:\n\`\`\`text\n${d.output_tail}\n\`\`\``);
+	return bits.join(" · ");
 }
 
 function truncate(s: string, n: number): string {

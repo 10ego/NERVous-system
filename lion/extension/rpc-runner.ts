@@ -11,9 +11,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { LionStore } from "./backend.ts";
-import type { LionProgressSnapshot, LionReport } from "./schema.ts";
+import type { LionProgressSnapshot, LionReport, LionTerminalDiagnosticReason } from "./schema.ts";
 import type { LionTerminalIntent } from "./cleanup-supervisor.ts";
-import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, getProcessIdentity, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree, type LionProcessInfo, type LionRunOutput, type LionRunnerOutcome, type LionRunRequest } from "./subprocess.ts";
+import { boundedPersistedOutput, buildLionSystemPrompt, buildLionUserPrompt, buildTerminalDiagnostic, createLionProgressState, getProcessIdentity, isPidAlive, parseLionReport, progressFromEvent, signalProcessTree, type LionProcessInfo, type LionRunOutput, type LionRunnerOutcome, type LionRunRequest } from "./subprocess.ts";
 
 export interface LionRpcClient {
 	start(): Promise<void>;
@@ -411,6 +411,8 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 	);
 	const runIncarnation = req.run.incarnation_id ?? null;
 	const progressState = createLionProgressState({ includeText: req.include_progress_text ?? false });
+	let rpcEventCount = 0;
+	let lastToolAction: string | null = null;
 	const closeSteeringChannel = () => {
 		if (!channelOpen) return;
 		channelOpen = false;
@@ -500,8 +502,10 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		const activeClient = client;
 
 		unsubscribeEvents = activeClient.onEvent((event) => {
+			rpcEventCount++;
 			const progress = progressFromEvent(event, progressState);
 			if (progress) {
+				if (progress.event === "tool_start" || progress.event === "tool_end") lastToolAction = progress.activity;
 				try { req.onProgress?.(progress); } catch { /* progress callbacks must not break runner */ }
 			}
 		});
@@ -547,7 +551,26 @@ async function runRpcOnce(req: LionRunRequest, opts: LionRpcRunnerOptions): Prom
 		);
 		const text = (await raceSession(() => activeClient.getLastAssistantText(), req.signal, deadline, cancelSession)) ?? "";
 		const report: LionReport | null = parseLionReport(text);
-		operationOutput = { text, report };
+		const reason: LionTerminalDiagnosticReason | null = report ? null : (text.trim() ? "protocol_parse_failure" : "result_collection_failure");
+		operationOutput = {
+			text: boundedPersistedOutput(text),
+			report,
+			terminal: reason ? buildTerminalDiagnostic(reason, {
+				stdoutTail: "",
+				stderrTail: "",
+				eventCount: rpcEventCount,
+				malformedLineCount: 0,
+				turnCount: progressState.turnCount,
+				toolUses: progressState.toolUses,
+				messageCount: text.trim() ? 1 : 0,
+				exitCode: null,
+				signal: null,
+				timedOut: false,
+				lastToolAction,
+				changedFiles: [],
+				testsRun: [],
+			}, { outputTail: text, reportAttempted: text.trim().length > 0 }) : null,
+		};
 	} catch (err) {
 		const safeError = sanitizeRpcError(err);
 		primaryError = safeError;

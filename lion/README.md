@@ -142,6 +142,20 @@ Supported outcomes: `completed`, `blocked`, `failed`, `partial`.
 
 Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed`, `aborted`.
 
+### Terminal diagnostics and recovery
+
+A `completed` LION run now requires a strict, final fenced `WORKER_REPORT` JSON object with all required bounded fields. A clean worker exit without that valid wrapper is **not** success: it finalizes as `failed`, returns a tool error, and records an additive `terminal_diagnostic` on the durable run. Existing ledger records without that field remain readable unchanged.
+
+For report-less JSON runs, `terminal_diagnostic.reason` is one of:
+
+- `spawn_failure` — worker setup or process launch failed.
+- `timeout` — the host timeout/abort stopped an active worker.
+- `protocol_parse_failure` — a collected final assistant candidate did not satisfy the `WORKER_REPORT` contract.
+- `model_exit` — the child exited abnormally (nonzero exit or signal) before a trustworthy result.
+- `result_collection_failure` — the child closed cleanly without a final candidate or the final result could not be collected.
+
+Diagnostics expose capped, sanitized/redacted stdout, stderr, and final-output tails along with event/turn/tool counters and exit metadata. They are intentionally bounded; LION does not retain an unrestricted worker transcript. For a timeout after observed activity, `partial_evidence` additionally records observational (not ownership-proof) repository-relative changed paths, allowlisted test commands, the last tool action, and a no-shell, short-deadline Git `HEAD`/porcelain snapshot when available. The Git reads disable repository-controlled fsmonitor and hook integrations. These fields help a parent recover or review partial work while still treating the run as failed/aborted.
+
 ---
 
 ## Storage & durability

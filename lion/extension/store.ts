@@ -11,7 +11,11 @@ import {
 	LION_CANCEL_DELIVERY_STATUSES,
 	LION_PROGRESS_EVENTS,
 	LION_RUN_STATUSES,
+	coerceLionReport,
+	redactLionDiagnosticText,
+	LION_TERMINAL_DIAGNOSTIC_REASONS,
 	MAX_ACTIVE_TOOL_NAME_CHARS,
+	MAX_LION_REPORT_ITEMS,
 	MAX_ACTIVE_TOOL_NAMES,
 	isActiveLionStatus,
 	isTerminalLionStatus,
@@ -29,6 +33,9 @@ import {
 	type LionSteeringMessage,
 	type LionRunStatus,
 	type LionSummary,
+	type LionPartialEvidence,
+	type LionTerminalDiagnostic,
+	type LionTerminalDiagnosticReason,
 } from "./schema.ts";
 import { MAX_PROGRESS_TEXT } from "./lifecycle.ts";
 
@@ -38,10 +45,12 @@ const STATUS_SET = new Set<string>(LION_RUN_STATUSES);
 const PROGRESS_EVENT_SET = new Set<string>(LION_PROGRESS_EVENTS);
 const CANCEL_DELIVERY_STATUS_SET = new Set<string>(LION_CANCEL_DELIVERY_STATUSES);
 const STEERING_STATUS_SET = new Set<string>(LION_STEERING_STATUSES);
+const TERMINAL_DIAGNOSTIC_REASON_SET = new Set<string>(LION_TERMINAL_DIAGNOSTIC_REASONS);
 const DEFAULT_RECONCILE_GRACE_MS = 30_000;
 const MAX_STEERING_MESSAGE_CHARS = 4_000;
 const MAX_OPEN_STEERING_MESSAGES = 100;
 const MAX_TERMINAL_STEERING_HISTORY = 100;
+const MAX_TERMINAL_DIAGNOSTIC_TAIL_CHARS = 4_000;
 const OPEN_STEERING_STATUSES = new Set<LionSteeringMessage["status"]>(["queued", "pending_delivery", "delivering"]);
 
 function now(): string {
@@ -92,6 +101,8 @@ export interface FinishRunInput {
 	report?: LionReport | null;
 	status?: LionRunStatus;
 	error?: string | null;
+	/** Structured terminal diagnostic for report-less terminalizations; persisted additively. */
+	terminal?: LionTerminalDiagnostic | null;
 }
 
 export type UpdateProgressInput = Partial<Omit<LionProgressSnapshot, "last_event_at">> & {
@@ -197,13 +208,18 @@ export class LionLedger {
 
 	finish(id: string, input: FinishRunInput): LionRun {
 		const r = this.require(id);
-		const status = input.status ?? statusFromReport(input.report, input.error);
+		const report = coerceLionReport(input.report);
+		const requestedStatus = input.status ?? statusFromReport(report, input.error);
+		// Defense in depth: direct ledger callers cannot bypass the worker contract
+		// and mark a report-less or malformed-report run completed.
+		const status = requestedStatus === "completed" && !report ? "failed" : requestedStatus;
 		this.transition(r, status);
 		const ts = now();
 		this.failOpenSteeringForRun(r, `run finalized as ${status}`, ts);
 		r.output = input.output;
-		r.report = input.report ?? null;
+		r.report = report;
 		r.error = input.error ?? null;
+		r.terminal_diagnostic = coerceTerminalDiagnostic(input.terminal);
 		r.finished_at = ts;
 		r.updated_at = ts;
 		r.duration_ms = Math.max(0, Date.parse(ts) - Date.parse(r.started_at));
@@ -222,10 +238,13 @@ export class LionLedger {
 		}
 		const cancellation = current.control?.cancel_requested_at;
 		const finalInput = cancellation ? {
+			// Cancellation remains authoritative and discards raw output/report, while
+			// retaining any bounded terminal evidence already collected.
 			output: "",
 			report: null,
 			status: "aborted" as const,
 			error: current.control?.cancel_reason ? `Cancelled: ${current.control.cancel_reason}` : "Cancelled",
+			terminal: input.terminal ?? null,
 		} : input;
 		return { run: this.finish(id, finalInput), committed: true };
 	}
@@ -648,7 +667,9 @@ export class LionLedger {
 
 function statusFromReport(report: LionReport | null | undefined, error?: string | null): LionRunStatus {
 	if (error) return "failed";
-	if (!report) return "completed";
+	// Invariant: a missing/unusable report can never resolve to completed. Only a
+	// valid report (completed/partial outcome) completes; absence is a failure.
+	if (!report) return "failed";
 	if (report.outcome === "completed" || report.outcome === "partial") return "completed";
 	if (report.outcome === "blocked") return "blocked";
 	return "failed";
@@ -717,6 +738,7 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 		duration_ms: typeof value.duration_ms === "number" ? value.duration_ms : null,
 		output: typeof value.output === "string" ? value.output : null,
 		report: coerceReport(value.report),
+		terminal_diagnostic: coerceTerminalDiagnostic(value.terminal_diagnostic),
 		progress: coerceProgress(value.progress),
 		control: coerceControl(value.control, typeof value.id === "string" ? value.id : id),
 		steering_messages: coerceSteeringMessages(value.steering_messages),
@@ -724,20 +746,80 @@ function coerceRun(id: string, value: unknown): LionRun | null {
 	};
 }
 
-function coerceReport(value: unknown): LionReport | null {
+function coerceTerminalDiagnostic(value: unknown): LionTerminalDiagnostic | null {
 	if (!isObject(value)) return null;
-	const outcome = ["completed", "blocked", "failed", "partial"].includes(String(value.outcome))
-		? (value.outcome as LionReport["outcome"])
-		: "failed";
+	const reason = typeof value.reason === "string" && TERMINAL_DIAGNOSTIC_REASON_SET.has(value.reason)
+		? (value.reason as LionTerminalDiagnosticReason)
+		: null;
+	if (!reason) return null;
 	return {
-		outcome,
-		summary: typeof value.summary === "string" ? value.summary : "",
-		changed_files: normalizeStringList(value.changed_files),
-		tests_run: normalizeStringList(value.tests_run),
-		blockers: normalizeStringList(value.blockers),
-		next_steps: normalizeStringList(value.next_steps),
-		notes: typeof value.notes === "string" ? value.notes : undefined,
+		reason,
+		stdout_tail: optionalBoundedString(value.stdout_tail),
+		stderr_tail: optionalBoundedString(value.stderr_tail),
+		output_tail: optionalBoundedString(value.output_tail),
+		event_count: optionalNonNegativeInt(value.event_count),
+		message_count: optionalNonNegativeInt(value.message_count),
+		turn_count: optionalNonNegativeInt(value.turn_count),
+		tool_uses: optionalNonNegativeInt(value.tool_uses),
+		malformed_line_count: optionalNonNegativeInt(value.malformed_line_count),
+		exit_code: optionalInt(value.exit_code),
+		signal: optionalBoundedString(value.signal),
+		timed_out: typeof value.timed_out === "boolean" ? value.timed_out : null,
+		git_head: optionalBoundedString(value.git_head),
+		git_status: optionalBoundedString(value.git_status),
+		last_tool_action: optionalBoundedString(value.last_tool_action),
+		partial_evidence: coercePartialEvidence(value.partial_evidence),
+		report_attempted: typeof value.report_attempted === "boolean" ? value.report_attempted : null,
+		captured_at: typeof value.captured_at === "string" ? value.captured_at : now(),
 	};
+}
+
+function optionalBoundedString(value: unknown): string | null {
+	return typeof value === "string" ? sanitizeTerminalDiagnosticText(value) : null;
+}
+
+/** Defense in depth for direct ledger callers that bypass subprocess sanitization. */
+function sanitizeTerminalDiagnosticText(value: string): string {
+	const bounded = value
+		.slice(0, MAX_TERMINAL_DIAGNOSTIC_TAIL_CHARS)
+		.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " ");
+	return redactLionDiagnosticText(bounded);
+}
+
+function optionalNonNegativeInt(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : null;
+}
+
+function optionalInt(value: unknown): number | null {
+	return typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : null;
+}
+
+function coercePartialEvidence(value: unknown): LionPartialEvidence | null {
+	if (!isObject(value) || value.observational !== true) return null;
+	const changed_files = normalizeStringList(value.changed_files)
+		.map(normalizeEvidencePath)
+		.filter((item): item is string => item !== null)
+		.slice(0, MAX_LION_REPORT_ITEMS)
+		.map(sanitizeTerminalDiagnosticText);
+	const tests_run = normalizeStringList(value.tests_run).slice(0, MAX_LION_REPORT_ITEMS);
+	return {
+		changed_files,
+		tests_run: tests_run.map(sanitizeTerminalDiagnosticText),
+		last_tool_action: optionalBoundedString(value.last_tool_action),
+		git_head: optionalBoundedString(value.git_head),
+		git_status: optionalBoundedString(value.git_status),
+		observational: true,
+	};
+}
+
+function normalizeEvidencePath(value: string): string | null {
+	const path = value.replace(/\\/g, "/");
+	if (!path || path.startsWith("/") || path === ".." || path.startsWith("../") || path.length > 512 || /[\x00-\x1f\x7f]/.test(path)) return null;
+	return path;
+}
+
+function coerceReport(value: unknown): LionReport | null {
+	return coerceLionReport(value);
 }
 
 function coerceProgress(value: unknown): LionProgressSnapshot | null {

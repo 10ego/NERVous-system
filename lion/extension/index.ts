@@ -7,11 +7,11 @@
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { LionStore } from "./backend.ts";
-import { LionError, LionToolParams, isActiveLionStatus, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunStatus, type LionSummary, type LionToolInput } from "./schema.ts";
+import { LionError, LionToolParams, isActiveLionStatus, type LionModelRole, type LionProgressSnapshot, type LionRun, type LionRunStatus, type LionSummary, type LionTerminalDiagnostic, type LionTerminalDiagnosticReason, type LionToolInput } from "./schema.ts";
 import { renderLionCall, renderLionResult, summarizeList, summarizeRun, summarizeSummary } from "./render.ts";
 import { createProgressUpdater, emitLionEvent, startedProgress, terminalEventKind } from "./lifecycle.ts";
 import { resolveConfiguredLionModel, resolveLionRunnerMode } from "./options.ts";
-import { createLionRunner, getProcessIdentity, isPidAlive } from "./subprocess.ts";
+import { createLionRunner, getProcessIdentity, isPidAlive, LionRunnerError } from "./subprocess.ts";
 import { createLionRpcRunner } from "./rpc-runner.ts";
 import { finalizeExactLionRun, persistCleanupPendingObservation, registerLionCleanupSupervisor, type LionTerminalIntent } from "./cleanup-supervisor.ts";
 import { persistBatchedProgress } from "./progress-batcher.ts";
@@ -42,6 +42,20 @@ function fail(action: string, message: string, details: Omit<LionDetails, "actio
 
 function modelVisibleRunRef(run: Pick<LionRun, "id" | "incarnation_id">): string {
 	return `run_id=${run.id} incarnation_id=${run.incarnation_id}`;
+}
+
+function extractTerminalDiagnostic(err: unknown): LionTerminalDiagnostic | null {
+	return err instanceof LionRunnerError ? err.terminal : null;
+}
+
+function describeTerminalReason(reason: LionTerminalDiagnosticReason): string {
+	switch (reason) {
+		case "spawn_failure": return "worker failed to start (spawn_failure)";
+		case "timeout": return "worker timed out or was aborted (timeout)";
+		case "protocol_parse_failure": return "worker protocol stream was malformed (protocol_parse_failure)";
+		case "model_exit": return "worker exited without a valid final report (model_exit)";
+		case "result_collection_failure": return "worker produced no collectable result (result_collection_failure)";
+	}
 }
 
 async function runQuery(store: LionStore, action: string, op: (l: import("./store.ts").LionLedger) => ToolResult): Promise<ToolResult> {
@@ -148,7 +162,7 @@ export async function executeRun(args: {
 			const current = await args.store.query((l) => l.get(runId)).then(({ result }) => result, () => undefined);
 			return ok(args.action, `LION run_id=${runId} incarnation_id=${runIncarnationId} cleanup_pending: attached RPC child is still exiting; run ownership and orchestration capacity remain retained.`, current ? { run: current } : {});
 		}
-		const finished = await finalizeExactLionRun(args.store, activeOwner, { output: out.text, report: out.report });
+		const finished = await finalizeExactLionRun(args.store, activeOwner, { output: out.text, report: out.report, terminal: out.terminal });
 		if (finished.disposition !== "terminal") {
 			return fail(args.action, `LION finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, finished.run ? { run: finished.run } : {});
 		}
@@ -158,7 +172,12 @@ export async function executeRun(args: {
 		if (run.status === "aborted") {
 			return fail(args.action, `LION ${modelVisibleRunRef(run)} status=aborted: ${run.error ?? "Cancelled"}`, { run });
 		}
-		const reportHint = run.report ? `${run.report.outcome}: ${run.report.summary}` : "completed with unparsed report";
+		// Invariant: a missing/unusable final report can never be reported as success.
+		if (!run.report) {
+			const reason = run.terminal_diagnostic?.reason ?? "result_collection_failure";
+			return fail(args.action, `LION ${modelVisibleRunRef(run)} status=${run.status}: ${describeTerminalReason(reason)}`, { run });
+		}
+		const reportHint = `${run.report.outcome}: ${run.report.summary}`;
 		return ok(args.action, `LION ${modelVisibleRunRef(run)} status=${run.status}: ${reportHint}`, { run });
 	} catch (err) {
 		await progressUpdater.drain();
@@ -171,6 +190,7 @@ export async function executeRun(args: {
 			report: null,
 			status: wasCancelled ? "aborted" : "failed",
 			error: wasCancelled ? (exactCurrent?.control?.cancel_reason ? `Cancelled: ${exactCurrent.control.cancel_reason}` : "Cancelled") : msg,
+			terminal: extractTerminalDiagnostic(err),
 		});
 		if (failed.disposition !== "terminal") {
 			return fail(args.action, `LION failure finalization was superseded for run_id=${runId} incarnation_id=${runIncarnationId}; current ledger state was left unchanged.`, failed.run ? { run: failed.run } : {});

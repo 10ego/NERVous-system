@@ -67,7 +67,7 @@ class FakeRpcClient implements LionRpcClient {
 	}
 	async getLastAssistantText() {
 		if (this.lastTextGate) await this.lastTextGate;
-		return JSON.stringify({ WORKER_REPORT: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
+		return `\`\`\`json\n${JSON.stringify({ WORKER_REPORT: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } })}\n\`\`\``;
 	}
 	onEvent(listener: (event: unknown) => void) {
 		this.listeners.push(listener);
@@ -507,6 +507,23 @@ describe("createLionRpcRunner", () => {
 		if (output.settlement !== "settled") assert.fail("idle RPC run unexpectedly remained cleanup_pending");
 		assert.equal(output.report?.outcome, "completed");
 		assert.equal(fake.waitForIdleCalls, 0);
+	});
+
+	it("records protocol diagnostics for malformed final RPC text", async () => {
+		const store = await makeStore();
+		const fake = new FakeRpcClient();
+		fake.getLastAssistantText = async () => "final prose without a WORKER_REPORT";
+		const run = (await store.mutate((l) => l.create({ objective: "malformed RPC report", runner_mode: "rpc" }))).result;
+		const runner = createLionRpcRunner({ cwd: process.cwd(), store, clientFactory: () => fake });
+		const promise = runner({ run, timeout_ms: 1_000 });
+		await until(() => fake.prompted !== null);
+		fake.finish();
+		const output = await promise;
+		if (output.settlement !== "settled") assert.fail("malformed RPC run unexpectedly remained cleanup_pending");
+		assert.equal(output.report, null);
+		assert.equal(output.terminal?.reason, "protocol_parse_failure");
+		assert.equal(output.terminal?.report_attempted, true);
+		assert.match(output.terminal?.output_tail ?? "", /final prose/);
 	});
 
 	it("keeps abort supervision active through final assistant-text I/O", async () => {

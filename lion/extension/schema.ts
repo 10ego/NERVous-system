@@ -73,6 +73,113 @@ export interface LionReport {
 	notes?: string;
 }
 
+export const MAX_LION_REPORT_ITEMS = 100;
+export const MAX_LION_REPORT_TEXT_CHARS = 4_000;
+
+/**
+ * Redacts common keyed credential forms before diagnostic text reaches durable
+ * storage. This intentionally covers JSON keys and environment-style prefixes
+ * such as OPENAI_API_KEY and GITHUB_TOKEN as well as bare Authorization.
+ */
+export function redactLionDiagnosticText(text: string): string {
+	return text.replace(/((?:["']?)(?:(?:[A-Za-z][A-Za-z0-9_-]*[_-])?(?:API[_-]?KEY|TOKEN|PASSWORD|SECRET)|AUTHORIZATION)(?:["']?)\s*[:=]\s*)(?:"(?:\\.|[^"])*"|'(?:\\.|[^'])*'|Bearer\s+[^,;\s}\n]+|[^,;\s}\n]+)/gi, "$1[REDACTED]");
+}
+
+/** Returns a safe report only when every required worker-contract field is valid and bounded. */
+export function coerceLionReport(value: unknown): LionReport | null {
+	if (!isRecord(value)) return null;
+	const outcome = value.outcome;
+	const summary = value.summary;
+	if ((outcome !== "completed" && outcome !== "blocked" && outcome !== "failed" && outcome !== "partial")
+		|| typeof summary !== "string" || !summary.trim() || summary.length > MAX_LION_REPORT_TEXT_CHARS) return null;
+	const changed_files = boundedStrings(value.changed_files);
+	const tests_run = boundedStrings(value.tests_run);
+	const blockers = boundedStrings(value.blockers);
+	const next_steps = boundedStrings(value.next_steps);
+	if (!changed_files || !tests_run || !blockers || !next_steps) return null;
+	if (value.notes !== undefined && (typeof value.notes !== "string" || value.notes.length > MAX_LION_REPORT_TEXT_CHARS)) return null;
+	return { outcome, summary, changed_files, tests_run, blockers, next_steps, notes: value.notes };
+}
+
+function boundedStrings(value: unknown): string[] | null {
+	if (!Array.isArray(value) || value.length > MAX_LION_REPORT_ITEMS) return null;
+	return value.every((item) => typeof item === "string" && item.length <= MAX_LION_REPORT_TEXT_CHARS) ? [...value] : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null;
+}
+
+/**
+ * Explicit terminal classifications for runs that did not produce a usable
+ * final WORKER_REPORT. Persisted additively so a clean exit with a missing or
+ * malformed report can never be mistaken for success.
+ */
+export const LION_TERMINAL_DIAGNOSTIC_REASONS = [
+	"spawn_failure",
+	"timeout",
+	"protocol_parse_failure",
+	"model_exit",
+	"result_collection_failure",
+] as const;
+export type LionTerminalDiagnosticReason = (typeof LION_TERMINAL_DIAGNOSTIC_REASONS)[number];
+
+/**
+ * Additive, backwards-compatible structured terminal diagnostic record. All
+ * tails are bounded and sanitized at the writer; git evidence is observational
+ * only (no shell, short timeout) and never grants process-control authority.
+ * Older ledgers coerce to `null` and load unchanged.
+ */
+export interface LionPartialEvidence {
+	/** Repository-relative paths observed from tool events or `git status`; observational only. */
+	changed_files: string[];
+	/** Allowlisted test commands observed in structured bash tool arguments. */
+	tests_run: string[];
+	/** The most recent structured tool action, without arbitrary tool output. */
+	last_tool_action?: string | null;
+	/** Read-only Git snapshot captured after exit; it may include concurrent worktree activity. */
+	git_head?: string | null;
+	git_status?: string | null;
+	observational: true;
+}
+
+export interface LionTerminalDiagnostic {
+	reason: LionTerminalDiagnosticReason;
+	/** Bounded, sanitized raw stdout (NDJSON protocol stream) tail. */
+	stdout_tail?: string | null;
+	/** Bounded, sanitized stderr tail. */
+	stderr_tail?: string | null;
+	/** Bounded final assistant output tail. */
+	output_tail?: string | null;
+	/** Streaming protocol lines successfully parsed. */
+	event_count?: number | null;
+	/** Assistant/tool messages collected. */
+	message_count?: number | null;
+	/** Completed model turns observed. */
+	turn_count?: number | null;
+	/** Tool executions observed. */
+	tool_uses?: number | null;
+	/** Unparseable protocol lines observed. */
+	malformed_line_count?: number | null;
+	/** Subprocess exit metadata. */
+	exit_code?: number | null;
+	signal?: string | null;
+	/** True when terminated by a host timeout/abort. */
+	timed_out?: boolean | null;
+	/** Observational Git HEAD captured safely after activity (timeout/abort only). */
+	git_head?: string | null;
+	/** Observational Git status captured safely after activity. */
+	git_status?: string | null;
+	/** Last observed tool action from live progress. */
+	last_tool_action?: string | null;
+	/** Bounded recovery evidence; observations are not proof that the worker owns a change. */
+	partial_evidence?: LionPartialEvidence | null;
+	/** True when final output was present but no valid report parsed. */
+	report_attempted?: boolean | null;
+	/** When the diagnostic was captured. */
+	captured_at: string;
+}
+
 /**
  * Opportunistic live progress snapshot from a LION subprocess.
  *
@@ -180,6 +287,8 @@ export interface LionRun {
 	output?: string | null;
 	/** Parsed WORKER_REPORT JSON if present. */
 	report?: LionReport | null;
+	/** Structured terminal diagnostic for runs that did not produce a usable report. Additive; older ledgers load as null. */
+	terminal_diagnostic?: LionTerminalDiagnostic | null;
 	/** Latest bounded live progress snapshot, when the subprocess emitted usable events. Raw assistant text is redacted unless explicitly enabled per run. */
 	progress?: LionProgressSnapshot | null;
 	/** Best-effort subprocess control metadata for cancellation/reconciliation. */
