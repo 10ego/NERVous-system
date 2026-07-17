@@ -75,6 +75,14 @@ async function settleUiWork(): Promise<void> {
 	await new Promise((resolve) => setTimeout(resolve, 30));
 }
 
+async function waitForUi(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (!predicate()) {
+		if (Date.now() >= deadline) throw new Error("timed out waiting for TUI state");
+		await new Promise((resolve) => setTimeout(resolve, 5));
+	}
+}
+
 describe("cortex extension factory", () => {
 	it("reports framing gaps before MAGI deliberation", () => {
 		const base = {
@@ -464,10 +472,10 @@ describe("cortex extension factory", () => {
 							const component = factoryFn({ requestRender() {} }, testTheme, {}, () => undefined);
 							for (const ch of "risk") component.handleInput(ch);
 							component.handleInput(" "); // Risk gate: user_accepted -> disabled; opens in-menu warning.
-							await settleUiWork();
+							await waitForUi(() => component.render(120).join("\n").includes("Enable disabled risk gate"));
 							warning = component.render(120).join("\n");
 							component.handleInput("y");
-							await settleUiWork();
+							await waitForUi(() => !component.render(120).join("\n").includes("Enable disabled risk gate"));
 							return undefined;
 						},
 					},
