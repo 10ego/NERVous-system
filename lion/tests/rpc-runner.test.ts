@@ -67,7 +67,7 @@ class FakeRpcClient implements LionRpcClient {
 	}
 	async getLastAssistantText() {
 		if (this.lastTextGate) await this.lastTextGate;
-		return JSON.stringify({ WORKER_REPORT: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
+		return `\`\`\`json\n${JSON.stringify({ WORKER_REPORT: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } })}\n\`\`\``;
 	}
 	onEvent(listener: (event: unknown) => void) {
 		this.listeners.push(listener);

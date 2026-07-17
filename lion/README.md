@@ -144,7 +144,7 @@ Run statuses in the ledger: `queued`, `running`, `completed`, `blocked`, `failed
 
 ### Terminal diagnostics and recovery
 
-A `completed` LION run now requires a strict, fenced `WORKER_REPORT` object with all required bounded fields. A clean worker exit without that valid wrapper is **not** success: it finalizes as `failed`, returns a tool error, and records an additive `terminal_diagnostic` on the durable run. Existing ledger records without that field remain readable unchanged.
+A `completed` LION run now requires a strict, final fenced `WORKER_REPORT` JSON object with all required bounded fields. A clean worker exit without that valid wrapper is **not** success: it finalizes as `failed`, returns a tool error, and records an additive `terminal_diagnostic` on the durable run. Existing ledger records without that field remain readable unchanged.
 
 For report-less JSON runs, `terminal_diagnostic.reason` is one of:
 
