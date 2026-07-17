@@ -115,7 +115,10 @@ export function sanitizeDiagnosticTail(text: string, max = MAX_DIAGNOSTIC_TAIL_C
 }
 
 function redactDiagnosticSecrets(text: string): string {
-	return text.replace(/\b(authorization|api[_-]?key|token|password|secret)\b(\s*[=:]\s*["']?)([^\s,"';}]+)/gi, "$1$2[REDACTED]");
+	// Keyed values are the only persisted raw fragments. Redact through the
+	// field/line boundary so quoted values such as `Bearer secret` do not leak
+	// their second word.
+	return text.replace(/\b(authorization|api[_-]?key|token|password|secret)\b(\s*[=:]\s*["']?)([^,;\n}]+)/gi, "$1$2[REDACTED]");
 }
 
 export function buildTerminalDiagnostic(

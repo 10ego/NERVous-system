@@ -376,6 +376,7 @@ describe("LION diagnostic helpers", () => {
 		assert.equal(sanitizeDiagnosticTail("x".repeat(10), 5).length, 5);
 		assert.match(sanitizeDiagnosticTail("x".repeat(10), 5), /…$/);
 		assert.match(sanitizeDiagnosticTail("api_key=super-secret", 100), /api_key=\[REDACTED\]/i);
+		assert.equal(sanitizeDiagnosticTail('Authorization: "Bearer super-secret"', 100), "Authorization: \"[REDACTED]");
 		assert.equal(boundedPersistedOutput("x".repeat(10), 5), "[truncated 5 leading characters]\nxxxxx");
 	});
 
