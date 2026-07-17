@@ -3,12 +3,14 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "vitest";
+import { AxonStore, FileBackend as AxonBackend } from "../../axon/extension/backend.ts";
 import {
 	archiveNervousContext,
 	assessNervousContextReset,
 	formatNervousStateReport,
 	inspectNervousContext,
 	NERVOUS_ARCHIVE_MANIFEST,
+	pruneNervousArchives,
 } from "../extension/state-runtime.ts";
 
 const ENV_KEYS = [
@@ -35,6 +37,22 @@ async function withRuntimeEnv<T>(patch: Record<string, string | undefined>, fn: 
 	}
 }
 
+function writeArchive(projectDir: string, name: string, manifest: Record<string, unknown>): string {
+	const archivePath = path.join(projectDir, ".archive", name);
+	fs.mkdirSync(archivePath, { recursive: true });
+	fs.writeFileSync(`${archivePath}${NERVOUS_ARCHIVE_MANIFEST}`, JSON.stringify(manifest));
+	return archivePath;
+}
+
+function manifestFor(contextDir: string, resetAt: string, retention: number): Record<string, unknown> {
+	return {
+		version: 1, project: "project", context: "main", resetAt, originalPath: contextDir,
+		artifactCount: 1, artifactBytes: 1, archiveRetentionDays: retention,
+	};
+}
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
 describe("NERVous context state runtime", () => {
 	it("explains durable lifetime, SYNAPSE TTL, view caps, and other contexts", async () => {
 		await withRuntimeEnv({}, async (root) => {
@@ -59,7 +77,7 @@ describe("NERVous context state runtime", () => {
 		});
 	});
 
-	it("archives the whole raw context without parsing rejected component state and prunes expired reset archives", async () => {
+	it("archives raw rejected state with trusted sibling metadata and prunes an expired archive", async () => {
 		await withRuntimeEnv({}, async (root) => {
 			const now = new Date("2026-07-16T12:00:00.000Z");
 			const projectDir = path.join(root, "project");
@@ -71,62 +89,151 @@ describe("NERVous context state runtime", () => {
 			fs.writeFileSync(path.join(contextDir, "cerebel", "cerebel.json.bak"), rejected);
 			fs.writeFileSync(path.join(contextDir, "lion", "runs.json"), JSON.stringify({ runs: { "run-001": { id: "run-001", status: "completed" } } }));
 			fs.writeFileSync(path.join(contextDir, "lion", "runs.json.progress", "orphan.json"), "progress");
+			fs.writeFileSync(path.join(contextDir, NERVOUS_ARCHIVE_MANIFEST), JSON.stringify(manifestFor(contextDir, "2000-01-01T00:00:00.000Z", 1)));
 
-			const oldArchive = path.join(projectDir, ".archive", "main-old");
-			fs.mkdirSync(oldArchive, { recursive: true });
-			fs.writeFileSync(path.join(oldArchive, NERVOUS_ARCHIVE_MANIFEST), JSON.stringify({
-				version: 1, project: "project", context: "main", resetAt: "2026-06-01T00:00:00.000Z", originalPath: contextDir,
-				artifactCount: 1, artifactBytes: 1, archiveRetentionDays: 30,
-			}));
-
+			const oldArchive = writeArchive(projectDir, "main-old", manifestFor(contextDir, "2026-06-01T00:00:00.000Z", 30));
 			const result = await archiveNervousContext(root, { now, sessionId: "session-001" });
 			assert.equal(fs.existsSync(contextDir), false);
 			assert.equal(fs.readFileSync(path.join(result.archivePath, "cerebel", "cerebel.json"), "utf8"), rejected);
-			assert.equal(fs.existsSync(path.join(result.archivePath, "lion", "runs.json.progress", "orphan.json")), true);
+			assert.equal(fs.existsSync(path.join(result.archivePath, NERVOUS_ARCHIVE_MANIFEST)), true, "raw preexisting manifest remains untrusted data");
+			assert.equal(path.dirname(result.manifestPath), path.dirname(result.archivePath), "trusted manifest is outside raw archive");
 			assert.equal(JSON.parse(fs.readFileSync(result.manifestPath, "utf8")).sessionId, "session-001");
 			assert.deepEqual(result.prunedArchivePaths, [oldArchive]);
-			assert.equal(fs.existsSync(oldArchive), false);
+			assert.equal(fs.existsSync(`${oldArchive}${NERVOUS_ARCHIVE_MANIFEST}`), false);
 			assert.equal((await inspectNervousContext(root)).files.some((file) => file.exists), false);
 		});
 	});
 
-	it("requires force for active or unreadable LION state and never bypasses path overrides", async () => {
+	it("honors each archive's recorded retention regardless of the current environment", async () => {
+		await withRuntimeEnv({ NERVOUS_ARCHIVE_RETENTION_DAYS: "1" }, async (root) => {
+			const projectDir = path.join(root, "project");
+			const contextDir = path.join(projectDir, "main");
+			const indefinite = writeArchive(projectDir, "indefinite", manifestFor(contextDir, "2020-01-01T00:00:00.000Z", 0));
+			const long = writeArchive(projectDir, "long", manifestFor(contextDir, "2026-06-01T00:00:00.000Z", 90));
+			const elapsed = writeArchive(projectDir, "elapsed", manifestFor(contextDir, "2026-06-01T00:00:00.000Z", 10));
+			const removed = await pruneNervousArchives(root, { now: new Date("2026-07-16T00:00:00.000Z") });
+			assert.deepEqual(removed, [elapsed]);
+			assert.equal(fs.existsSync(indefinite), true);
+			assert.equal(fs.existsSync(long), true);
+		});
+	});
+
+	it("pins the confirmed namespace before acquiring or renaming state", async () => {
+		await withRuntimeEnv({}, async (root) => {
+			const mainFile = path.join(root, "project", "main", "axon", "ledger.json");
+			fs.mkdirSync(path.dirname(mainFile), { recursive: true });
+			fs.writeFileSync(mainFile, JSON.stringify({ tasks: {} }));
+			const confirmed = (await assessNervousContextReset(root)).snapshot;
+			process.env.NERVOUS_CONTEXT = "other";
+			const otherFile = path.join(root, "project", "other", "axon", "ledger.json");
+			fs.mkdirSync(path.dirname(otherFile), { recursive: true });
+			fs.writeFileSync(otherFile, JSON.stringify({ tasks: {} }));
+			await assert.rejects(() => archiveNervousContext(root, { expectedNamespace: confirmed }), /namespace changed after confirmation/);
+			assert.equal(fs.existsSync(mainFile), true);
+			assert.equal(fs.existsSync(otherFile), true);
+		});
+	});
+
+	it("requires force for active, malformed, or unknown-status LION state", async () => {
 		await withRuntimeEnv({}, async (root) => {
 			const lionPath = path.join(root, "project", "main", "lion", "runs.json");
 			fs.mkdirSync(path.dirname(lionPath), { recursive: true });
 			fs.writeFileSync(lionPath, JSON.stringify({ runs: { "run-live": { id: "run-live", status: "running" } } }));
 			assert.deepEqual((await assessNervousContextReset(root)).activeLionRunIds, ["run-live"]);
 			await assert.rejects(() => archiveNervousContext(root), /queued\/running LION records/);
-			assert.equal(fs.existsSync(lionPath), true);
-			assert.equal(fs.existsSync((await archiveNervousContext(root, { force: true })).archivePath), true);
 		});
+		for (const runs of [{ "run-bad": { id: "run-bad" } }, { "run-bad": { id: "run-bad", status: "mystery" } }, { "run-bad": "not-an-object" }]) {
+			await withRuntimeEnv({}, async (root) => {
+				const lionPath = path.join(root, "project", "main", "lion", "runs.json");
+				fs.mkdirSync(path.dirname(lionPath), { recursive: true });
+				fs.writeFileSync(lionPath, JSON.stringify({ runs }));
+				assert.equal((await assessNervousContextReset(root)).lionStateUnreadable, true);
+				await assert.rejects(() => archiveNervousContext(root), /schema-invalid/);
+				assert.equal(fs.existsSync((await archiveNervousContext(root, { force: true })).archivePath), true);
+			});
+		}
+	});
 
+	it("does not parse non-LION ledgers during reset assessment", async () => {
 		await withRuntimeEnv({}, async (root) => {
-			const lionPath = path.join(root, "project", "main", "lion", "runs.json");
-			fs.mkdirSync(path.dirname(lionPath), { recursive: true });
-			fs.writeFileSync(lionPath, "{bad-json");
-			assert.equal((await assessNervousContextReset(root)).lionStateUnreadable, true);
-			await assert.rejects(() => archiveNervousContext(root), /liveness cannot be classified/);
+			const cortexPath = path.join(root, "project", "main", "cortex", "cortex.json");
+			fs.mkdirSync(path.dirname(cortexPath), { recursive: true });
+			fs.writeFileSync(cortexPath, "{large-or-malformed-raw-state");
+			const assessment = await assessNervousContextReset(root);
+			assert.deepEqual(assessment.inspectionErrors, []);
+			const result = await archiveNervousContext(root);
+			assert.equal(fs.readFileSync(path.join(result.archivePath, "cortex", "cortex.json"), "utf8"), "{large-or-malformed-raw-state");
 		});
+	});
 
+	it("rejects explicit and symlink-backed state paths", async () => {
 		await withRuntimeEnv({}, async (root) => {
 			const override = path.join(root, "tasks.json");
 			fs.writeFileSync(override, JSON.stringify({ tasks: {} }));
 			process.env.AXON_LEDGER_PATH = override;
-			await assert.rejects(() => archiveNervousContext(root, { force: true }), /path overrides are active/);
+			await assert.rejects(() => archiveNervousContext(root, { force: true }), /escape the namespace/);
 			assert.equal(fs.existsSync(override), true);
+		});
+		await withRuntimeEnv({}, async (root) => {
+			const external = path.join(root, "external-runs.json");
+			fs.writeFileSync(external, JSON.stringify({ runs: {} }));
+			const lionPath = path.join(root, "project", "main", "lion", "runs.json");
+			fs.mkdirSync(path.dirname(lionPath), { recursive: true });
+			fs.symlinkSync(external, lionPath);
+			const assessment = await assessNervousContextReset(root);
+			assert.match(assessment.overridePaths.join(" "), /symlink/);
+			await assert.rejects(() => archiveNervousContext(root, { force: true }), /escape the namespace/);
+			assert.equal(fs.existsSync(external), true);
+		});
+		await withRuntimeEnv({}, async (root) => {
+			const externalContext = path.join(root, "external-context");
+			fs.mkdirSync(path.join(externalContext, "axon"), { recursive: true });
+			fs.writeFileSync(path.join(externalContext, "axon", "ledger.json"), JSON.stringify({ tasks: {} }));
+			fs.mkdirSync(path.join(root, "project"), { recursive: true });
+			fs.symlinkSync(externalContext, path.join(root, "project", "main"), "dir");
+			await assert.rejects(() => archiveNervousContext(root, { force: true }), /escape the namespace/);
+			assert.equal(fs.existsSync(path.join(externalContext, "axon", "ledger.json")), true);
 		});
 	});
 
-	it("refuses to race a live component writer", async () => {
+	it("coordinates reset with an in-flight component transaction", async () => {
 		await withRuntimeEnv({}, async (root) => {
-			const componentDir = path.join(root, "project", "main", "axon");
-			fs.mkdirSync(componentDir, { recursive: true });
-			fs.writeFileSync(path.join(componentDir, "ledger.json"), JSON.stringify({ tasks: {} }));
-			const lockPath = path.join(componentDir, "ledger.json.lock");
-			fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, ts: Date.now() }));
-			assert.deepEqual((await assessNervousContextReset(root)).liveLockPaths, [lockPath]);
-			await assert.rejects(() => archiveNervousContext(root, { force: true }), /live component writes/);
+			const ledgerPath = path.join(root, "project", "main", "axon", "ledger.json");
+			const backend = new AxonBackend({ ledgerPath, dir: path.dirname(ledgerPath) });
+			const store = new AxonStore(backend);
+			const rawBackend = backend as any;
+			const saveUnlocked = rawBackend.saveUnlocked.bind(backend);
+			let releaseSave!: () => void;
+			const saveGate = new Promise<void>((resolve) => { releaseSave = resolve; });
+			let saving!: () => void;
+			const savingStarted = new Promise<void>((resolve) => { saving = resolve; });
+			rawBackend.saveUnlocked = async (ledger: unknown) => { saving(); await saveGate; return saveUnlocked(ledger); };
+			const writer = store.mutate((ledger) => ledger.create({ title: "committed before reset" }));
+			await savingStarted;
+			let resetSettled = false;
+			const reset = archiveNervousContext(root).finally(() => { resetSettled = true; });
+			await delay(75);
+			assert.equal(resetSettled, false, "reset waits for the writer's complete transaction");
+			releaseSave();
+			await writer;
+			const result = await reset;
+			const archived = JSON.parse(fs.readFileSync(path.join(result.archivePath, "axon", "ledger.json"), "utf8"));
+			assert.equal(archived.tasks["task-001"].title, "committed before reset");
+			assert.equal(fs.existsSync(path.join(root, "project", "main")), false);
+		});
+	});
+
+	it("streams a high-cardinality artifact inventory and surfaces directory failures", async () => {
+		await withRuntimeEnv({}, async (root) => {
+			const sidecars = path.join(root, "project", "main", "lion", "runs.json.progress");
+			fs.mkdirSync(sidecars, { recursive: true });
+			for (let index = 0; index < 500; index++) fs.writeFileSync(path.join(sidecars, `${index}.json`), "x");
+			assert.equal((await assessNervousContextReset(root)).artifactCount, 500);
+		});
+		await withRuntimeEnv({}, async (root) => {
+			fs.mkdirSync(root, { recursive: true });
+			fs.writeFileSync(path.join(root, "project"), "not-a-directory");
+			await assert.rejects(() => inspectNervousContext(root), /ENOTDIR/);
 		});
 	});
 });

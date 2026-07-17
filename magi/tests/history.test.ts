@@ -46,6 +46,17 @@ describe("MAGI history global project/context namespace", () => {
 		});
 	});
 
+	it("serializes concurrent append transactions without losing records", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-magi-"));
+		await withNamespace({ NERVOUS_STATE_ROOT: root, NERVOUS_PROJECT: "repo-a", NERVOUS_CONTEXT: "concurrent" }, async () => {
+			const history = MagiHistoryStore.fromCwd("/tmp/repo-a");
+			await Promise.all(Array.from({ length: 20 }, (_, index) => history.append({ issue: `issue-${index}` }, output, `source-${index}`)));
+			const records = await history.list(100);
+			assert.equal(records.length, 20);
+			assert.equal(new Set(records.map((record) => record.source)).size, 20);
+		});
+	});
+
 	it("isolates deliberation history across context and project namespaces", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "nervous-magi-"));
 		await withNamespace({ NERVOUS_STATE_ROOT: root, NERVOUS_PROJECT: "repo-a", NERVOUS_CONTEXT: "ctx-a" }, async () => {

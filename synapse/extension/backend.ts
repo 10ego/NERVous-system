@@ -137,6 +137,31 @@ export class FileBackend {
 	}
 
 	async load(retention?: RetentionPolicy): Promise<LoadResult> {
+		return this.loadUnlocked(retention);
+	}
+
+	async mutate<T>(retention: RetentionPolicy, fn: (log: NoteLog) => T): Promise<{ result: T; warnings: string[]; pruned: number }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { log, warnings } = await this.loadUnlocked(retention);
+			const result = fn(log);
+			const pruned = log.prune(retention);
+			await this.saveUnlocked(log);
+			return { result, warnings, pruned };
+		});
+	}
+
+	async pruneOnly(retention: RetentionPolicy): Promise<{ pruned: number }> {
+		await fs.mkdir(this.location.dir, { recursive: true });
+		return withLock(this.lockPath, async () => {
+			const { log } = await this.loadUnlocked(retention);
+			const pruned = log.prune(retention);
+			await this.saveUnlocked(log);
+			return { pruned };
+		});
+	}
+
+	private async loadUnlocked(retention?: RetentionPolicy): Promise<LoadResult> {
 		let raw: string;
 		try {
 			raw = await fs.readFile(this.location.synapsePath, "utf8");
@@ -169,20 +194,23 @@ export class FileBackend {
 
 	async save(log: NoteLog): Promise<void> {
 		await fs.mkdir(this.location.dir, { recursive: true });
-		await withLock(this.lockPath, async () => {
-			const data = JSON.stringify(log.toJSON(), null, 2);
-			try {
-				await fs.copyFile(this.location.synapsePath, this.bakPath);
-			} catch (err) {
-				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "ENOENT") throw err;
-			}
-			await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
-			await fs.rename(this.tmpPath, this.location.synapsePath);
-		});
+		await withLock(this.lockPath, async () => this.saveUnlocked(log));
+	}
+
+	private async saveUnlocked(log: NoteLog): Promise<void> {
+		const data = JSON.stringify(log.toJSON(), null, 2);
+		try {
+			await fs.copyFile(this.location.synapsePath, this.bakPath);
+		} catch (err) {
+			const code = (err as NodeJS.ErrnoException).code;
+			if (code !== "ENOENT") throw err;
+		}
+		await fs.writeFile(this.tmpPath, data, { encoding: "utf8", mode: 0o600 });
+		await fs.rename(this.tmpPath, this.location.synapsePath);
 	}
 
 	async wipe(): Promise<void> {
+		await fs.mkdir(this.location.dir, { recursive: true });
 		await withLock(this.lockPath, async () => {
 			try {
 				await fs.copyFile(this.location.synapsePath, this.bakPath);
@@ -228,19 +256,12 @@ export class SynapseStore {
 	 * result of `fn` plus any load warnings and the number of notes pruned.
 	 */
 	async mutate<T>(fn: (log: NoteLog) => T): Promise<{ result: T; warnings: string[]; pruned: number }> {
-		const { log, warnings } = await this.backend.load(this.retention);
-		const result = fn(log);
-		const pruned = log.prune(this.retention);
-		await this.backend.save(log);
-		return { result, warnings, pruned };
+		return this.backend.mutate(this.retention, fn);
 	}
 
 	/** Forced prune + save (for the `prune` action). */
 	async pruneOnly(): Promise<{ pruned: number }> {
-		const { log } = await this.backend.load(this.retention);
-		const pruned = log.prune(this.retention);
-		await this.backend.save(log);
-		return { pruned };
+		return this.backend.pruneOnly(this.retention);
 	}
 }
 

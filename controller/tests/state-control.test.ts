@@ -19,7 +19,7 @@ async function withStateRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
 	}
 }
 
-function harness(root: string, hasUI = false, confirm = false) {
+function harness(root: string, hasUI = false, confirm: boolean | (() => Promise<boolean>) = false) {
 	const commands = new Map<string, any>();
 	const messages: Array<{ message: any; options: any }> = [];
 	const notifications: Array<{ message: string; level: string }> = [];
@@ -35,7 +35,7 @@ function harness(root: string, hasUI = false, confirm = false) {
 		sessionManager: { getSessionId: () => "session-test" },
 		ui: {
 			notify(message: string, level: string) { notifications.push({ message, level }); },
-			confirm: async () => confirm,
+			confirm: async () => typeof confirm === "function" ? confirm() : confirm,
 		},
 	};
 	return { commands, messages, notifications, ctx };
@@ -75,6 +75,21 @@ describe("NERVous state control", () => {
 			assert.match(h.messages.at(-1)?.message.content, /Active namespace: empty/);
 			const archivePath = h.messages.at(-1)?.message.details.archivePath;
 			assert.equal(fs.existsSync(path.join(archivePath, "cerebel", "cerebel.json")), true);
+		});
+	});
+
+	it("refuses if the selected namespace changes while confirmation is open", async () => {
+		await withStateRoot(async (root) => {
+			const originalPath = path.join(root, "test-project", "test-context", "axon", "ledger.json");
+			fs.mkdirSync(path.dirname(originalPath), { recursive: true });
+			fs.writeFileSync(originalPath, JSON.stringify({ tasks: {} }));
+			const h = harness(root, true, async () => {
+				process.env.NERVOUS_CONTEXT = "different-context";
+				return true;
+			});
+			await h.commands.get("nervous:reset").handler("", h.ctx);
+			assert.equal(fs.existsSync(originalPath), true);
+			assert.match(h.notifications.at(-1)?.message ?? "", /namespace changed after confirmation/);
 		});
 	});
 

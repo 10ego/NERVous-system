@@ -55,8 +55,8 @@ async function resetContext(pi: ExtensionAPI, args: string, ctx: ExtensionComman
 		ctx.ui.notify(`Context-wide reset is disabled while component path overrides are active: ${assessment.overridePaths.join(", ")}. Unset them or archive those files manually.`, "error");
 		return;
 	}
-	if (assessment.liveLockPaths.length) {
-		ctx.ui.notify(`NERVous state is currently being written (${assessment.liveLockPaths.join(", ")}). Wait for it to settle before resetting.`, "error");
+	if (assessment.inspectionErrors.length) {
+		ctx.ui.notify(`NERVous state could not be inspected safely: ${assessment.inspectionErrors.join(", ")}. Nothing was reset.`, "error");
 		return;
 	}
 	if (!force && (assessment.activeLionRunIds.length || assessment.lionStateUnreadable)) {
@@ -85,6 +85,7 @@ async function resetContext(pi: ExtensionAPI, args: string, ctx: ExtensionComman
 		result = await archiveNervousContext(ctx.cwd, {
 			force,
 			sessionId: ctx.sessionManager.getSessionId(),
+			expectedNamespace: assessment.snapshot,
 		});
 	} catch (error) {
 		ctx.ui.notify(`NERVous reset failed without an automatic migration: ${error instanceof Error ? error.message : String(error)}`, "error");
@@ -100,11 +101,10 @@ async function resetContext(pi: ExtensionAPI, args: string, ctx: ExtensionComman
 }
 
 function resetConfirmation(assessment: NervousResetAssessment, force: boolean): string {
-	const open = assessment.snapshot.files.reduce((total, file) => total + (file.openRecordCount ?? 0), 0);
 	const active = assessment.activeLionRunIds.length ? ` Active LION records: ${assessment.activeLionRunIds.join(", ")}.` : "";
 	return [
 		`Archive and clear ${assessment.snapshot.project}/${assessment.snapshot.context}?`,
-		`${assessment.artifactCount} file(s), ${formatBytes(assessment.artifactBytes)}, ${open} open durable record(s).`,
+		`${assessment.artifactCount} raw artifact(s), ${formatBytes(assessment.artifactBytes)}.`,
 		assessment.snapshot.archiveRetentionDays === 0
 			? "The raw archive does not expire automatically; records will no longer appear in tools or the dashboard."
 			: `The raw archive is retained for at least ${assessment.snapshot.archiveRetentionDays} day(s); records will no longer appear in tools or the dashboard.`,

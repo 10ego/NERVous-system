@@ -1,5 +1,6 @@
 import * as assert from "node:assert";
 import * as fs from "node:fs/promises";
+import { existsSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
@@ -155,6 +156,15 @@ describe("withLock — cross-call serialization", () => {
 });
 
 describe("AxonStore — mutate/query", () => {
+	it("holds the writer lock across load, mutation, and save", async () => {
+		const { backend, store } = await tmpLedger();
+		await store.mutate((ledger) => {
+			assert.equal(existsSync(`${backend.location.ledgerPath}.lock`), true);
+			return ledger.create({ title: "transactional" });
+		});
+		assert.equal(existsSync(`${backend.location.ledgerPath}.lock`), false);
+	});
+
 	it("mutate persists and query reads latest", async () => {
 		const { store } = await tmpLedger();
 		await store.mutate((l) => l.create({ title: "a" }));

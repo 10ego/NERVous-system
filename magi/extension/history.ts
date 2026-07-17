@@ -18,8 +18,43 @@ interface MagiHistoryFile {
 }
 
 const VERSION = 1;
+const LOCK_STALE_TTL_MS = 30_000;
+const LOCK_MAX_ATTEMPTS = 200;
+const LOCK_DELAY_MS = 25;
 const now = () => new Date().toISOString();
 const clone = <T>(v: T): T => JSON.parse(JSON.stringify(v)) as T;
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+function isPidAlive(pid: number): boolean {
+	try { process.kill(pid, 0); return true; }
+	catch (error) { const code = (error as NodeJS.ErrnoException).code; return code !== "ESRCH" && code !== "EINVAL"; }
+}
+
+async function lockIsStale(lockPath: string): Promise<boolean> {
+	try {
+		const parsed = JSON.parse(await fs.readFile(lockPath, "utf8")) as { pid?: unknown; ts?: unknown };
+		return typeof parsed.pid !== "number" || typeof parsed.ts !== "number" || !isPidAlive(parsed.pid) || Date.now() - parsed.ts > LOCK_STALE_TTL_MS;
+	} catch { return true; }
+}
+
+async function withLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+	let attempts = 0;
+	for (;;) {
+		try {
+			const handle = await fs.open(lockPath, "wx", 0o600);
+			await handle.writeFile(JSON.stringify({ pid: process.pid, ts: Date.now() }));
+			await handle.close();
+			try { return await fn(); }
+			finally { await fs.unlink(lockPath).catch(() => undefined); }
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			attempts++;
+			if (attempts % 20 === 0 && await lockIsStale(lockPath)) { await fs.unlink(lockPath).catch(() => undefined); continue; }
+			if (attempts >= LOCK_MAX_ATTEMPTS) throw new Error(`magi: timed out acquiring lock ${lockPath}`);
+			await sleep(LOCK_DELAY_MS);
+		}
+	}
+}
 
 export function resolveMagiHistoryPath(cwd: string): string {
 	return resolveNervousStateFile(cwd, "magi", "history.json", "MAGI_HISTORY_PATH");
@@ -41,13 +76,16 @@ export class MagiHistoryStore {
 	}
 
 	async append(input: MagiInput, output: MagiOutput, source: string): Promise<MagiRecord> {
-		const file = await this.load();
-		const id = nextId(Object.keys(file.records));
-		const record: MagiRecord = { id, input: clone(input), output: clone(output), source, created_at: now() };
-		file.records[id] = record;
-		file.updated_at = record.created_at;
-		await this.save(file);
-		return clone(record);
+		await fs.mkdir(path.dirname(this.historyPath), { recursive: true });
+		return withLock(`${this.historyPath}.lock`, async () => {
+			const file = await this.load();
+			const id = nextId(Object.keys(file.records));
+			const record: MagiRecord = { id, input: clone(input), output: clone(output), source, created_at: now() };
+			file.records[id] = record;
+			file.updated_at = record.created_at;
+			await this.saveUnlocked(file);
+			return clone(record);
+		});
 	}
 
 	private async load(): Promise<MagiHistoryFile> {
@@ -66,8 +104,7 @@ export class MagiHistoryStore {
 		}
 	}
 
-	private async save(file: MagiHistoryFile): Promise<void> {
-		await fs.mkdir(path.dirname(this.historyPath), { recursive: true });
+	private async saveUnlocked(file: MagiHistoryFile): Promise<void> {
 		const tmp = `${this.historyPath}.tmp`;
 		const bak = `${this.historyPath}.bak`;
 		try { await fs.copyFile(this.historyPath, bak); } catch (err) { if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err; }

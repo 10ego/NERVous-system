@@ -3,11 +3,16 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { resolveContextSlug, resolveNervousStateFile, resolveProjectSlug, resolveRoot } from "@nervous-system/state";
 
-const CONTEXT_RESET_LOCK_STALE_MS = 30_000;
+const LOCK_HEARTBEAT_MS = 5_000;
+const LOCK_MAX_ATTEMPTS = 400;
+const LOCK_DELAY_MS = 25;
+const MAX_DIAGNOSTIC_PATHS = 50;
+const LION_STATUSES = new Set(["queued", "running", "completed", "blocked", "failed", "aborted"]);
 export const NERVOUS_DASHBOARD_RECORD_LIMIT = 100;
 export const NERVOUS_DEFAULT_SYNAPSE_TTL_MS = 24 * 60 * 60 * 1000;
 export const NERVOUS_DEFAULT_SYNAPSE_MAX_NOTES = 1000;
 export const NERVOUS_DEFAULT_ARCHIVE_RETENTION_DAYS = 30;
+/** Trusted reset metadata is a sibling of the raw archive, never inside it. */
 export const NERVOUS_ARCHIVE_MANIFEST = ".nervous-archive.json";
 
 export const NERVOUS_STATE_COMPONENTS = [
@@ -23,10 +28,19 @@ export const NERVOUS_STATE_COMPONENTS = [
 
 export type NervousStateComponent = (typeof NERVOUS_STATE_COMPONENTS)[number]["component"];
 
+export interface NervousNamespaceRef {
+	root: string;
+	project: string;
+	context: string;
+	projectDir: string;
+	contextDir: string;
+}
+
 export interface NervousStateFileSnapshot {
 	component: NervousStateComponent;
 	filePath: string;
-	source: "namespace" | "override";
+	source: "namespace" | "override" | "symlink";
+	resolvedPath?: string;
 	exists: boolean;
 	bytes: number;
 	updatedAt?: string;
@@ -35,12 +49,7 @@ export interface NervousStateFileSnapshot {
 	parseError?: string;
 }
 
-export interface NervousContextSnapshot {
-	root: string;
-	project: string;
-	context: string;
-	projectDir: string;
-	contextDir: string;
+export interface NervousContextSnapshot extends NervousNamespaceRef {
 	files: NervousStateFileSnapshot[];
 	totalBytes: number;
 	otherContexts: string[];
@@ -54,7 +63,7 @@ export interface NervousResetAssessment {
 	artifactCount: number;
 	artifactBytes: number;
 	overridePaths: string[];
-	liveLockPaths: string[];
+	inspectionErrors: string[];
 	activeLionRunIds: string[];
 	lionStateUnreadable: boolean;
 }
@@ -79,33 +88,27 @@ export interface NervousArchiveManifest {
 	sessionId?: string;
 }
 
-/** Read-only raw inventory; component stores remain their own semantic validators. */
+interface ArtifactScan {
+	count: number;
+	bytes: number;
+	symlinkPaths: string[];
+}
+
+interface OwnedLockLease {
+	path: string;
+	owner: string;
+	stopHeartbeat(): void;
+	releaseAt(releasePath: string): Promise<void>;
+}
+
+/** Read-only inventory; component stores remain their own semantic validators. */
 export async function inspectNervousContext(cwd: string): Promise<NervousContextSnapshot> {
-	const root = resolveRoot();
-	const project = resolveProjectSlug(cwd);
-	const context = resolveContextSlug(cwd);
-	const projectDir = path.join(root, project);
-	const contextDir = path.join(projectDir, context);
-	const files = await Promise.all(NERVOUS_STATE_COMPONENTS.map((definition) => inspectStateFile(cwd, definition)));
-	const entries = await readDirectoryNames(projectDir);
-	const otherContexts = entries.filter((entry) => entry !== context && entry !== ".archive").sort();
-	const archives = await readDirectoryNames(path.join(projectDir, ".archive"));
-	return {
-		root,
-		project,
-		context,
-		projectDir,
-		contextDir,
-		files,
-		totalBytes: files.reduce((total, file) => total + file.bytes, 0),
-		otherContexts,
-		archiveCount: archives.length,
-		archiveRetentionDays: resolveNervousArchiveRetentionDays(),
-		synapseRetention: {
-			ttlMs: nonNegativeEnvNumber("SYNAPSE_TTL_MS", NERVOUS_DEFAULT_SYNAPSE_TTL_MS),
-			maxNotes: nonNegativeEnvNumber("SYNAPSE_MAX_NOTES", NERVOUS_DEFAULT_SYNAPSE_MAX_NOTES),
-		},
-	};
+	const namespace = resolveNamespace(cwd);
+	const files = await Promise.all(NERVOUS_STATE_COMPONENTS.map((definition) => inspectStateFile(cwd, definition, true)));
+	const entries = await readDirectoryNames(namespace.projectDir);
+	const otherContexts = entries.filter((entry) => entry !== namespace.context && entry !== ".archive").sort();
+	const archives = await readDirectoryNames(path.join(namespace.projectDir, ".archive"));
+	return snapshotFrom(namespace, files, otherContexts, archives.length);
 }
 
 export function formatNervousStateReport(snapshot: NervousContextSnapshot): string {
@@ -122,8 +125,8 @@ export function formatNervousStateReport(snapshot: NervousContextSnapshot): stri
 		`- SYNAPSE is transient: ${ttl}, ${cap}; expiry is applied on its next mutation or explicit prune.`,
 		`- Dashboard/list limits only display up to ${NERVOUS_DASHBOARD_RECORD_LIMIT} recent records; they do not delete stored data.`,
 		snapshot.archiveRetentionDays === 0
-			? "- Reset archives do not expire automatically."
-			: `- Reset archives are retained for at least ${snapshot.archiveRetentionDays}d, then pruned during a later reset.`,
+			? "- New reset archives do not expire automatically."
+			: `- New reset archives are retained for at least ${snapshot.archiveRetentionDays}d; each archive keeps the policy recorded when it was created.`,
 		"",
 		"## Active files",
 	];
@@ -134,13 +137,15 @@ export function formatNervousStateReport(snapshot: NervousContextSnapshot): stri
 		}
 		const records = file.recordCount === undefined ? "records unknown" : `${file.recordCount} record(s)`;
 		const open = file.openRecordCount === undefined ? "" : `, ${file.openRecordCount} open`;
-		const invalid = file.parseError ? `, unreadable JSON: ${file.parseError}` : "";
-		const location = file.source === "override" ? `override \`${file.filePath}\`` : "namespace";
+		const invalid = file.parseError ? `, unreadable: ${file.parseError}` : "";
+		const location = file.source === "namespace"
+			? "namespace"
+			: `${file.source} \`${file.filePath}\`${file.resolvedPath ? ` → \`${file.resolvedPath}\`` : ""}`;
 		lines.push(`- ${file.component.toUpperCase()}: ${records}${open}, ${formatBytes(file.bytes)}, ${location}${file.updatedAt ? `, updated ${file.updatedAt}` : ""}${invalid}`);
 	}
 	lines.push(
 		"",
-		`Other work contexts: ${snapshot.otherContexts.length}${snapshot.otherContexts.length ? ` (${snapshot.otherContexts.join(", ")})` : ""}.`,
+		`Other work contexts: ${snapshot.otherContexts.length}${snapshot.otherContexts.length ? ` (${snapshot.otherContexts.slice(0, 20).join(", ")}${snapshot.otherContexts.length > 20 ? ", …" : ""})` : ""}.`,
 		`Reset archives: ${snapshot.archiveCount}.`,
 		"Use a distinct `NERVOUS_CONTEXT` for concurrently resumable work. Use `/nervous:reset` when this namespace should start clean.",
 	);
@@ -151,104 +156,183 @@ export function resolveNervousArchiveRetentionDays(): number {
 	return Math.floor(nonNegativeEnvNumber("NERVOUS_ARCHIVE_RETENTION_DAYS", NERVOUS_DEFAULT_ARCHIVE_RETENTION_DAYS));
 }
 
-/** Inspect raw artifacts without requiring any component ledger to validate. */
-export async function assessNervousContextReset(cwd: string): Promise<NervousResetAssessment> {
-	const snapshot = await inspectNervousContext(cwd);
-	const artifacts = await inspectArtifacts(snapshot.contextDir);
-	const lion = snapshot.files.find((file) => file.component === "lion");
-	const lionActivity = lion?.exists && !lion.parseError ? await readActiveLionRunIds(lion.filePath) : { ids: [], unreadable: false };
+/** Inspect reset safety without parsing non-LION durable ledgers. */
+export async function assessNervousContextReset(
+	cwd: string,
+	expectedNamespace?: NervousNamespaceRef,
+	ignoredArtifacts: ReadonlySet<string> = new Set(),
+): Promise<NervousResetAssessment> {
+	const namespace = resolveNamespace(cwd);
+	assertExpectedNamespace(namespace, expectedNamespace);
+	const files = await Promise.all(NERVOUS_STATE_COMPONENTS.map((definition) => inspectStateFile(cwd, definition, false)));
+	const snapshot = snapshotFrom(namespace, files, [], 0);
+	const artifacts = await scanArtifacts(snapshot.contextDir, ignoredArtifacts);
+	const lion = files.find((file) => file.component === "lion");
+	const lionActivity = lion?.exists && !lion.parseError && lion.source === "namespace"
+		? await readActiveLionRunIds(lion.filePath)
+		: { ids: [], unreadable: Boolean(lion?.exists) };
+	const unsafePaths = new Set<string>();
+	for (const file of files) if (file.source !== "namespace") unsafePaths.add(`${file.component}:${file.filePath}${file.resolvedPath ? `->${file.resolvedPath}` : ""}`);
+	for (const symlinkPath of artifacts.symlinkPaths) unsafePaths.add(`symlink:${symlinkPath}`);
 	return {
 		snapshot,
 		artifactCount: artifacts.count,
 		artifactBytes: artifacts.bytes,
-		overridePaths: snapshot.files.filter((file) => file.source === "override").map((file) => `${file.component}:${file.filePath}`),
-		liveLockPaths: await findLiveLocks(snapshot.contextDir),
+		overridePaths: [...unsafePaths].slice(0, MAX_DIAGNOSTIC_PATHS),
+		inspectionErrors: files.flatMap((file) => file.parseError ? [`${file.component}:${file.parseError}`] : []),
 		activeLionRunIds: lionActivity.ids,
-		lionStateUnreadable: Boolean(lion?.exists && lion.parseError) || lionActivity.unreadable,
+		lionStateUnreadable: lionActivity.unreadable,
 	};
 }
 
 /** Archive the complete context without migration or partial record deletion. */
 export async function archiveNervousContext(
 	cwd: string,
-	options: { force?: boolean; now?: Date; sessionId?: string } = {},
+	options: { force?: boolean; now?: Date; sessionId?: string; expectedNamespace?: NervousNamespaceRef } = {},
 ): Promise<NervousResetResult> {
-	const initial = await assessNervousContextReset(cwd);
-	return withContextResetLock(initial.snapshot.projectDir, initial.snapshot.context, async () => {
-		const assessment = await assessNervousContextReset(cwd);
-		assertResetAllowed(assessment, Boolean(options.force));
-		if (assessment.artifactCount === 0) throw new Error(`NERVous context ${assessment.snapshot.project}/${assessment.snapshot.context} is already empty`);
+	const namespace = resolveNamespace(cwd);
+	assertExpectedNamespace(namespace, options.expectedNamespace);
+	return withOwnedLock(contextResetLockPath(namespace), async () => {
+		assertExpectedNamespace(resolveNamespace(cwd), options.expectedNamespace ?? namespace);
+		const preflight = await assessNervousContextReset(cwd, options.expectedNamespace ?? namespace);
+		assertResetAllowed(preflight, Boolean(options.force));
+		if (preflight.artifactCount === 0) throw new Error(`NERVous context ${namespace.project}/${namespace.context} is already empty`);
+		const lockPaths = preflight.snapshot.files.map((file) => `${file.filePath}.lock`).sort();
+		const leases = await acquireComponentLocks(lockPaths);
+		let archivePath: string | undefined;
+		let manifestPath: string | undefined;
+		let renamed = false;
+		try {
+			assertExpectedNamespace(resolveNamespace(cwd), options.expectedNamespace ?? namespace);
+			const ignoredLocks = new Set(lockPaths);
+			const assessment = await assessNervousContextReset(cwd, options.expectedNamespace ?? namespace, ignoredLocks);
+			assertSameStatePaths(preflight.snapshot.files, assessment.snapshot.files);
+			assertResetAllowed(assessment, Boolean(options.force));
+			if (assessment.artifactCount === 0) throw new Error(`NERVous context ${namespace.project}/${namespace.context} is already empty`);
 
-		const resetAt = (options.now ?? new Date()).toISOString();
-		const archiveRoot = path.join(assessment.snapshot.projectDir, ".archive");
-		const archiveName = `${assessment.snapshot.context}-${resetAt.replace(/[^0-9TZ]/g, "")}-${randomUUID().slice(0, 8)}`;
-		const archivePath = path.join(archiveRoot, archiveName);
-		await fs.mkdir(archiveRoot, { recursive: true, mode: 0o700 });
-		await fs.rename(assessment.snapshot.contextDir, archivePath);
+			const resetAt = (options.now ?? new Date()).toISOString();
+			const archiveRoot = path.join(namespace.projectDir, ".archive");
+			await assertRealDirectory(namespace.projectDir);
+			await ensureRealDirectory(archiveRoot);
+			({ archivePath, manifestPath } = await reserveArchivePaths(archiveRoot, namespace.context, resetAt));
+			const manifest: NervousArchiveManifest = {
+				version: 1,
+				project: namespace.project,
+				context: namespace.context,
+				resetAt,
+				originalPath: namespace.contextDir,
+				artifactCount: assessment.artifactCount,
+				artifactBytes: assessment.artifactBytes,
+				archiveRetentionDays: assessment.snapshot.archiveRetentionDays,
+				...(options.sessionId ? { sessionId: options.sessionId } : {}),
+			};
+			await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
+			for (const lease of leases) lease.stopHeartbeat();
+			assertExpectedNamespace(resolveNamespace(cwd), options.expectedNamespace ?? namespace);
+			await fs.rename(namespace.contextDir, archivePath);
+			renamed = true;
+			await releaseComponentLocks(leases, namespace.contextDir, archivePath);
 
-		const manifest: NervousArchiveManifest = {
-			version: 1,
-			project: assessment.snapshot.project,
-			context: assessment.snapshot.context,
-			resetAt,
-			originalPath: assessment.snapshot.contextDir,
-			artifactCount: assessment.artifactCount,
-			artifactBytes: assessment.artifactBytes,
-			archiveRetentionDays: assessment.snapshot.archiveRetentionDays,
-			...(options.sessionId ? { sessionId: options.sessionId } : {}),
-		};
-		const manifestPath = path.join(archivePath, NERVOUS_ARCHIVE_MANIFEST);
-		const warnings: string[] = [];
-		try { await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" }); }
-		catch (error) { warnings.push(`context was archived, but reset metadata could not be written: ${boundedError(error)}`); }
-		let prunedArchivePaths: string[] = [];
-		try { prunedArchivePaths = await pruneNervousArchives(cwd, { now: options.now, exclude: new Set([archivePath]) }); }
-		catch (error) { warnings.push(`context was archived, but expired archives could not be pruned: ${boundedError(error)}`); }
-		return { archivePath, manifestPath, prunedArchivePaths, warnings, assessment };
+			const warnings: string[] = [];
+			let prunedArchivePaths: string[] = [];
+			try { prunedArchivePaths = await pruneNervousArchives(cwd, { now: options.now, exclude: new Set([archivePath]) }); }
+			catch (error) { warnings.push(`context was archived, but expired archives could not be pruned: ${boundedError(error)}`); }
+			return { archivePath, manifestPath, prunedArchivePaths, warnings, assessment };
+		} catch (error) {
+			if (!renamed && manifestPath) await fs.unlink(manifestPath).catch(() => undefined);
+			throw error;
+		} finally {
+			if (!renamed) await releaseComponentLocks(leases, namespace.contextDir);
+		}
 	});
 }
 
-/** Delete only valid reset archives older than current retention. */
+/** Delete only reset archives whose own recorded retention has elapsed. */
 export async function pruneNervousArchives(
 	cwd: string,
 	options: { now?: Date; exclude?: ReadonlySet<string> } = {},
 ): Promise<string[]> {
-	const root = resolveRoot();
-	const project = resolveProjectSlug(cwd);
-	const archiveRoot = path.join(root, project, ".archive");
-	const retentionDays = resolveNervousArchiveRetentionDays();
-	if (retentionDays === 0) return [];
-	const cutoff = (options.now ?? new Date()).getTime() - retentionDays * 24 * 60 * 60 * 1000;
-	let entries;
-	try { entries = await fs.readdir(archiveRoot, { withFileTypes: true }); }
+	const namespace = resolveNamespace(cwd);
+	const archiveRoot = path.join(namespace.projectDir, ".archive");
+	try { await assertRealDirectory(archiveRoot); }
 	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+	const entries = await fs.readdir(archiveRoot, { withFileTypes: true });
+	const nowMs = (options.now ?? new Date()).getTime();
 	const removed: string[] = [];
 	for (const entry of entries) {
 		if (!entry.isDirectory()) continue;
 		const archivePath = path.join(archiveRoot, entry.name);
 		if (options.exclude?.has(archivePath)) continue;
-		const manifest = await readArchiveManifest(path.join(archivePath, NERVOUS_ARCHIVE_MANIFEST));
-		if (!manifest || manifest.project !== project || Date.parse(manifest.resetAt) > cutoff) continue;
+		const manifestPath = archiveManifestPath(archivePath);
+		const manifest = await readArchiveManifest(manifestPath);
+		if (!manifest || manifest.project !== namespace.project || manifest.archiveRetentionDays === 0) continue;
+		const expiresAt = Date.parse(manifest.resetAt) + manifest.archiveRetentionDays * 24 * 60 * 60 * 1000;
+		if (!Number.isFinite(expiresAt) || nowMs < expiresAt) continue;
 		await fs.rm(archivePath, { recursive: true, force: true });
+		await fs.unlink(manifestPath).catch((error) => { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; });
 		removed.push(archivePath);
 	}
 	return removed;
 }
 
+function resolveNamespace(cwd: string): NervousNamespaceRef {
+	const root = resolveRoot();
+	const project = resolveProjectSlug(cwd);
+	const context = resolveContextSlug(cwd);
+	const projectDir = path.join(root, project);
+	return { root, project, context, projectDir, contextDir: path.join(projectDir, context) };
+}
+
+function snapshotFrom(namespace: NervousNamespaceRef, files: NervousStateFileSnapshot[], otherContexts: string[], archiveCount: number): NervousContextSnapshot {
+	return {
+		...namespace,
+		files,
+		totalBytes: files.reduce((total, file) => total + file.bytes, 0),
+		otherContexts,
+		archiveCount,
+		archiveRetentionDays: resolveNervousArchiveRetentionDays(),
+		synapseRetention: {
+			ttlMs: nonNegativeEnvNumber("SYNAPSE_TTL_MS", NERVOUS_DEFAULT_SYNAPSE_TTL_MS),
+			maxNotes: nonNegativeEnvNumber("SYNAPSE_MAX_NOTES", NERVOUS_DEFAULT_SYNAPSE_MAX_NOTES),
+		},
+	};
+}
+
+function assertExpectedNamespace(actual: NervousNamespaceRef, expected?: NervousNamespaceRef): void {
+	if (!expected) return;
+	if (actual.root !== expected.root || actual.project !== expected.project || actual.context !== expected.context || actual.contextDir !== expected.contextDir) {
+		throw new Error(`NERVous namespace changed after confirmation (expected ${expected.project}/${expected.context} at ${expected.contextDir}, found ${actual.project}/${actual.context} at ${actual.contextDir}); nothing was reset`);
+	}
+}
+
+function assertSameStatePaths(before: NervousStateFileSnapshot[], after: NervousStateFileSnapshot[]): void {
+	const first = before.map((file) => `${file.component}:${file.filePath}:${file.source}`).join("\n");
+	const second = after.map((file) => `${file.component}:${file.filePath}:${file.source}`).join("\n");
+	if (first !== second) throw new Error("NERVous component state paths changed while reset was acquiring writer locks; nothing was reset");
+}
+
 async function inspectStateFile(
 	cwd: string,
 	definition: (typeof NERVOUS_STATE_COMPONENTS)[number],
+	parseRecords: boolean,
 ): Promise<NervousStateFileSnapshot> {
 	const override = process.env[definition.env];
 	const filePath = resolveNervousStateFile(cwd, definition.component, definition.filename, definition.env);
-	const source = override && path.isAbsolute(override) ? "override" as const : "namespace" as const;
+	let source: NervousStateFileSnapshot["source"] = override && path.isAbsolute(override) ? "override" : "namespace";
 	let stat;
-	try { stat = await fs.stat(filePath); }
+	try { stat = await fs.lstat(filePath); }
 	catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return { component: definition.component, filePath, source, exists: false, bytes: 0 };
 		return { component: definition.component, filePath, source, exists: true, bytes: 0, parseError: boundedError(error) };
 	}
-	const snapshot: NervousStateFileSnapshot = { component: definition.component, filePath, source, exists: true, bytes: stat.size };
+	let resolvedPath: string | undefined;
+	if (stat.isSymbolicLink()) {
+		source = "symlink";
+		try { resolvedPath = await fs.realpath(filePath); }
+		catch (error) { return { component: definition.component, filePath, source, exists: true, bytes: stat.size, parseError: boundedError(error) }; }
+	}
+	const snapshot: NervousStateFileSnapshot = { component: definition.component, filePath, source, ...(resolvedPath ? { resolvedPath } : {}), exists: true, bytes: stat.size };
+	if (!parseRecords) return snapshot;
 	try {
 		const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
 		if (!isPlainObject(parsed)) throw new Error("top-level value is not an object");
@@ -270,84 +354,164 @@ async function inspectStateFile(
 
 async function readDirectoryNames(dir: string): Promise<string[]> {
 	try { return (await fs.readdir(dir, { withFileTypes: true })).filter((entry) => entry.isDirectory()).map((entry) => entry.name); }
-	catch { return []; }
-}
-
-async function listArtifactPaths(dir: string): Promise<string[]> {
-	let entries;
-	try { entries = await fs.readdir(dir, { withFileTypes: true }); }
 	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-	const paths: string[] = [];
-	for (const entry of entries) {
-		const entryPath = path.join(dir, entry.name);
-		if (entry.isDirectory()) paths.push(...await listArtifactPaths(entryPath));
-		else paths.push(entryPath);
+}
+
+async function scanArtifacts(contextDir: string, ignored: ReadonlySet<string>): Promise<ArtifactScan> {
+	const result: ArtifactScan = { count: 0, bytes: 0, symlinkPaths: [] };
+	let rootStat;
+	try { rootStat = await fs.lstat(contextDir); }
+	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return result; throw error; }
+	if (rootStat.isSymbolicLink()) return { count: 1, bytes: rootStat.size, symlinkPaths: [contextDir] };
+	if (!rootStat.isDirectory()) throw new Error(`NERVous context path is not a directory: ${contextDir}`);
+	const pending = [contextDir];
+	while (pending.length) {
+		const dirPath = pending.pop()!;
+		let directory;
+		try { directory = await fs.opendir(dirPath); }
+		catch (error) {
+			if (dirPath === contextDir && (error as NodeJS.ErrnoException).code === "ENOENT") return result;
+			throw error;
+		}
+		for await (const entry of directory) {
+			const entryPath = path.join(dirPath, entry.name);
+			if (ignored.has(entryPath)) continue;
+			if (entry.isDirectory()) { pending.push(entryPath); continue; }
+			const stat = await fs.lstat(entryPath);
+			result.count++;
+			result.bytes += stat.size;
+			if (stat.isSymbolicLink() && result.symlinkPaths.length < MAX_DIAGNOSTIC_PATHS) result.symlinkPaths.push(entryPath);
+		}
 	}
-	return paths;
-}
-
-async function inspectArtifacts(contextDir: string): Promise<{ count: number; bytes: number }> {
-	const paths = await listArtifactPaths(contextDir);
-	const sizes = await Promise.all(paths.map(async (artifactPath) => {
-		try { return (await fs.lstat(artifactPath)).size; } catch { return 0; }
-	}));
-	return { count: paths.length, bytes: sizes.reduce((total, size) => total + size, 0) };
-}
-
-async function findLiveLocks(contextDir: string): Promise<string[]> {
-	const lockPaths = (await listArtifactPaths(contextDir)).filter((artifactPath) => artifactPath.endsWith(".lock"));
-	const live = await Promise.all(lockPaths.map(async (lockPath) => await lockFileIsLive(lockPath) ? lockPath : undefined));
-	return live.filter((lockPath): lockPath is string => Boolean(lockPath));
+	return result;
 }
 
 async function readActiveLionRunIds(filePath: string): Promise<{ ids: string[]; unreadable: boolean }> {
 	try {
 		const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as unknown;
 		if (!isPlainObject(parsed) || !isPlainObject(parsed.runs)) return { ids: [], unreadable: true };
-		const ids = Object.entries(parsed.runs).flatMap(([id, run]) =>
-			isPlainObject(run) && (run.status === "queued" || run.status === "running") ? [typeof run.id === "string" ? run.id : id] : [],
-		);
+		const ids: string[] = [];
+		for (const [key, value] of Object.entries(parsed.runs)) {
+			if (!isPlainObject(value) || typeof value.id !== "string" || !value.id.trim() || value.id !== key || typeof value.status !== "string" || !LION_STATUSES.has(value.status)) {
+				return { ids: [], unreadable: true };
+			}
+			if ((value.status === "queued" || value.status === "running") && ids.length < MAX_DIAGNOSTIC_PATHS) ids.push(value.id);
+		}
 		return { ids, unreadable: false };
 	} catch { return { ids: [], unreadable: true }; }
 }
 
 function assertResetAllowed(assessment: NervousResetAssessment, force: boolean): void {
-	if (assessment.overridePaths.length) throw new Error(`context-wide reset is unavailable while component path overrides are active (${assessment.overridePaths.join(", ")}); unset them or archive those files manually`);
-	if (assessment.liveLockPaths.length) throw new Error(`context has live component writes (${assessment.liveLockPaths.join(", ")}); wait for them to settle before resetting`);
+	if (assessment.overridePaths.length) throw new Error(`context-wide reset is unavailable while state paths escape the namespace (${assessment.overridePaths.join(", ")}); unset overrides or archive those files manually`);
+	if (assessment.inspectionErrors.length) throw new Error(`context state could not be inspected safely (${assessment.inspectionErrors.join(", ")}); nothing was reset`);
 	if (!force && assessment.activeLionRunIds.length) throw new Error(`context has queued/running LION records (${assessment.activeLionRunIds.join(", ")}); cancel/reconcile them or rerun /nervous:reset force only after confirming no worker process is live`);
-	if (!force && assessment.lionStateUnreadable) throw new Error("LION state is unreadable, so worker liveness cannot be classified; inspect it or rerun /nervous:reset force only after confirming no worker process is live");
+	if (!force && assessment.lionStateUnreadable) throw new Error("LION state is unreadable or schema-invalid, so worker liveness cannot be classified; inspect it or rerun /nervous:reset force only after confirming no worker process is live");
 }
 
-async function withContextResetLock<T>(projectDir: string, context: string, fn: () => Promise<T>): Promise<T> {
-	await fs.mkdir(projectDir, { recursive: true, mode: 0o700 });
-	const lockPath = path.join(projectDir, `.reset-${context}.lock`);
-	let handle;
-	for (let attempt = 0; attempt < 2; attempt++) {
-		try { handle = await fs.open(lockPath, "wx", 0o600); break; }
-		catch (error) {
-			if ((error as NodeJS.ErrnoException).code !== "EEXIST" || await lockFileIsLive(lockPath)) throw error;
-			await fs.unlink(lockPath).catch(() => undefined);
+async function acquireComponentLocks(lockPaths: string[]): Promise<OwnedLockLease[]> {
+	const leases: OwnedLockLease[] = [];
+	try {
+		for (const lockPath of lockPaths) leases.push(await acquireOwnedLock(lockPath));
+		return leases;
+	} catch (error) {
+		await Promise.all(leases.map((lease) => lease.releaseAt(lease.path)));
+		throw error;
+	}
+}
+
+async function releaseComponentLocks(leases: OwnedLockLease[], contextDir: string, archivePath?: string): Promise<void> {
+	await Promise.all(leases.map(async (lease) => {
+		lease.stopHeartbeat();
+		const releasePath = archivePath ? path.join(archivePath, path.relative(contextDir, lease.path)) : lease.path;
+		await lease.releaseAt(releasePath);
+	}));
+}
+
+function contextResetLockPath(namespace: NervousNamespaceRef): string {
+	return path.join(namespace.projectDir, `.reset-${namespace.context}.lock`);
+}
+
+async function withOwnedLock<T>(lockPath: string, fn: () => Promise<T>): Promise<T> {
+	const lease = await acquireOwnedLock(lockPath);
+	try { return await fn(); }
+	finally { await lease.releaseAt(lockPath); }
+}
+
+async function acquireOwnedLock(lockPath: string): Promise<OwnedLockLease> {
+	await fs.mkdir(path.dirname(lockPath), { recursive: true, mode: 0o700 });
+	const owner = randomUUID();
+	let attempts = 0;
+	for (;;) {
+		try {
+			const handle = await fs.open(lockPath, "wx", 0o600);
+			try { await handle.writeFile(JSON.stringify({ pid: process.pid, ts: Date.now(), owner })); await handle.sync(); }
+			finally { await handle.close(); }
+			break;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+			attempts++;
+			if (attempts % 20 === 0 && await lockFileIsStale(lockPath)) { await fs.unlink(lockPath).catch(() => undefined); continue; }
+			if (attempts >= LOCK_MAX_ATTEMPTS) throw new Error(`timed out acquiring NERVous state lock ${lockPath}`);
+			await sleep(LOCK_DELAY_MS);
 		}
 	}
-	if (!handle) throw new Error(`could not acquire NERVous context reset lock ${lockPath}`);
-	try {
-		await handle.writeFile(JSON.stringify({ pid: process.pid, ts: Date.now() }));
-		await handle.sync();
-		await handle.close();
-		handle = undefined;
-		return await fn();
-	} finally {
-		if (handle) await handle.close().catch(() => undefined);
-		await fs.unlink(lockPath).catch(() => undefined);
-	}
+	let released = false;
+	const heartbeat = setInterval(() => { void refreshOwnedLock(lockPath, owner); }, LOCK_HEARTBEAT_MS);
+	heartbeat.unref?.();
+	return {
+		path: lockPath,
+		owner,
+		stopHeartbeat: () => clearInterval(heartbeat),
+		releaseAt: async (releasePath) => {
+			if (released) return;
+			released = true;
+			clearInterval(heartbeat);
+			await unlinkOwnedLock(releasePath, owner);
+		},
+	};
 }
 
-async function lockFileIsLive(lockPath: string): Promise<boolean> {
+async function refreshOwnedLock(lockPath: string, owner: string): Promise<void> {
+	let handle;
 	try {
-		const parsed = JSON.parse(await fs.readFile(lockPath, "utf8")) as unknown;
-		if (!isPlainObject(parsed) || typeof parsed.pid !== "number" || typeof parsed.ts !== "number") return false;
-		return Date.now() - parsed.ts <= CONTEXT_RESET_LOCK_STALE_MS && isPidAlive(parsed.pid);
-	} catch { return false; }
+		// Opening first binds updates to our inode; a replacement path can never be
+		// overwritten by a late heartbeat from the prior owner.
+		handle = await fs.open(lockPath, "r+");
+		const parsed = parseLockInfo(await handle.readFile("utf8"));
+		if (parsed?.owner !== owner) return;
+		const payload = Buffer.from(JSON.stringify({ pid: process.pid, ts: Date.now(), owner }));
+		await handle.write(payload, 0, payload.length, 0);
+		await handle.truncate(payload.length);
+		await handle.sync();
+	} catch { /* the context may have been atomically renamed */ }
+	finally { await handle?.close().catch(() => undefined); }
+}
+
+async function unlinkOwnedLock(lockPath: string, owner: string): Promise<void> {
+	try {
+		const current = await readLockInfo(lockPath);
+		if (current?.owner === owner) await fs.unlink(lockPath);
+	} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+}
+
+async function lockFileIsStale(lockPath: string): Promise<boolean> {
+	const info = await readLockInfo(lockPath);
+	// Reset must never steal from a live writer. The heartbeat timestamp protects
+	// reset leases from components' existing age-based stale-lock recovery.
+	return !info || !isPidAlive(info.pid);
+}
+
+async function readLockInfo(lockPath: string): Promise<{ pid: number; ts: number; owner?: string } | undefined> {
+	try { return parseLockInfo(await fs.readFile(lockPath, "utf8")); }
+	catch { return undefined; }
+}
+
+function parseLockInfo(raw: string): { pid: number; ts: number; owner?: string } | undefined {
+	try {
+		const parsed = JSON.parse(raw) as unknown;
+		if (!isPlainObject(parsed) || typeof parsed.pid !== "number" || typeof parsed.ts !== "number") return undefined;
+		return { pid: parsed.pid, ts: parsed.ts, ...(typeof parsed.owner === "string" ? { owner: parsed.owner } : {}) };
+	} catch { return undefined; }
 }
 
 function isPidAlive(pid: number): boolean {
@@ -358,6 +522,43 @@ function isPidAlive(pid: number): boolean {
 	}
 }
 
+async function assertRealDirectory(directoryPath: string): Promise<void> {
+	const stat = await fs.lstat(directoryPath);
+	if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`NERVous reset rejects non-directory or symlink path ${directoryPath}`);
+}
+
+async function ensureRealDirectory(directoryPath: string): Promise<void> {
+	try { await assertRealDirectory(directoryPath); }
+	catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		await fs.mkdir(directoryPath, { recursive: false, mode: 0o700 });
+		await assertRealDirectory(directoryPath);
+	}
+}
+
+async function reserveArchivePaths(archiveRoot: string, context: string, resetAt: string): Promise<{ archivePath: string; manifestPath: string }> {
+	for (let attempt = 0; attempt < 10; attempt++) {
+		const archiveName = `${context}-${resetAt.replace(/[^0-9TZ]/g, "")}-${randomUUID().slice(0, 8)}`;
+		const archivePath = path.join(archiveRoot, archiveName);
+		const manifestPath = archiveManifestPath(archivePath);
+		try {
+			await fs.lstat(archivePath);
+			continue;
+		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		try {
+			const reservation = await fs.open(manifestPath, "wx", 0o600);
+			await reservation.close();
+			await fs.unlink(manifestPath);
+			return { archivePath, manifestPath };
+		} catch (error) { if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error; }
+	}
+	throw new Error("could not reserve a unique NERVous reset archive path");
+}
+
+function archiveManifestPath(archivePath: string): string {
+	return `${archivePath}${NERVOUS_ARCHIVE_MANIFEST}`;
+}
+
 async function readArchiveManifest(manifestPath: string): Promise<NervousArchiveManifest | undefined> {
 	try {
 		const parsed = JSON.parse(await fs.readFile(manifestPath, "utf8")) as unknown;
@@ -366,7 +567,11 @@ async function readArchiveManifest(manifestPath: string): Promise<NervousArchive
 			|| typeof parsed.project !== "string"
 			|| typeof parsed.context !== "string"
 			|| typeof parsed.resetAt !== "string"
-			|| !Number.isFinite(Date.parse(parsed.resetAt))) return undefined;
+			|| !Number.isFinite(Date.parse(parsed.resetAt))
+			|| typeof parsed.originalPath !== "string"
+			|| typeof parsed.artifactCount !== "number" || !Number.isSafeInteger(parsed.artifactCount) || parsed.artifactCount < 0
+			|| typeof parsed.artifactBytes !== "number" || !Number.isSafeInteger(parsed.artifactBytes) || parsed.artifactBytes < 0
+			|| typeof parsed.archiveRetentionDays !== "number" || !Number.isSafeInteger(parsed.archiveRetentionDays) || parsed.archiveRetentionDays < 0) return undefined;
 		return parsed as unknown as NervousArchiveManifest;
 	} catch { return undefined; }
 }
@@ -397,3 +602,5 @@ function formatDuration(ms: number): string {
 	if (ms % (60 * 1000) === 0) return `${ms / (60 * 1000)}m TTL`;
 	return `${ms}ms TTL`;
 }
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
