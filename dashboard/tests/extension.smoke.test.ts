@@ -224,11 +224,22 @@ describe("dashboard extension factory", () => {
 			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /assignment assign-001 has invalid LION provenance/);
 			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /state unchanged/);
 			assert.match(loaded.warningGroups?.cerebel?.[0] ?? "", /\/nervous:reset/);
+			assert.deepEqual(loaded.failedComponents, ["cerebel"]);
 			assert.equal(await fs.readFile(cerebelPath, "utf8").then((raw) => raw.includes("run-001")), true, "dashboard remains read-only");
 		} finally {
 			if (oldAxon === undefined) delete process.env.AXON_LEDGER_PATH; else process.env.AXON_LEDGER_PATH = oldAxon;
 			if (oldCerebel === undefined) delete process.env.CEREBEL_PATH; else process.env.CEREBEL_PATH = oldCerebel;
 		}
+	});
+
+	it("retries a transient component read before isolating it", async () => {
+		const run = { id: "run-recovered", status: "running" } as any;
+		const query = vi.fn().mockRejectedValueOnce(new Error("rename window")).mockRejectedValueOnce(new Error("rename window")).mockResolvedValue({ result: [run], warnings: [] });
+		vi.spyOn(LionStore, "fromCwd").mockReturnValue({ query } as any);
+		const loaded = await loadDashboardData(process.cwd(), ["lion"], undefined, { retryDelayMs: 0 });
+		assert.equal(query.mock.calls.length, 3);
+		assert.equal(loaded.runs[0]?.id, "run-recovered");
+		assert.deepEqual(loaded.failedComponents, []);
 	});
 
 	it("reloads only the changed component and preserves other data and warnings", async () => {
@@ -255,6 +266,18 @@ describe("dashboard extension factory", () => {
 		const dashboard = new NervousDashboard(emptyDashboardData(), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
 		await vi.advanceTimersByTimeAsync(100);
 		assert.deepEqual(refresh.mock.calls[0]?.[0], ["lion"]);
+		dashboard.dispose();
+	});
+
+	it("retries an isolated component failure without another fingerprint change", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValue([]);
+		const refresh = vi.fn().mockResolvedValue(emptyDashboardData({ runs: [{ id: "recovered" }], failedComponents: [] }));
+		const dashboard = new NervousDashboard(emptyDashboardData({ failedComponents: ["lion"] }), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
+		await vi.advanceTimersByTimeAsync(100);
+		assert.deepEqual(refresh.mock.calls[0]?.[0], ["lion"]);
+		assert.equal(changeDetector.mock.calls.length, 0, "failed component bypasses an already-advanced fingerprint");
+		assert.equal((dashboard as any).data.runs[0]?.id, "recovered");
 		dashboard.dispose();
 	});
 
