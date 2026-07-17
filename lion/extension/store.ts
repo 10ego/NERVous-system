@@ -774,7 +774,15 @@ function coerceTerminalDiagnostic(value: unknown): LionTerminalDiagnostic | null
 }
 
 function optionalBoundedString(value: unknown): string | null {
-	return typeof value === "string" ? value.slice(0, MAX_TERMINAL_DIAGNOSTIC_TAIL_CHARS) : null;
+	return typeof value === "string" ? sanitizeTerminalDiagnosticText(value) : null;
+}
+
+/** Defense in depth for direct ledger callers that bypass subprocess sanitization. */
+function sanitizeTerminalDiagnosticText(value: string): string {
+	const bounded = value
+		.slice(0, MAX_TERMINAL_DIAGNOSTIC_TAIL_CHARS)
+		.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " ");
+	return bounded.replace(/\b(authorization|api[_-]?key|token|password|secret)\b(\s*[=:]\s*["']?)([^,;\n}]+)/gi, "$1$2[REDACTED]");
 }
 
 function optionalNonNegativeInt(value: unknown): number | null {
@@ -790,12 +798,12 @@ function coercePartialEvidence(value: unknown): LionPartialEvidence | null {
 	const changed_files = normalizeStringList(value.changed_files)
 		.map(normalizeEvidencePath)
 		.filter((item): item is string => item !== null)
-		.slice(0, MAX_LION_REPORT_ITEMS);
+		.slice(0, MAX_LION_REPORT_ITEMS)
+		.map(sanitizeTerminalDiagnosticText);
 	const tests_run = normalizeStringList(value.tests_run).slice(0, MAX_LION_REPORT_ITEMS);
 	return {
 		changed_files,
-		tests_run: tests_run.map((item) => item.slice(0, MAX_TERMINAL_DIAGNOSTIC_TAIL_CHARS)),
-
+		tests_run: tests_run.map(sanitizeTerminalDiagnosticText),
 		last_tool_action: optionalBoundedString(value.last_tool_action),
 		git_head: optionalBoundedString(value.git_head),
 		git_status: optionalBoundedString(value.git_status),

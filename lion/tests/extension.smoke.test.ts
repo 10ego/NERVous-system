@@ -161,12 +161,21 @@ describe("lion extension factory", () => {
 			activeOwner: owner,
 			runner: async () => {
 				await store.mutate((ledger) => ledger.requestCancel(run.id, "late durable stop"));
-				return { settlement: "settled", text: "completed output", report: { outcome: "completed", summary: "must not win", changed_files: [], tests_run: [], blockers: [], next_steps: [] } };
+				return {
+					settlement: "settled",
+					text: "completed output with token=must-not-persist",
+					report: { outcome: "completed", summary: "must not win", changed_files: [], tests_run: [], blockers: [], next_steps: [] },
+					terminal: { reason: "timeout", stdout_tail: "Authorization: Bearer direct-secret", partial_evidence: { changed_files: ["partial.ts"], tests_run: ["npm test"], observational: true }, captured_at: "2026-01-01T00:00:00.000Z" },
+				};
 			},
 		});
 		assert.equal(result.isError, true);
 		assert.match(result.content[0]!.text, /status=aborted.*late durable stop/i);
 		assert.equal(result.details.run?.status, "aborted");
+		assert.equal(result.details.run?.output, "", "cancellation discards raw output");
+		assert.equal(result.details.run?.report, null, "cancellation discards worker report");
+		assert.equal(result.details.run?.terminal_diagnostic?.stdout_tail, "Authorization: [REDACTED]");
+		assert.deepEqual(result.details.run?.terminal_diagnostic?.partial_evidence?.changed_files, ["partial.ts"]);
 	});
 
 	it("supports queued steering and queued cancellation through the tool", async () => {

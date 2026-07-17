@@ -65,6 +65,14 @@ describe("LION subprocess helpers", () => {
 		assert.equal(parseLionReport('{"outcome":"blocked","summary":"missing dependency","blockers":["dep"],"changed_files":[],"tests_run":[],"next_steps":[]}'), null);
 	});
 
+	it("accepts only the final fenced JSON WORKER_REPORT block", () => {
+		const wrapped = JSON.stringify({ WORKER_REPORT: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
+		assert.equal(parseLionReport(wrapped), null, "raw wrapped JSON is not a final fenced report");
+		assert.equal(parseLionReport(`prose\n\`\`\`json\n${wrapped}\n\`\`\`\ntrailing prose`), null, "a report fence must be final");
+		assert.equal(parseLionReport(`\`\`\`json\n${wrapped}\n\`\`\`\n\`\`\`json\n{"WORKER_REPORT":{"outcome":"completed"}}\n\`\`\``), null, "an earlier valid fence cannot override the final invalid block");
+		assert.equal(parseLionReport(`\`\`\`json\n${wrapped}\n\`\`\``)?.summary, "done");
+	});
+
 	it("returns null for unparseable output", () => {
 		assert.equal(parseLionReport("not json"), null);
 	});

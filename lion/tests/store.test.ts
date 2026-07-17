@@ -26,12 +26,15 @@ describe("LionLedger terminal report invariant and diagnostics", () => {
 		const finished = l.finish(r.id, {
 			output: "tail",
 			report: null,
-			terminal: { reason: "model_exit", output_tail: "x".repeat(10_000), stderr_tail: "err", event_count: 3, message_count: 1, malformed_line_count: 0, exit_code: 0, captured_at: "2026-01-01T00:00:00.000Z" },
+			terminal: { reason: "model_exit", output_tail: "x".repeat(10_000), stderr_tail: "Authorization: Bearer direct-secret", partial_evidence: { changed_files: ["token=direct-secret.ts"], tests_run: ["npm test token=direct-secret"], observational: true }, event_count: 3, message_count: 1, malformed_line_count: 0, exit_code: 0, captured_at: "2026-01-01T00:00:00.000Z" },
 		});
 		assert.equal(finished.status, "failed");
 		assert.equal(finished.terminal_diagnostic?.reason, "model_exit");
 		assert.equal(finished.terminal_diagnostic?.output_tail?.length, 4_000, "tail must be bounded");
 		assert.equal(finished.terminal_diagnostic?.event_count, 3);
+		assert.equal(finished.terminal_diagnostic?.stderr_tail, "Authorization: [REDACTED]");
+		assert.deepEqual(finished.terminal_diagnostic?.partial_evidence?.changed_files, ["token=[REDACTED]"]);
+		assert.deepEqual(finished.terminal_diagnostic?.partial_evidence?.tests_run, ["npm test token=[REDACTED]"]);
 		// Round-trips through serialization unchanged in shape.
 		const back = LionLedger.fromJSON(l.toJSON());
 		assert.equal(back.get(r.id)?.terminal_diagnostic?.reason, "model_exit");

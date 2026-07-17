@@ -469,32 +469,17 @@ export function buildLionUserPrompt(run: LionRunRequest["run"]): string {
 }
 
 export function parseLionReport(text: string): LionReport | null {
-	for (const candidate of candidateJsonStrings(text)) {
-		try {
-			const parsed = JSON.parse(candidate) as unknown;
-			if (!isObject(parsed) || !isObject(parsed.WORKER_REPORT)) continue;
-			const report = coerceReport(parsed.WORKER_REPORT);
-			if (report) return report;
-		} catch {
-			/* next candidate */
-		}
+	// The worker contract requires its final response to be one fenced JSON
+	// block. Do not salvage marker-shaped JSON from prose or earlier turns: that
+	// would let stale/intermediate output claim a success after final failure.
+	const fenced = /```json[ \t]*\r?\n([\s\S]*?)\r?\n?```[ \t]*$/i.exec(text);
+	if (!fenced?.[1]) return null;
+	try {
+		const parsed = JSON.parse(fenced[1]) as unknown;
+		return isObject(parsed) && isObject(parsed.WORKER_REPORT) ? coerceReport(parsed.WORKER_REPORT) : null;
+	} catch {
+		return null;
 	}
-	return null;
-}
-
-function candidateJsonStrings(text: string): string[] {
-	const out: string[] = [];
-	const fences = text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi);
-	for (const m of fences) out.push(m[1]?.trim() ?? "");
-	const marker = text.indexOf("WORKER_REPORT");
-	if (marker >= 0) {
-		const start = text.lastIndexOf("{", marker);
-		const end = text.indexOf("}\n", marker);
-		if (start >= 0) out.push(text.slice(start).trim());
-		if (start >= 0 && end > start) out.push(text.slice(start, end + 1).trim());
-	}
-	out.push(text.trim());
-	return out.filter(Boolean);
 }
 
 function coerceReport(value: unknown): LionReport | null {
