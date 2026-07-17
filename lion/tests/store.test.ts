@@ -3,6 +3,52 @@ import { describe, it } from "vitest";
 import { LionLedger, canTransition } from "../extension/store.ts";
 import { LionError } from "../extension/schema.ts";
 
+describe("LionLedger terminal report invariant and diagnostics", () => {
+	it("never completes a run with a missing/unusable report", () => {
+		const l = new LionLedger();
+		// Invariant: a null report with no explicit status resolves to failed, never completed.
+		const r = l.create({ objective: "no report" });
+		const finished = l.finish(r.id, { output: "some text", report: null });
+		assert.equal(finished.status, "failed");
+		assert.equal(finished.report, null);
+		assert.equal(finished.output, "some text");
+		// A valid partial report remains completed.
+		const p = l.create({ objective: "partial" });
+		assert.equal(l.finish(p.id, { output: "x", report: { outcome: "partial", summary: "half", changed_files: [], tests_run: [], blockers: [], next_steps: [] } }).status, "completed");
+		// Explicit status cannot bypass the report invariant.
+		const e = l.create({ objective: "explicit" });
+		assert.equal(l.finish(e.id, { output: "", report: null, status: "completed" }).status, "failed");
+	});
+
+	it("persists a structured terminal diagnostic additively and bounds tails", () => {
+		const l = new LionLedger();
+		const r = l.create({ objective: "diag" });
+		const finished = l.finish(r.id, {
+			output: "tail",
+			report: null,
+			terminal: { reason: "model_exit", output_tail: "x".repeat(10_000), stderr_tail: "err", event_count: 3, message_count: 1, malformed_line_count: 0, exit_code: 0, captured_at: "2026-01-01T00:00:00.000Z" },
+		});
+		assert.equal(finished.status, "failed");
+		assert.equal(finished.terminal_diagnostic?.reason, "model_exit");
+		assert.equal(finished.terminal_diagnostic?.output_tail?.length, 4_000, "tail must be bounded");
+		assert.equal(finished.terminal_diagnostic?.event_count, 3);
+		// Round-trips through serialization unchanged in shape.
+		const back = LionLedger.fromJSON(l.toJSON());
+		assert.equal(back.get(r.id)?.terminal_diagnostic?.reason, "model_exit");
+	});
+
+	it("drops a terminal diagnostic with an unknown reason and keeps old ledgers unchanged", () => {
+		const l = new LionLedger();
+		const r = l.create({ objective: "bad" });
+		const finished = l.finish(r.id, { output: "", report: null, terminal: { reason: "bogus" as never, captured_at: "x" } });
+		assert.equal(finished.terminal_diagnostic, null);
+		// A ledger written before terminal diagnostics loads unchanged (additive field).
+		const legacy = LionLedger.fromJSON({ version: 1, updated_at: "2026-01-01T00:00:00.000Z", runs: { "run-001": { id: "run-001", status: "completed", started_at: "2026-01-01T00:00:00.000Z", updated_at: "2026-01-01T00:00:00.000Z", output: "ok", report: null } } });
+		assert.equal(legacy.get("run-001")?.terminal_diagnostic, null);
+		assert.equal(legacy.get("run-001")?.status, "completed", "persisted completed status must load unchanged");
+	});
+});
+
 describe("LionLedger", () => {
 	it("creates running runs with auto ids and default agent ids", () => {
 		const l = new LionLedger("proj");
@@ -47,12 +93,12 @@ describe("LionLedger", () => {
 		const l = new LionLedger();
 		const a = l.create({ objective: "a", agent_id: "lion-a" });
 		const b = l.create({ objective: "b", agent_id: "lion-b" });
-		l.finish(a.id, { output: "ok", report: null });
+		l.finish(a.id, { output: "ok", report: { outcome: "completed", summary: "ok", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
 		assert.equal(l.list({ status: "completed" }).length, 1);
 		assert.equal(l.list({ agent_id: "lion-b" })[0]?.id, b.id);
 		assert.equal(l.summary().by_status.completed, 1);
 		assert.throws(() => l.delete(b.id), /cannot delete nonterminal/);
-		l.finish(b.id, { output: "ok", report: null });
+		l.finish(b.id, { output: "ok", report: { outcome: "completed", summary: "ok", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
 		assert.equal(l.delete(b.id).id, b.id);
 		assert.equal(l.all().length, 1);
 	});
@@ -226,11 +272,17 @@ describe("LionLedger", () => {
 		const ledger = new LionLedger();
 		const run = ledger.create({ objective: "late cancellation" });
 		ledger.requestCancel(run.id, "cancel won the commit race");
-		const finalization = ledger.finalizeIfCurrent(run.id, run.incarnation_id, { output: "success", report: null });
+		const finalization = ledger.finalizeIfCurrent(run.id, run.incarnation_id, {
+			output: "success",
+			report: null,
+			terminal: { reason: "timeout", event_count: 3, partial_evidence: { changed_files: ["changed.ts"], tests_run: ["npm test"], observational: true }, captured_at: "2026-01-01T00:00:00.000Z" },
+		});
 		assert.equal(finalization.committed, true);
 		assert.equal(finalization.run?.status, "aborted");
 		assert.equal(finalization.run?.output, "");
 		assert.equal(finalization.run?.report, null);
+		assert.equal(finalization.run?.terminal_diagnostic?.reason, "timeout");
+		assert.deepEqual(finalization.run?.terminal_diagnostic?.partial_evidence?.changed_files, ["changed.ts"]);
 		assert.match(finalization.run?.error ?? "", /cancel won the commit race/);
 	});
 

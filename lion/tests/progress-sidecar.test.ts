@@ -231,7 +231,7 @@ describe("exact-incarnation progress sidecars", () => {
 			if (filePath === paths.primary) throw Object.assign(new Error("simulated cleanup interruption"), { code: "EIO" });
 			return originalUnlink(filePath);
 		};
-		const finished = await store.finishRun(run.id, run.incarnation_id, { output: "done", report: null });
+		const finished = await store.finishRun(run.id, run.incarnation_id, { output: "done", report: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
 		(backend.progress as any).unlinkArtifactUnlocked = originalUnlink;
 		assert.equal(finished.result.run?.status, "completed");
 		assert.match(finished.warnings.join("\n"), /cleanup deferred/);
@@ -247,7 +247,7 @@ describe("exact-incarnation progress sidecars", () => {
 		const paths = backend.progress.paths({ id: run.id, incarnation_id: run.incarnation_id! });
 		const originalRemove = backend.progress.removeExactUnlocked.bind(backend.progress);
 		(backend.progress as any).removeExactUnlocked = async () => { throw new Error("cleanup crash"); };
-		const finished = await store.finishRun(run.id, run.incarnation_id, { output: "done", report: null });
+		const finished = await store.finishRun(run.id, run.incarnation_id, { output: "done", report: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
 		assert.equal(finished.result.run?.status, "completed");
 		assert.equal(await exists(paths.primary), true);
 		assert.equal((await store.query((ledger) => ledger.get(run.id))).result?.progress?.activity, "accepted");
@@ -331,7 +331,7 @@ describe("exact-incarnation progress sidecars", () => {
 		const first = await createRunning(store, "first");
 		await store.flushProgress(first, snapshot("first flush"));
 		await assert.rejects(() => createRunning(store, "second"), /capacity reached/);
-		const terminal = await store.finishRun(first.id, first.incarnation_id, { output: "done", report: null });
+		const terminal = await store.finishRun(first.id, first.incarnation_id, { output: "done", report: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
 		assert.equal(terminal.result.run?.status, "completed");
 	});
 

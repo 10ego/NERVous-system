@@ -281,6 +281,8 @@ describe("lion extension factory", () => {
 			assert.equal(started.isError, true, "missing WORKER_REPORT should surface as a tool error");
 			assert.notEqual(started.details.run?.status, "completed", "missing WORKER_REPORT must not be marked completed");
 			assert.equal(started.details.run?.status, "failed");
+			assert.equal(started.details.run?.terminal_diagnostic?.reason, "protocol_parse_failure");
+			assert.match(started.content[0]?.text ?? "", /protocol_parse_failure/);
 			const store = LionStore.fromCwd(dir);
 			const ledgerRun = (await store.query((ledger) => ledger.get(id))).result;
 			assert.equal(ledgerRun?.status, "failed");

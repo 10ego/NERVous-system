@@ -6,16 +6,17 @@
  * plus any human-readable notes.
  */
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import { MAX_ACTIVE_TOOL_NAME_CHARS, MAX_ACTIVE_TOOL_NAMES, type LionProgressSnapshot, type LionReport, type LionRun } from "./schema.ts";
+import { MAX_ACTIVE_TOOL_NAME_CHARS, MAX_ACTIVE_TOOL_NAMES, coerceLionReport, type LionPartialEvidence, type LionProgressSnapshot, type LionReport, type LionRun, type LionTerminalDiagnostic, type LionTerminalDiagnosticReason } from "./schema.ts";
 import { MAX_PROGRESS_TEXT } from "./lifecycle.ts";
 
 const TEXT_PROGRESS_THROTTLE_MS = 1000;
+const MAX_PROTOCOL_BUFFER_CHARS = 64 * 1024;
 
 export interface LionRunnerOptions {
 	cwd: string;
@@ -59,11 +60,152 @@ export interface LionRunRequest {
 export interface LionRunOutput {
 	text: string;
 	report: LionReport | null;
+	/** Structured terminal diagnostic for report-less outcomes; null on a usable report. */
+	terminal?: LionTerminalDiagnostic | null;
 }
 
 export type LionRunnerOutcome =
 	| ({ settlement: "settled" } & LionRunOutput)
 	| { settlement: "cleanup_pending"; run_id: string; incarnation_id: string | null; owner_id: string };
+
+/**
+ * Error carrying a structured terminal diagnostic so executeRun can persist a
+ * durable record (rather than a console-only message) for spawn/timeout/abort.
+ */
+export class LionRunnerError extends Error {
+	constructor(message: string, public readonly terminal: LionTerminalDiagnostic) {
+		super(message);
+		this.name = "LionRunnerError";
+	}
+}
+
+export const MAX_DIAGNOSTIC_TAIL_CHARS = 4_000;
+export const MAX_PERSISTED_OUTPUT_CHARS = 16_000;
+const OBSERVATIONAL_GIT_TIMEOUT_MS = 1_500;
+
+export interface LionSubprocessDiagnosticContext {
+	stdoutTail: string;
+	stderrTail: string;
+	eventCount: number;
+	malformedLineCount: number;
+	turnCount: number;
+	toolUses: number;
+	messageCount: number;
+	exitCode: number | null;
+	signal: string | null;
+	timedOut: boolean;
+	lastToolAction: string | null;
+	changedFiles: string[];
+	testsRun: string[];
+}
+
+export function boundedPersistedOutput(text: string, max = MAX_PERSISTED_OUTPUT_CHARS): string {
+	const bounded = text.length > max ? `[truncated ${text.length - max} leading characters]\n${text.slice(-max)}` : text;
+	return redactDiagnosticSecrets(bounded);
+}
+
+export function sanitizeDiagnosticTail(text: string, max = MAX_DIAGNOSTIC_TAIL_CHARS): string {
+	const stripped = text
+		.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "") // ANSI escape sequences
+		.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, " ") // non-tab/newline control chars
+		.replace(/[ \t]+\n/g, "\n")
+		.trim();
+	const redacted = redactDiagnosticSecrets(stripped);
+	return redacted.length > max ? `${redacted.slice(0, Math.max(0, max - 1))}…` : redacted;
+}
+
+function redactDiagnosticSecrets(text: string): string {
+	return text.replace(/\b(authorization|api[_-]?key|token|password|secret)\b(\s*[=:]\s*["']?)([^\s,"';}]+)/gi, "$1$2[REDACTED]");
+}
+
+export function buildTerminalDiagnostic(
+	reason: LionTerminalDiagnosticReason,
+	ctx: LionSubprocessDiagnosticContext,
+	extra?: { outputTail?: string; reportAttempted?: boolean; partialEvidence?: LionPartialEvidence | null },
+): LionTerminalDiagnostic {
+	return {
+		reason,
+		stdout_tail: sanitizeDiagnosticTail(ctx.stdoutTail),
+		stderr_tail: sanitizeDiagnosticTail(ctx.stderrTail),
+		output_tail: extra?.outputTail != null ? sanitizeDiagnosticTail(extra.outputTail) : null,
+		event_count: ctx.eventCount,
+		message_count: ctx.messageCount,
+		turn_count: ctx.turnCount,
+		tool_uses: ctx.toolUses,
+		malformed_line_count: ctx.malformedLineCount,
+		exit_code: ctx.exitCode,
+		signal: ctx.signal,
+		timed_out: ctx.timedOut,
+		git_head: extra?.partialEvidence?.git_head ?? null,
+		git_status: extra?.partialEvidence?.git_status ?? null,
+		last_tool_action: ctx.lastToolAction,
+		partial_evidence: extra?.partialEvidence ?? partialEvidence(ctx),
+		report_attempted: extra?.reportAttempted ?? null,
+		captured_at: new Date().toISOString(),
+	};
+}
+
+/**
+ * Captures observational Git evidence after activity on timeout/abort. Strictly
+ * read-only: no shell, short bounded timeout, and never process-control
+ * authority. Failures resolve to null rather than throwing.
+ */
+export async function captureObservationalGit(cwd: string): Promise<{ head: string | null; status: string | null; changedFiles: string[] }> {
+	const run = (args: string[]): Promise<string | null> =>
+		new Promise((resolve) => {
+			execFile("git", args, { cwd, timeout: OBSERVATIONAL_GIT_TIMEOUT_MS, maxBuffer: 64 * 1024, windowsHide: true }, (err, stdout) => {
+				resolve(err ? null : stdout);
+			});
+		});
+	const [head, status] = await Promise.all([run(["rev-parse", "HEAD"]), run(["status", "--porcelain=v1"])]);
+	const safeStatus = status ? sanitizeDiagnosticTail(status) : null;
+	return {
+		head: head && /^[0-9a-f]{7,64}$/i.test(head.trim()) ? head.trim().slice(0, 64) : null,
+		status: safeStatus,
+		changedFiles: status ? changedFilesFromPorcelain(status) : [],
+	};
+}
+
+function changedFilesFromPorcelain(status: string): string[] {
+	const files: string[] = [];
+	for (const line of status.split("\n")) {
+		if (!/^[ MADRCU?!]{2} /.test(line)) continue;
+		const candidate = sanitizeRepoRelativePath(line.slice(3));
+		if (candidate && !files.includes(candidate) && files.length < 100) files.push(candidate);
+	}
+	return files;
+}
+
+function diagnosticHadActivity(terminal: LionTerminalDiagnostic): boolean {
+	return Boolean((terminal.tool_uses ?? 0) > 0 || (terminal.turn_count ?? 0) > 0 || (terminal.message_count ?? 0) > 0 || (terminal.event_count ?? 0));
+}
+
+function partialEvidence(context: LionSubprocessDiagnosticContext, git?: { head: string | null; status: string | null; changedFiles: string[] }): LionPartialEvidence {
+	return {
+		changed_files: uniqueBounded([...context.changedFiles, ...(git?.changedFiles ?? [])]),
+		tests_run: uniqueBounded(context.testsRun),
+		last_tool_action: context.lastToolAction,
+		git_head: git?.head ?? null,
+		git_status: git?.status ?? null,
+		observational: true,
+	};
+}
+
+function uniqueBounded(items: string[], maximum = 100): string[] {
+	const result: string[] = [];
+	for (const item of items) {
+		const clean = sanitizeDiagnosticTail(item, 512);
+		if (clean && !result.includes(clean)) result.push(clean);
+		if (result.length >= maximum) break;
+	}
+	return result;
+}
+
+function sanitizeRepoRelativePath(value: string): string | null {
+	const normalized = value.replace(/\\/g, "/").replace(/^\.\//, "");
+	if (!normalized || normalized.startsWith("/") || normalized === ".." || normalized.startsWith("../") || normalized.includes("\0") || normalized.length > 512) return null;
+	return /^[^\x00-\x1f\x7f]+$/.test(normalized) ? normalized : null;
+}
 
 export function getPiInvocation(args: string[], opts?: { forceBinary?: boolean }): { command: string; args: string[] } {
 	if (!opts?.forceBinary) {
@@ -327,8 +469,8 @@ export function parseLionReport(text: string): LionReport | null {
 	for (const candidate of candidateJsonStrings(text)) {
 		try {
 			const parsed = JSON.parse(candidate) as unknown;
-			const obj = isObject(parsed) && isObject(parsed.WORKER_REPORT) ? parsed.WORKER_REPORT : parsed;
-			const report = coerceReport(obj);
+			if (!isObject(parsed) || !isObject(parsed.WORKER_REPORT)) continue;
+			const report = coerceReport(parsed.WORKER_REPORT);
 			if (report) return report;
 		} catch {
 			/* next candidate */
@@ -353,29 +495,57 @@ function candidateJsonStrings(text: string): string[] {
 }
 
 function coerceReport(value: unknown): LionReport | null {
-	if (!isObject(value)) return null;
-	const rawOutcome = typeof value.outcome === "string" ? value.outcome : "failed";
-	const outcome = ["completed", "blocked", "failed", "partial"].includes(rawOutcome)
-		? (rawOutcome as LionReport["outcome"])
-		: "failed";
-	const summary = typeof value.summary === "string" ? value.summary : "";
-	if (!summary && !Array.isArray(value.blockers)) return null;
-	return {
-		outcome,
-		summary,
-		changed_files: strings(value.changed_files),
-		tests_run: strings(value.tests_run),
-		blockers: strings(value.blockers),
-		next_steps: strings(value.next_steps),
-		notes: typeof value.notes === "string" ? value.notes : undefined,
-	};
-}
-
-function strings(x: unknown): string[] {
-	return Array.isArray(x) ? x.filter((v): v is string => typeof v === "string") : [];
+	return coerceLionReport(value);
 }
 function isObject(x: unknown): x is Record<string, unknown> {
 	return typeof x === "object" && x !== null;
+}
+
+function appendBoundedTail(current: string, chunk: string, maximum = MAX_DIAGNOSTIC_TAIL_CHARS): string {
+	if (chunk.length >= maximum) return chunk.slice(-maximum);
+	const combined = current + chunk;
+	return combined.length > maximum ? combined.slice(-maximum) : combined;
+}
+
+/** Drops an oversized unterminated protocol segment rather than retaining an unbounded stream. */
+function appendProtocolBuffer(current: string, chunk: string, onDiscard: () => void): string {
+	const combined = current + chunk;
+	if (combined.length <= MAX_PROTOCOL_BUFFER_CHARS) return combined;
+	onDiscard();
+	const newline = combined.lastIndexOf("\n");
+	if (newline < 0) return "";
+	const tail = combined.slice(newline + 1);
+	return tail.length <= MAX_PROTOCOL_BUFFER_CHARS ? tail : "";
+}
+
+function observeStructuredToolEvidence(
+	event: Record<string, unknown>,
+	cwd: string,
+	changedFiles: string[],
+	testsRun: string[],
+): void {
+	if (event.type !== "tool_execution_start" || typeof event.toolName !== "string" || !isObject(event.args)) return;
+	const args = event.args;
+	if (event.toolName === "edit" || event.toolName === "write") {
+		const suppliedPath = typeof args.path === "string" ? args.path : typeof args.filePath === "string" ? args.filePath : null;
+		if (suppliedPath) {
+			const relative = path.isAbsolute(suppliedPath) ? path.relative(cwd, suppliedPath) : suppliedPath;
+			const safePath = sanitizeRepoRelativePath(relative);
+			if (safePath && !changedFiles.includes(safePath) && changedFiles.length < 100) changedFiles.push(safePath);
+		}
+	}
+	if (event.toolName === "bash" && typeof args.command === "string") {
+		const command = safeTestCommand(args.command);
+		if (command && !testsRun.includes(command) && testsRun.length < 100) testsRun.push(command);
+	}
+}
+
+/** Preserve only a single allowlisted test command, never arbitrary shell input or output. */
+function safeTestCommand(command: string): string | null {
+	const compact = command.trim();
+	if (compact.length === 0 || compact.length > 512 || /[\r\n;&|`$<>]/.test(compact)) return null;
+	if (!/^(?:npm\s+(?:run\s+)?test\b|pnpm\s+(?:run\s+)?test\b|yarn\s+test\b|bun\s+test\b|npx\s+vitest\b|vitest\b|node\s+--test\b)/.test(compact)) return null;
+	return /^[A-Za-z0-9_./:@=, +\-[\]"']+$/.test(compact) ? compact : null;
 }
 
 export function createLionRunner(opts: LionRunnerOptions) {
@@ -390,15 +560,62 @@ async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<
 	let tmpDir: string | null = null;
 	let tmpPath: string | null = null;
 	try {
-		const tmp = await writePromptToTempFile(req.run.agent_id, buildLionSystemPrompt(req.run));
+		let tmp: { dir: string; filePath: string };
+		try {
+			tmp = await writePromptToTempFile(req.run.agent_id, buildLionSystemPrompt(req.run));
+		} catch (error) {
+			throw new LionRunnerError(
+				`LION subprocess setup failed: ${error instanceof Error ? error.message : String(error)}`,
+				buildTerminalDiagnostic("spawn_failure", emptyDiagnosticContext()),
+			);
+		}
 		tmpDir = tmp.dir;
 		tmpPath = tmp.filePath;
 		args.push("--append-system-prompt", tmpPath);
 		args.push(buildLionUserPrompt(req.run));
 
-		const messages = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress, req.onProcessStart, req.onProcessExit, req.include_progress_text ?? false);
-		const text = getFinalOutput(messages);
-		return { settlement: "settled", text, report: parseLionReport(text) };
+		let collection: { messages: Message[]; context: LionSubprocessDiagnosticContext };
+		try {
+			collection = await collectMessages(args, opts, req.signal, req.timeout_ms, req.onProgress, req.onProcessStart, req.onProcessExit, req.include_progress_text ?? false);
+		} catch (err) {
+			const diagErr =
+				err instanceof LionRunnerError
+					? err
+					: new LionRunnerError(
+						err instanceof Error ? err.message : String(err),
+						buildTerminalDiagnostic("spawn_failure", emptyDiagnosticContext(), {}),
+					);
+			// On timeout/abort after activity, persist bounded observational evidence.
+			if (diagErr.terminal.reason === "timeout" && diagnosticHadActivity(diagErr.terminal)) {
+				const git = await captureObservationalGit(opts.cwd);
+				diagErr.terminal.git_head = git.head;
+				diagErr.terminal.git_status = git.status;
+				diagErr.terminal.partial_evidence = partialEvidenceFromTerminal(diagErr.terminal, git);
+			}
+			throw diagErr;
+		}
+		let text: string;
+		try {
+			text = getFinalOutput(collection.messages);
+		} catch (error) {
+			throw new LionRunnerError(
+				`LION final result collection failed: ${error instanceof Error ? error.message : String(error)}`,
+				buildTerminalDiagnostic("result_collection_failure", collection.context),
+			);
+		}
+		const output = boundedPersistedOutput(text);
+		const report = parseLionReport(text);
+		if (report) return { settlement: "settled", text: output, report, terminal: null };
+		// A collected final assistant candidate that violates the strict worker
+		// contract is a protocol failure. A clean close with no final candidate is
+		// a collection failure; neither may resolve as completed.
+		const reason: LionTerminalDiagnosticReason = text.trim() ? "protocol_parse_failure" : "result_collection_failure";
+		const terminal = buildTerminalDiagnostic(reason, collection.context, {
+			outputTail: text,
+			reportAttempted: text.trim().length > 0,
+			partialEvidence: partialEvidence(collection.context),
+		});
+		return { settlement: "settled", text: output, report: null, terminal };
 	} finally {
 		if (tmpPath)
 			try {
@@ -415,6 +632,21 @@ async function runPiOnce(req: LionRunRequest, opts: LionRunnerOptions): Promise<
 	}
 }
 
+function partialEvidenceFromTerminal(terminal: LionTerminalDiagnostic, git: { head: string | null; status: string | null; changedFiles: string[] }): LionPartialEvidence {
+	return {
+		changed_files: uniqueBounded([...(terminal.partial_evidence?.changed_files ?? []), ...git.changedFiles]),
+		tests_run: terminal.partial_evidence?.tests_run ?? [],
+		last_tool_action: terminal.last_tool_action,
+		git_head: git.head,
+		git_status: git.status,
+		observational: true,
+	};
+}
+
+function emptyDiagnosticContext(): LionSubprocessDiagnosticContext {
+	return { stdoutTail: "", stderrTail: "", eventCount: 0, malformedLineCount: 0, turnCount: 0, toolUses: 0, messageCount: 0, exitCode: null, signal: null, timedOut: false, lastToolAction: null, changedFiles: [], testsRun: [] };
+}
+
 function collectMessages(
 	args: string[],
 	opts: LionRunnerOptions,
@@ -424,7 +656,7 @@ function collectMessages(
 	onProcessStart?: (info: LionProcessInfo) => void,
 	onProcessExit?: () => void,
 	includeProgressText = false,
-): Promise<Message[]> {
+): Promise<{ messages: Message[]; context: LionSubprocessDiagnosticContext }> {
 	return new Promise((resolve, reject) => {
 		const invocation = getPiInvocation([...args, ...(opts.extraArgs ?? [])], { forceBinary: opts.forcePiBinary });
 		const detached = process.platform !== "win32";
@@ -435,6 +667,8 @@ function collectMessages(
 			stdio: ["ignore", "pipe", "pipe"],
 		});
 		let aborted = false;
+		let exitCode: number | null = null;
+		let signalCode: string | null = null;
 		const processIsAlive = () => proc.exitCode === null && proc.signalCode === null && Boolean(proc.pid && isPidAlive(proc.pid));
 		const cancelOwnedProcess = (signal: NodeJS.Signals = "SIGTERM"): boolean => {
 			if (!proc.pid) return false;
@@ -449,6 +683,12 @@ function collectMessages(
 		const messages: Message[] = [];
 		let buffer = "";
 		let stderr = "";
+		let stdoutRaw = "";
+		let eventCount = 0;
+		let malformedLineCount = 0;
+		let lastToolAction: string | null = null;
+		const changedFiles: string[] = [];
+		const testsRun: string[] = [];
 		let settled = false;
 		const progressState = createLionProgressState({ includeText: includeProgressText });
 
@@ -459,17 +699,36 @@ function collectMessages(
 			fn();
 		};
 
+		const buildContext = (timedOutFlag: boolean): LionSubprocessDiagnosticContext => ({
+			stdoutTail: stdoutRaw,
+			stderrTail: stderr,
+			eventCount,
+			malformedLineCount,
+			turnCount: progressState.turnCount,
+			toolUses: progressState.toolUses,
+			messageCount: messages.length,
+			exitCode,
+			signal: signalCode,
+			timedOut: timedOutFlag,
+			lastToolAction,
+			changedFiles: [...changedFiles],
+			testsRun: [...testsRun],
+		});
+
 		const processLine = (line: string) => {
 			if (!line.trim()) return;
 			try {
 				const event = JSON.parse(line) as { type?: string; message?: Message };
+				eventCount++;
+				observeStructuredToolEvidence(event as Record<string, unknown>, opts.cwd, changedFiles, testsRun);
 				const progress = progressFromEvent(event, progressState);
 				if (progress) {
+					if (progress.event === "tool_start" || progress.event === "tool_end") lastToolAction = progress.activity;
 					try { onProgress?.(progress); } catch { /* progress callbacks must not break message collection */ }
 				}
 				if ((event.type === "message_end" || event.type === "tool_result_end") && event.message) messages.push(event.message);
 			} catch {
-				/* ignore non-json line */
+				malformedLineCount++;
 			}
 		};
 
@@ -485,12 +744,16 @@ function collectMessages(
 		const timer = setTimeout(() => killProc(`LION subprocess timed out after ${timeout_ms}ms`), timeout_ms);
 
 		proc.stdout.on("data", (data) => {
-			buffer += data.toString();
+			const chunk = data.toString();
+			stdoutRaw = appendBoundedTail(stdoutRaw, chunk);
+			buffer = appendProtocolBuffer(buffer, chunk, () => { malformedLineCount++; });
 			const lines = buffer.split("\n");
 			buffer = lines.pop() ?? "";
 			for (const line of lines) processLine(line);
 		});
-		proc.stderr.on("data", (data) => (stderr += data.toString()));
+		proc.stderr.on("data", (data) => {
+			stderr = appendBoundedTail(stderr, data.toString());
+		});
 		let processExitNotified = false;
 		const notifyProcessExit = () => {
 			if (processExitNotified) return;
@@ -499,17 +762,36 @@ function collectMessages(
 		};
 		proc.on("error", (err) => {
 			notifyProcessExit();
-			done(() => reject(err));
+			done(() => reject(new LionRunnerError(
+				err instanceof Error ? err.message : String(err),
+				buildTerminalDiagnostic("spawn_failure", buildContext(false)),
+			)));
 		});
-		proc.on("close", (_code, closeSignal) => {
+		proc.on("close", (code, closeSignal) => {
 			notifyProcessExit();
+			exitCode = code ?? null;
+			signalCode = closeSignal ?? null;
 			if (buffer.trim()) processLine(buffer);
-			if (aborted) return done(() => reject(new Error("LION subprocess was aborted or timed out")));
-			if (closeSignal) return done(() => reject(new Error(`LION subprocess exited after signal ${closeSignal}`)));
-			if (messages.length === 0 && stderr.trim()) {
-				return done(() => reject(new Error(`LION subprocess produced no output. stderr: ${stderr.trim().slice(0, 1000)}`)));
+			if (aborted) {
+				return done(() => reject(new LionRunnerError(
+					`LION subprocess was aborted or timed out after ${timeout_ms}ms`,
+					buildTerminalDiagnostic("timeout", buildContext(true)),
+				)));
 			}
-			done(() => resolve(messages));
+			if (closeSignal || (code !== null && code !== 0)) {
+				const exitDescription = closeSignal ? `signal ${closeSignal}` : `code ${code}`;
+				return done(() => reject(new LionRunnerError(
+					`LION subprocess exited abnormally (${exitDescription})`,
+					buildTerminalDiagnostic("model_exit", buildContext(false)),
+				)));
+			}
+			if (messages.length === 0 && stderr.trim()) {
+				return done(() => reject(new LionRunnerError(
+					`LION subprocess produced no output. stderr: ${stderr.trim().slice(0, 1000)}`,
+					buildTerminalDiagnostic("result_collection_failure", buildContext(false)),
+				)));
+			}
+			done(() => resolve({ messages, context: buildContext(false) }));
 		});
 
 		if (signal) {

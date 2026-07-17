@@ -71,7 +71,7 @@ describe("LION cleanup supervisor", () => {
 				finalizeCalls++;
 				if (finalizeCalls === 1) throw new Error("transient lock failure");
 				assert.equal(intent.kind, "result");
-				return finalizeExactLionRun(store, owner, { output: "done", report: null });
+				return finalizeExactLionRun(store, owner, { output: "done", report: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
 			},
 			emitTerminal: () => { terminalEmissions++; },
 			onSettled: async () => {
@@ -132,7 +132,7 @@ describe("LION cleanup supervisor", () => {
 			},
 			async query<T>(fn: (value: LionLedger) => T) { return { result: fn(ledger) }; },
 		};
-		const result = await finalizeExactLionRun(store, owner, { output: "done", report: null });
+		const result = await finalizeExactLionRun(store, owner, { output: "done", report: { outcome: "completed", summary: "done", changed_files: [], tests_run: [], blockers: [], next_steps: [] } });
 		assert.equal(result.disposition, "terminal");
 		assert.equal((result.run as { status: string }).status, "completed");
 		assert.equal(writes, 1);

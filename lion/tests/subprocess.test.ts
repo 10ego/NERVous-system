@@ -1,10 +1,10 @@
 import * as assert from "node:assert";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "vitest";
-import { buildLionSystemPrompt, buildLionUserPrompt, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, parseLionReport, progressFromEvent, signalOwnedProcessIfAlive, signalProcessTree } from "../extension/subprocess.ts";
+import { boundedPersistedOutput, buildLionSystemPrompt, buildLionUserPrompt, buildTerminalDiagnostic, captureObservationalGit, createLionProgressState, createLionRunner, getFinalOutput, getPiInvocation, isPidAlive, LionRunnerError, parseLionReport, progressFromEvent, sanitizeDiagnosticTail, signalOwnedProcessIfAlive, signalProcessTree, type LionSubprocessDiagnosticContext } from "../extension/subprocess.ts";
 import type { Message } from "@earendil-works/pi-ai";
 
 const CHILD_EXIT_TIMEOUT_MS = 2_000;
@@ -61,10 +61,8 @@ describe("LION subprocess helpers", () => {
 		assert.deepEqual(r.changed_files, ["a.test.ts"]);
 	});
 
-	it("parses direct report JSON too", () => {
-		const r = parseLionReport('{"outcome":"blocked","summary":"missing dependency","blockers":["dep"],"changed_files":[],"tests_run":[],"next_steps":[]}')!;
-		assert.equal(r.outcome, "blocked");
-		assert.deepEqual(r.blockers, ["dep"]);
+	it("rejects unwrapped report JSON because WORKER_REPORT is required", () => {
+		assert.equal(parseLionReport('{"outcome":"blocked","summary":"missing dependency","blockers":["dep"],"changed_files":[],"tests_run":[],"next_steps":[]}'), null);
 	});
 
 	it("returns null for unparseable output", () => {
@@ -205,5 +203,197 @@ describe("LION subprocess helpers", () => {
 	it("resolves pi invocation without throwing", () => {
 		const inv = getPiInvocation(["--version"], { forceBinary: true });
 		assert.equal(inv.command, "pi");
+	});
+});
+
+async function withFakePi(script: string, fn: (dir: string) => Promise<void>): Promise<void> {
+	const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lion-diag-"));
+	const binDir = path.join(dir, "bin");
+	await fs.promises.mkdir(binDir);
+	const fakePi = path.join(binDir, "pi");
+	await fs.promises.writeFile(fakePi, `#!/usr/bin/env node\n${script}\n`, { mode: 0o755 });
+	const previousPath = process.env.PATH;
+	process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
+	try {
+		await fn(dir);
+	} finally {
+		if (previousPath === undefined) delete process.env.PATH;
+		else process.env.PATH = previousPath;
+	}
+}
+
+const messageEnd = (text: string) => JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text }] } });
+
+function runGit(cwd: string, args: string[]): void {
+	execFileSync("git", args, { cwd, stdio: "pipe" });
+}
+
+describe("LION json runner terminal diagnostics", () => {
+	it("classifies a clean exit with an invalid final report candidate as protocol_parse_failure", async () => {
+		const line = messageEnd("Done. Nothing else to report.") + "\n";
+		const script = `process.stdout.write(${JSON.stringify(line)});`;
+		await withFakePi(script, async (dir) => {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			const out = await runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5_000 });
+			assert.equal(out.settlement, "settled");
+			if (out.settlement !== "settled") return;
+			assert.equal(out.report, null);
+			assert.equal(out.terminal?.reason, "protocol_parse_failure");
+			assert.equal(out.terminal?.report_attempted, true);
+			assert.equal(typeof out.terminal?.captured_at, "string");
+		});
+	});
+
+	it("classifies a malformed protocol stream with no report as protocol_parse_failure", async () => {
+		const line = "this is not json\n" + messageEnd("no report") + "\n";
+		const script = `process.stdout.write(${JSON.stringify(line)});`;
+		await withFakePi(script, async (dir) => {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			const out = await runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5_000 });
+			if (out.settlement !== "settled") throw new Error("expected settled");
+			assert.equal(out.report, null);
+			assert.equal(out.terminal?.reason, "protocol_parse_failure");
+			assert.equal((out.terminal?.malformed_line_count ?? 0) > 0, true);
+		});
+	});
+
+	it("classifies a clean no-output exit as result_collection_failure", async () => {
+		await withFakePi("", async (dir) => {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			const out = await runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5_000 });
+			if (out.settlement !== "settled") throw new Error("expected settled");
+			assert.equal(out.report, null);
+			assert.equal(out.terminal?.reason, "result_collection_failure");
+			assert.equal(out.terminal?.report_attempted, false);
+		});
+	});
+
+	it("classifies a nonzero model process exit as model_exit", async () => {
+		await withFakePi("process.exit(3);", async (dir) => {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			await assert.rejects(
+				() => runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5_000 }),
+				(err) => err instanceof LionRunnerError && err.terminal.reason === "model_exit" && err.terminal.exit_code === 3,
+			);
+		});
+	});
+
+	it("rejects an incomplete report contract as protocol_parse_failure", async () => {
+		const line = messageEnd(`\`\`\`json\n${JSON.stringify({ WORKER_REPORT: { outcome: "completed", summary: "missing arrays" } })}\n\`\`\``) + "\n";
+		await withFakePi(`process.stdout.write(${JSON.stringify(line)});`, async (dir) => {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			const out = await runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5_000 });
+			if (out.settlement !== "settled") throw new Error("expected settled");
+			assert.equal(out.report, null);
+			assert.equal(out.terminal?.reason, "protocol_parse_failure");
+		});
+	});
+
+	it("returns a usable report with a null terminal on success", async () => {
+		const report = { outcome: "completed", summary: "done", changed_files: [], tests_run: ["npm test"], blockers: [], next_steps: [] };
+		const assistantText = "```json\n" + JSON.stringify({ WORKER_REPORT: report }) + "\n```";
+		const line = messageEnd(assistantText) + "\n";
+		const script = `process.stdout.write(${JSON.stringify(line)});`;
+		await withFakePi(script, async (dir) => {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			const out = await runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5_000 });
+			if (out.settlement !== "settled") throw new Error("expected settled");
+			assert.equal(out.report?.outcome, "completed");
+			assert.equal(out.terminal, null);
+		});
+	});
+
+	it("classifies a spawn error as spawn_failure", async () => {
+		const previousPath = process.env.PATH;
+		process.env.PATH = "";
+		try {
+			const runner = createLionRunner({ cwd: process.cwd(), forcePiBinary: true });
+			await assert.rejects(
+				() => runner({ run: { ...run, steering_messages: [] }, timeout_ms: 1_000 }),
+				(err) => {
+					assert.ok(err instanceof LionRunnerError, "expected LionRunnerError");
+					assert.equal((err as LionRunnerError).terminal.reason, "spawn_failure");
+					return true;
+				},
+			);
+		} finally {
+			if (previousPath === undefined) delete process.env.PATH;
+			else process.env.PATH = previousPath;
+		}
+	});
+
+	it("classifies a timeout with bounded observational partial evidence", async () => {
+		const events = [
+			JSON.stringify({ type: "tool_execution_start", toolName: "write", args: { path: "tracked.txt" } }),
+			JSON.stringify({ type: "tool_execution_start", toolName: "bash", args: { command: "npm test" } }),
+		].join("\n") + "\n";
+		await withFakePi(`process.stdout.write(${JSON.stringify(events)}); setInterval(() => {}, 60000);`, async (dir) => {
+			runGit(dir, ["init", "--quiet"]);
+			runGit(dir, ["config", "user.email", "lion@example.test"]);
+			runGit(dir, ["config", "user.name", "LION test"]);
+			await fs.promises.writeFile(path.join(dir, "tracked.txt"), "base\n");
+			runGit(dir, ["add", "tracked.txt"]);
+			runGit(dir, ["commit", "--quiet", "-m", "base"]);
+			await fs.promises.writeFile(path.join(dir, "tracked.txt"), "changed\n");
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			await assert.rejects(
+				() => runner({ run: { ...run, steering_messages: [] }, timeout_ms: 1_000 }),
+				(err) => {
+					assert.ok(err instanceof LionRunnerError);
+					const terminal = (err as LionRunnerError).terminal;
+					assert.equal(terminal.reason, "timeout");
+					assert.equal(terminal.timed_out, true);
+					assert.equal(terminal.partial_evidence?.observational, true);
+					assert.match(terminal.partial_evidence?.git_head ?? "", /^[0-9a-f]{40}$/);
+					assert.match(terminal.partial_evidence?.git_status ?? "", /tracked\.txt/);
+					assert.ok(terminal.partial_evidence?.changed_files.includes("tracked.txt"));
+					assert.deepEqual(terminal.partial_evidence?.tests_run, ["npm test"]);
+					return true;
+				},
+			);
+		});
+	});
+
+	it("classifies a no-output stderr-only exit as result_collection_failure", async () => {
+		await withFakePi('process.stderr.write("boom\\n");', async (dir) => {
+			const runner = createLionRunner({ cwd: dir, forcePiBinary: true });
+			await assert.rejects(
+				() => runner({ run: { ...run, steering_messages: [] }, timeout_ms: 5_000 }),
+				(err) => {
+					assert.ok(err instanceof LionRunnerError);
+					assert.equal((err as LionRunnerError).terminal.reason, "result_collection_failure");
+					assert.match((err as LionRunnerError).terminal.stderr_tail ?? "", /boom/);
+					return true;
+				},
+			);
+		});
+	});
+});
+
+describe("LION diagnostic helpers", () => {
+	it("sanitizes and bounds diagnostic tails and persisted output", () => {
+		assert.equal(sanitizeDiagnosticTail("\x1b[31mred\x1b[0m\x00ctrl", 100), "red ctrl");
+		assert.equal(sanitizeDiagnosticTail("x".repeat(10), 5).length, 5);
+		assert.match(sanitizeDiagnosticTail("x".repeat(10), 5), /…$/);
+		assert.match(sanitizeDiagnosticTail("api_key=super-secret", 100), /api_key=\[REDACTED\]/i);
+		assert.equal(boundedPersistedOutput("x".repeat(10), 5), "[truncated 5 leading characters]\nxxxxx");
+	});
+
+	it("builds a well-shaped terminal diagnostic", () => {
+		const ctx: LionSubprocessDiagnosticContext = { stdoutTail: "a", stderrTail: "b", eventCount: 2, malformedLineCount: 1, turnCount: 0, toolUses: 4, messageCount: 1, exitCode: 0, signal: null, timedOut: false, lastToolAction: "running bash…", changedFiles: [], testsRun: [] };
+		const d = buildTerminalDiagnostic("model_exit", ctx, { outputTail: "out", reportAttempted: true });
+		assert.equal(d.reason, "model_exit");
+		assert.equal(d.tool_uses, 4);
+		assert.equal(d.last_tool_action, "running bash…");
+		assert.equal(d.output_tail, "out");
+		assert.equal(d.report_attempted, true);
+		assert.equal(typeof d.captured_at, "string");
+	});
+
+	it("captures observational git safely and returns nulls in a non-git directory", async () => {
+		const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "lion-nogit-"));
+		const git = await captureObservationalGit(dir);
+		assert.equal(git.head, null);
+		assert.equal(git.status, null);
 	});
 });
