@@ -276,8 +276,42 @@ describe("dashboard extension factory", () => {
 		const dashboard = new NervousDashboard(emptyDashboardData({ failedComponents: ["lion"] }), { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, changeDetector });
 		await vi.advanceTimersByTimeAsync(100);
 		assert.deepEqual(refresh.mock.calls[0]?.[0], ["lion"]);
-		assert.equal(changeDetector.mock.calls.length, 0, "failed component bypasses an already-advanced fingerprint");
+		assert.equal(changeDetector.mock.calls.length, 1, "retry does not require another fingerprint change");
 		assert.equal((dashboard as any).data.runs[0]?.id, "recovered");
+		dashboard.dispose();
+	});
+
+	it("backs off repeated isolated component failures", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValue([]);
+		const rejected = emptyDashboardData({ failedComponents: ["cerebel"] });
+		const refresh = vi.fn().mockResolvedValue(rejected);
+		const dashboard = new NervousDashboard(rejected, { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, maxAutoRefreshMs: 800, changeDetector });
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(refresh.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(199);
+		assert.equal(refresh.mock.calls.length, 1);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(refresh.mock.calls.length, 2);
+		await vi.advanceTimersByTimeAsync(399);
+		assert.equal(refresh.mock.calls.length, 2);
+		await vi.advanceTimersByTimeAsync(1);
+		assert.equal(refresh.mock.calls.length, 3);
+		assert.equal(changeDetector.mock.calls.length, 3, "healthy component changes remain observable during backoff");
+		dashboard.dispose();
+	});
+
+	it("resets failure backoff when a new fingerprint change appears", async () => {
+		vi.useFakeTimers();
+		const changeDetector = vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce(["axon"]).mockResolvedValue([]);
+		const rejected = emptyDashboardData({ failedComponents: ["cerebel"] });
+		const refresh = vi.fn().mockResolvedValue(rejected);
+		const dashboard = new NervousDashboard(rejected, { requestRender: vi.fn() } as any, theme, vi.fn(), refresh, { autoRefreshMs: 100, maxAutoRefreshMs: 800, changeDetector });
+		await vi.advanceTimersByTimeAsync(300);
+		assert.equal(refresh.mock.calls.length, 2);
+		assert.deepEqual(refresh.mock.calls[1]?.[0], ["cerebel", "axon"]);
+		await vi.advanceTimersByTimeAsync(100);
+		assert.equal(refresh.mock.calls.length, 3, "new state returns retries to the prompt interval");
 		dashboard.dispose();
 	});
 
@@ -290,7 +324,7 @@ describe("dashboard extension factory", () => {
 		assert.equal(refresh.mock.calls.length, 1);
 		await vi.advanceTimersByTimeAsync(100);
 		assert.equal(refresh.mock.calls.length, 2);
-		assert.equal(changeDetector.mock.calls.length, 1, "dirty reload should retry without requiring another fingerprint change");
+		assert.equal(changeDetector.mock.calls.length, 2, "dirty reload should retry without requiring another fingerprint change");
 		assert.equal((dashboard as any).data.runs[0]?.id, "latest");
 		dashboard.dispose();
 	});

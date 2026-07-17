@@ -790,15 +790,19 @@ export class NervousDashboard implements Component {
 		this.refreshTimer = setTimeout(() => {
 			this.refreshTimer = null;
 			void (async () => {
-				let detected: boolean | Tab[] = this.reloadFailed ? [] : !this.changeDetector;
-				try { if (!this.reloadFailed && this.changeDetector) detected = await this.changeDetector(); }
+				let detected: boolean | Tab[] = !this.changeDetector;
+				try { if (this.changeDetector) detected = await this.changeDetector(); }
 				catch { detected = true; }
 				if (this.closed) return;
 				const components = detected === true ? DASHBOARD_COMPONENTS : detected === false ? [] : detected;
 				if (components.length) this.markDirty(components);
 				const dirty = [...this.dirtyVersions.keys()].filter((component) => !this.refreshing || (this.dirtyVersions.get(component) ?? 0) > (this.inFlightVersions.get(component) ?? -1));
+				const observedFingerprintChange = Boolean(this.changeDetector) && components.length > 0;
+				const retryingFailedLoad = this.reloadFailed && dirty.length > 0 && !observedFingerprintChange;
 				if (dirty.length) this.reload({ showIndicator: false, components: dirty });
-				this.nextAutoRefreshMs = dirty.length ? this.autoRefreshMs : Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
+				this.nextAutoRefreshMs = dirty.length && !retryingFailedLoad
+					? this.autoRefreshMs
+					: Math.min(this.maxAutoRefreshMs, Math.max(this.autoRefreshMs, this.nextAutoRefreshMs * 2));
 				this.startAutoRefresh(this.nextAutoRefreshMs);
 			})();
 		}, intervalMs);
