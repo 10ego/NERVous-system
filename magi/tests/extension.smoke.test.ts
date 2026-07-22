@@ -49,7 +49,7 @@ describe("extension factory", () => {
 		fs.mkdirSync(process.env.PI_CODING_AGENT_DIR, { recursive: true });
 		fs.writeFileSync(
 			path.join(process.env.PI_CODING_AGENT_DIR, "nervous.json"),
-			JSON.stringify({ version: 1, models: { magi: { councillorDefault: "provider/balanced", synthesisDefault: "provider/strong" } } }),
+			JSON.stringify({ version: 2, models: { magi: { default: "provider/balanced", fallback: "provider/strong" } } }),
 		);
 		try {
 			const config = applyNervousModelDefaults(
@@ -81,11 +81,11 @@ describe("extension factory", () => {
 				false,
 			);
 			assert.equal(noExplicitSynth.councillors.find((c) => c.id === "hand")?.model, "provider/balanced");
-			assert.equal(noExplicitSynth.synthesis_model, "provider/strong");
+			assert.equal(noExplicitSynth.synthesis_model, "provider/balanced");
 
 			fs.writeFileSync(
 				path.join(process.env.PI_CODING_AGENT_DIR, "nervous.json"),
-				JSON.stringify({ version: 1, models: { magi: { councillorDefault: "provider/balanced" } } }),
+				JSON.stringify({ version: 2, models: { magi: { fallback: "provider/balanced" } } }),
 			);
 			const councillorOnly = applyNervousModelDefaults(
 				{
@@ -99,8 +99,8 @@ describe("extension factory", () => {
 				dir,
 				false,
 			);
-			assert.equal(councillorOnly.synthesis_model, undefined);
-			assert.equal(councillorOnly.councillors.find((c) => c.id === "hand")?.model, "provider/balanced", "synthesis inherits MAGI's synthesizer-model fallback when no synthesis default is configured");
+			assert.equal(councillorOnly.synthesis_model, "provider/balanced");
+			assert.equal(councillorOnly.councillors.find((c) => c.id === "hand")?.model, "provider/balanced", "fallback applies when the MAGI default is unset");
 		} finally {
 			if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
 			else process.env.PI_CODING_AGENT_DIR = oldAgentDir;

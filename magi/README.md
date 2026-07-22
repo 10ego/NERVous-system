@@ -122,11 +122,11 @@ If `system_prompt` is omitted, the persona prompt is generated from the structur
 
 ### Shared NERVous model defaults
 
-Explicit council model fields still win. For any councillor without `model`, MAGI can fill `models.magi.councillorDefault` from the shared NERVous config (`~/.pi/agent/nervous.json`, overlaid by trusted `<repo>/.pi/nervous.json`). For synthesis, `synthesis_model` wins first, then an explicit synthesizer councillor `model`; if neither is explicit, `models.magi.synthesisDefault` can provide a separate synthesis model. If only `magi.councillorDefault` is set, the synthesizer councillor receives that default and synthesis follows MAGI's existing fallback to the synthesizer model. If all are unset, MAGI preserves the previous behavior and passes no `--model`.
+Explicit council model fields still win. Otherwise, MAGI uses `models.magi.default` from the shared NERVous config (`~/.pi/agent/nervous.json`, overlaid by trusted `<repo>/.pi/nervous.json`) for councillors and synthesis. If it is unset, `models.magi.fallback` is used instead. If both are unset, MAGI preserves the previous behavior and passes no `--model`.
 
 ```text
-/nervous:config magi_model=provider/balanced magi_synthesis_model=provider/strong:high
-/nervous:config magi_model=unset magi_synthesis_model=unset
+/nervous:config magi_model=provider/balanced magi_fallback_model=provider/strong:high
+/nervous:config magi_model=unset magi_fallback_model=unset
 ```
 
 **Resolution order** (first match wins):

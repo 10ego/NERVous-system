@@ -64,17 +64,15 @@ export function applyNervousModelDefaults(
 	isProjectTrusted: boolean | (() => boolean) | undefined,
 ): CouncilConfig {
 	const resolution = loadNervousConfig({ cwd, isProjectTrusted });
-	const councillorDefault = resolveNervousModel(resolution, "magi.councillorDefault").model;
-	const synthesisDefault = resolveNervousModel(resolution, "magi.synthesisDefault").model;
+	const model = resolveNervousModel(resolution, "magi.default").model
+		?? resolveNervousModel(resolution, "magi.fallback").model;
 	const synthesizerId = config.synthesizer ?? config.councillors[config.councillors.length - 1]?.id;
 	const synthesizerHadModel = Boolean(config.councillors.find((c) => c.id === synthesizerId)?.model?.trim());
-	if (councillorDefault) {
+	if (model) {
 		for (const councillor of config.councillors) {
-			if (!councillor.model?.trim()) councillor.model = councillorDefault;
+			if (!councillor.model?.trim()) councillor.model = model;
 		}
-	}
-	if (synthesisDefault && !config.synthesis_model?.trim() && !synthesizerHadModel) {
-		config.synthesis_model = synthesisDefault;
+		if (!config.synthesis_model?.trim() && !synthesizerHadModel) config.synthesis_model = model;
 	}
 	return config;
 }

@@ -61,35 +61,53 @@ describe("NERVous model config", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-config-test-"));
 		const resolution = loadNervousConfig({ cwd: dir, agentDir: path.join(dir, "agent"), isProjectTrusted: true });
 		assert.equal(getNervousModel(resolution.effective, "lion.default"), undefined);
-		assert.equal(resolveNervousModel(resolution, "magi.councillorDefault").source, "default");
+		assert.equal(resolveNervousModel(resolution, "magi.default").source, "default");
 	});
 
 	it("writes user config and overlays trusted project config", () => {
 		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-config-test-"));
 		const agentDir = path.join(dir, "agent");
 		const user = applyNervousModelPatch(readUserNervousConfig(agentDir), {
-			"lion.default": "openai/gpt-fast",
-			"lion.implementationDefault": "openai/gpt-implement",
-			"lion.reviewDefault": "anthropic/claude-review",
-			"magi.councillorDefault": "anthropic/claude-balanced",
+			"lion.default": "openai/gpt-implement",
+			"lion.fallback": "openai/gpt-fast",
+			"magi.default": "anthropic/claude-balanced",
+			"magi.fallback": "anthropic/claude-fallback",
 		});
 		writeUserNervousConfig(user, agentDir);
 		fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
 		fs.writeFileSync(
 			path.join(dir, ".pi", "nervous.json"),
-			JSON.stringify({ version: 1, models: { lion: { default: "anthropic/claude-project" } } }),
+			JSON.stringify({ version: 2, models: { lion: { default: "anthropic/claude-project" } } }),
 		);
 
 		const untrusted = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: false });
-		assert.equal(resolveNervousModel(untrusted, "lion.default").model, "openai/gpt-fast");
+		assert.equal(resolveNervousModel(untrusted, "lion.default").model, "openai/gpt-implement");
 		assert.equal(resolveNervousModel(untrusted, "lion.default").source, "user");
 
 		const trusted = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: true });
 		assert.equal(resolveNervousModel(trusted, "lion.default").model, "anthropic/claude-project");
 		assert.equal(resolveNervousModel(trusted, "lion.default").source, "project");
-		assert.equal(resolveNervousModel(trusted, "lion.implementationDefault").model, "openai/gpt-implement");
-		assert.equal(resolveNervousModel(trusted, "lion.reviewDefault").model, "anthropic/claude-review");
-		assert.equal(resolveNervousModel(trusted, "magi.councillorDefault").model, "anthropic/claude-balanced");
+		assert.equal(resolveNervousModel(trusted, "lion.fallback").model, "openai/gpt-fast");
+		assert.equal(resolveNervousModel(trusted, "magi.default").model, "anthropic/claude-balanced");
+		assert.equal(resolveNervousModel(trusted, "magi.fallback").model, "anthropic/claude-fallback");
+	});
+
+	it("migrates version 1 role-specific model configuration to default and fallback", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-config-test-"));
+		const agentDir = path.join(dir, "agent");
+		fs.mkdirSync(agentDir, { recursive: true });
+		fs.writeFileSync(path.join(agentDir, "nervous.json"), JSON.stringify({
+			version: 1,
+			models: {
+				lion: { default: "provider/legacy-fallback", implementationDefault: "provider/legacy-default", reviewDefault: "provider/legacy-review" },
+				magi: { councillorDefault: "provider/legacy-magi-default", synthesisDefault: "provider/legacy-magi-fallback" },
+			},
+		}));
+		const resolution = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: false });
+		assert.equal(getNervousModel(resolution.effective, "lion.default"), "provider/legacy-default");
+		assert.equal(getNervousModel(resolution.effective, "lion.fallback"), "provider/legacy-fallback");
+		assert.equal(getNervousModel(resolution.effective, "magi.default"), "provider/legacy-magi-default");
+		assert.equal(getNervousModel(resolution.effective, "magi.fallback"), "provider/legacy-magi-fallback");
 	});
 
 	it("lets a trusted project null explicitly restore pi default over a user model", () => {
@@ -97,7 +115,7 @@ describe("NERVous model config", () => {
 		const agentDir = path.join(dir, "agent");
 		writeUserNervousConfig(applyNervousModelPatch(readUserNervousConfig(agentDir), { "lion.default": "openai/gpt-fast" }), agentDir);
 		fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
-		fs.writeFileSync(path.join(dir, ".pi", "nervous.json"), JSON.stringify({ version: 1, models: { lion: { default: null } } }));
+		fs.writeFileSync(path.join(dir, ".pi", "nervous.json"), JSON.stringify({ version: 2, models: { lion: { default: null } } }));
 
 		const trusted = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: true });
 		assert.equal(resolveNervousModel(trusted, "lion.default").source, "default");
@@ -111,7 +129,7 @@ describe("NERVous model config", () => {
 		const subdir = path.join(dir, "packages", "app");
 		fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
 		fs.mkdirSync(subdir, { recursive: true });
-		fs.writeFileSync(path.join(dir, ".pi", "nervous.json"), JSON.stringify({ version: 1, models: { lion: { default: "provider/project" } } }));
+		fs.writeFileSync(path.join(dir, ".pi", "nervous.json"), JSON.stringify({ version: 2, models: { lion: { default: "provider/project" } } }));
 
 		const trusted = loadNervousConfig({ cwd: subdir, agentDir, isProjectTrusted: true });
 		assert.equal(trusted.projectPath, path.join(fs.realpathSync(dir), ".pi", "nervous.json"));

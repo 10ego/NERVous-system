@@ -455,19 +455,19 @@ describe("lion extension factory", () => {
 		process.env.PI_CODING_AGENT_DIR = path.join(dir, "agent");
 		process.env.LION_RUNS_PATH = path.join(dir, "runs.json");
 		await fs.mkdir(process.env.PI_CODING_AGENT_DIR, { recursive: true });
-		await fs.writeFile(path.join(process.env.PI_CODING_AGENT_DIR, "nervous.json"), JSON.stringify({ version: 1, models: { lion: { default: "provider/fast", implementationDefault: "provider/implement", reviewDefault: "provider/review" } } }));
+		await fs.writeFile(path.join(process.env.PI_CODING_AGENT_DIR, "nervous.json"), JSON.stringify({ version: 2, models: { lion: { default: "provider/default", fallback: "provider/fallback" } } }));
 		try {
 			const result = await lion.execute("call-1", { action: "run", objective: "dry", dry_run: true }, undefined, undefined, {
 				cwd: dir,
 				isProjectTrusted: () => false,
 			});
-			assert.equal(result.details.run.model, "provider/implement");
+			assert.equal(result.details.run.model, "provider/default");
 			assert.equal(result.details.run.model_role, "implementation");
 			const review = await lion.execute("call-2", { action: "run", objective: "review dry", model_role: "review", dry_run: true }, undefined, undefined, {
 				cwd: dir,
 				isProjectTrusted: () => false,
 			});
-			assert.equal(review.details.run.model, "provider/review");
+			assert.equal(review.details.run.model, "provider/default");
 			assert.equal(review.details.run.model_role, "review");
 			const explicit = await lion.execute("call-3", { action: "run", objective: "explicit dry", model: "provider/explicit", model_role: "review", dry_run: true }, undefined, undefined, {
 				cwd: dir,
