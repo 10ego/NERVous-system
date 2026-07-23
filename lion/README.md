@@ -103,19 +103,18 @@ Set `LION_RUNNER=rpc` to make RPC the default for local/manual testing, or pass 
 
 ### Model selection
 
-`lion run model="provider/model"` remains the highest-precedence per-run override. When `model` is omitted, LION reads the shared NERVous model config (`~/.pi/agent/nervous.json`, overlaid by trusted `<repo>/.pi/nervous.json`) and selects by `model_role`:
+`lion run model="provider/model"` remains the highest-precedence per-run override. When `model` is omitted, LION reads the shared NERVous model config (`~/.pi/agent/nervous.json`, overlaid by trusted `<repo>/.pi/nervous.json`):
 
-- `model_role="implementation"` (default) → `models.lion.implementationDefault`, then `models.lion.default`.
-- `model_role="review"` → `models.lion.reviewDefault`, then `models.lion.default`.
-- `model_role="default"` → `models.lion.default` only.
+- `models.lion.default` is used for every LION worker, regardless of `model_role`.
+- `models.lion.fallback` is used only when the default is unset.
 
 If the selected keys are unset, LION preserves the previous behavior and passes no `--model`, letting pi use its current/default model.
 
 Set or clear defaults through CORTEX's config command:
 
 ```text
-/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong
-/nervous:config lion_review_model=unset
+/nervous:config lion_model=provider/fast lion_fallback_model=provider/backup
+/nervous:config lion_model=unset
 ```
 
 ---

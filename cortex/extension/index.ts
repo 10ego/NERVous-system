@@ -633,7 +633,7 @@ const CEREBEL_MAX_PARALLEL_VALUES = Array.from(
 	{ length: MAX_CEREBEL_MAX_PARALLEL - MIN_CEREBEL_MAX_PARALLEL + 1 },
 	(_, index) => String(MIN_CEREBEL_MAX_PARALLEL + index),
 );
-const MODEL_SETTING_IDS = ["lion.default", "lion.implementationDefault", "lion.reviewDefault", "magi.councillorDefault", "magi.synthesisDefault"] as const satisfies readonly NervousModelKey[];
+const MODEL_SETTING_IDS = ["lion.default", "lion.fallback", "magi.default", "magi.fallback"] as const satisfies readonly NervousModelKey[];
 
 const DRAIN_MODE_DESCRIPTIONS: Record<DrainMode, string> = {
 	off: "disable automatic drain; only explicit forced drain can run",
@@ -655,64 +655,17 @@ const DRAIN_POLICY_DESCRIPTIONS: Record<DrainPolicyName, string> = {
 };
 
 const MODEL_DESCRIPTIONS: Record<NervousModelKey, string> = {
-	"lion.default": "generic fallback model for LION workers when no role-specific model is set",
-	"lion.implementationDefault": "default model for LION implementation workers",
-	"lion.reviewDefault": "default model for LION review/QA workers",
-	"magi.councillorDefault": "default model for MAGI councillors whose council config omits model",
-	"magi.synthesisDefault": "separate default model for MAGI synthesis when no synthesis/synthesizer model is explicit",
+	"lion.default": "default model for all LION workers",
+	"lion.fallback": "fallback model for LION workers when its default is unset",
+	"magi.default": "default model for MAGI councillors and synthesis",
+	"magi.fallback": "fallback model for MAGI when its default is unset",
 };
 
 const MODEL_ALIASES: Record<string, NervousModelKey> = {
-	"lion": "lion.default",
-	"lion_model": "lion.default",
-	"lion-model": "lion.default",
-	"lion.default": "lion.default",
-	"model.lion": "lion.default",
-	"model.lion.default": "lion.default",
-	"models.lion.default": "lion.default",
-	"lion_implementation": "lion.implementationDefault",
-	"lion-implementation": "lion.implementationDefault",
-	"lion_implementation_model": "lion.implementationDefault",
-	"lion-implementation-model": "lion.implementationDefault",
-	"lion_impl_model": "lion.implementationDefault",
-	"lion-impl-model": "lion.implementationDefault",
-	"lion.implementation": "lion.implementationDefault",
-	"lion.implementationdefault": "lion.implementationDefault",
-	"model.lion.implementation": "lion.implementationDefault",
-	"model.lion.implementationdefault": "lion.implementationDefault",
-	"models.lion.implementationdefault": "lion.implementationDefault",
-	"lion_review": "lion.reviewDefault",
-	"lion-review": "lion.reviewDefault",
-	"lion_review_model": "lion.reviewDefault",
-	"lion-review-model": "lion.reviewDefault",
-	"lion.review": "lion.reviewDefault",
-	"lion.reviewdefault": "lion.reviewDefault",
-	"model.lion.review": "lion.reviewDefault",
-	"model.lion.reviewdefault": "lion.reviewDefault",
-	"models.lion.reviewdefault": "lion.reviewDefault",
-	"magi": "magi.councillorDefault",
-	"magi_model": "magi.councillorDefault",
-	"magi-model": "magi.councillorDefault",
-	"magi.default": "magi.councillorDefault",
-	"magi.councillor": "magi.councillorDefault",
-	"magi.councillor_default": "magi.councillorDefault",
-	"magi.councillor-default": "magi.councillorDefault",
-	"magi.councillordefault": "magi.councillorDefault",
-	"model.magi": "magi.councillorDefault",
-	"model.magi.councillor": "magi.councillorDefault",
-	"model.magi.councillordefault": "magi.councillorDefault",
-	"models.magi.councillordefault": "magi.councillorDefault",
-	"magi_synthesis": "magi.synthesisDefault",
-	"magi-synthesis": "magi.synthesisDefault",
-	"magi_synthesis_model": "magi.synthesisDefault",
-	"magi-synthesis-model": "magi.synthesisDefault",
-	"magi.synthesis": "magi.synthesisDefault",
-	"magi.synthesis_default": "magi.synthesisDefault",
-	"magi.synthesis-default": "magi.synthesisDefault",
-	"magi.synthesisdefault": "magi.synthesisDefault",
-	"model.magi.synthesis": "magi.synthesisDefault",
-	"model.magi.synthesisdefault": "magi.synthesisDefault",
-	"models.magi.synthesisdefault": "magi.synthesisDefault",
+	"lion": "lion.default", "lion_model": "lion.default", "lion-model": "lion.default", "lion_default_model": "lion.default", "lion-default-model": "lion.default", "lion.default": "lion.default", "model.lion": "lion.default", "models.lion.default": "lion.default",
+	"lion_fallback": "lion.fallback", "lion-fallback": "lion.fallback", "lion_fallback_model": "lion.fallback", "lion-fallback-model": "lion.fallback", "lion.fallback": "lion.fallback", "model.lion.fallback": "lion.fallback", "models.lion.fallback": "lion.fallback",
+	"magi": "magi.default", "magi_model": "magi.default", "magi-model": "magi.default", "magi_default_model": "magi.default", "magi-default-model": "magi.default", "magi.default": "magi.default", "model.magi": "magi.default", "models.magi.default": "magi.default",
+	"magi_fallback": "magi.fallback", "magi-fallback": "magi.fallback", "magi_fallback_model": "magi.fallback", "magi-fallback-model": "magi.fallback", "magi.fallback": "magi.fallback", "model.magi.fallback": "magi.fallback", "models.magi.fallback": "magi.fallback",
 };
 
 const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
@@ -723,13 +676,9 @@ const CONFIG_COMPLETIONS: Array<{ value: string; label: string }> = [
 	...DRAIN_POLICY_VALUES.map((value) => ({ value: `policy=${value}`, label: `policy=${value} — ${DRAIN_POLICY_DESCRIPTIONS[value]}` })),
 	...CEREBEL_MAX_PARALLEL_VALUES.map((value) => ({ value: `max_parallel=${value}`, label: `max_parallel=${value} — default concurrent LION workers for new CEREBEL waves` })),
 	{ value: "lion_model=", label: `lion_model=<model> — ${MODEL_DESCRIPTIONS["lion.default"]}` },
-	{ value: "lion_implementation_model=", label: `lion_implementation_model=<model> — ${MODEL_DESCRIPTIONS["lion.implementationDefault"]}` },
-	{ value: "lion_review_model=", label: `lion_review_model=<model> — ${MODEL_DESCRIPTIONS["lion.reviewDefault"]}` },
-	{ value: "magi_model=", label: `magi_model=<model> — ${MODEL_DESCRIPTIONS["magi.councillorDefault"]}` },
-	{ value: "magi_synthesis_model=", label: `magi_synthesis_model=<model> — ${MODEL_DESCRIPTIONS["magi.synthesisDefault"]}` },
-	{ value: "lion_model=unset", label: "lion_model=unset — clear the generic LION fallback model" },
-	{ value: "lion_implementation_model=unset", label: "lion_implementation_model=unset — clear the LION implementation model default" },
-	{ value: "lion_review_model=unset", label: "lion_review_model=unset — clear the LION review model default" },
+	{ value: "lion_fallback_model=", label: `lion_fallback_model=<model> — ${MODEL_DESCRIPTIONS["lion.fallback"]}` },
+	{ value: "magi_model=", label: `magi_model=<model> — ${MODEL_DESCRIPTIONS["magi.default"]}` },
+	{ value: "magi_fallback_model=", label: `magi_fallback_model=<model> — ${MODEL_DESCRIPTIONS["magi.fallback"]}` },
 	{ value: "dangerous_opt_in=true", label: "dangerous_opt_in=true — required with risk=disabled" },
 	{ value: 'evidence="..."', label: 'evidence="..." — audit note; required with risk=disabled' },
 ];
@@ -1072,11 +1021,10 @@ function buildModelSubmenu(available: string[], currentSpec: string | undefined)
 
 function modelLabel(id: NervousModelKey): string {
 	switch (id) {
-		case "lion.default": return "LION fallback model";
-		case "lion.implementationDefault": return "LION implementation model";
-		case "lion.reviewDefault": return "LION review model";
-		case "magi.councillorDefault": return "MAGI councillor model";
-		case "magi.synthesisDefault": return "MAGI synthesis model";
+		case "lion.default": return "LION default model";
+		case "lion.fallback": return "LION fallback model";
+		case "magi.default": return "MAGI default model";
+		case "magi.fallback": return "MAGI fallback model";
 	}
 }
 
@@ -1343,7 +1291,7 @@ export function summarizeConfig(config: CortexConfig, changed: boolean, modelCon
 		`Integer from ${MIN_CEREBEL_MAX_PARALLEL} through ${MAX_CEREBEL_MAX_PARALLEL}. Default: 3. Used when a new CEREBEL wave omits max_parallel; explicit plan_wave and run_wave values still override it.`,
 		"",
 		"### Model defaults",
-		"Aliases: `lion_model`, `lion_implementation_model`, `lion_review_model`, `magi_model`, `magi_synthesis_model` (also exact keys like `model.lion.review`).",
+		"Aliases: `lion_model`, `lion_fallback_model`, `magi_model`, `magi_fallback_model` (also exact keys like `model.lion.fallback`).",
 		"A `<model>` is any pi model spec (`provider/model` or `provider/model:thinking`). Unset means NERVous passes no `--model`, preserving the current pi default behavior.",
 		...formatOptionTable(MODEL_SETTING_IDS, MODEL_DESCRIPTIONS),
 		"",

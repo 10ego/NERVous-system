@@ -1,18 +1,11 @@
-import { loadNervousConfig, resolveNervousModel, type NervousModelKey } from "@nervous-system/state";
+import { loadNervousConfig, resolveNervousModel } from "@nervous-system/state";
 import { LION_RUNNER_MODES, type LionModelRole, type LionRunnerMode } from "./schema.ts";
 
-function modelKeyForRole(role: LionModelRole): NervousModelKey {
-	if (role === "review") return "lion.reviewDefault";
-	if (role === "implementation") return "lion.implementationDefault";
-	return "lion.default";
-}
-
-export function resolveConfiguredLionModel(cwd: string, isProjectTrusted: () => boolean, role: LionModelRole): string | undefined {
+/** All LION roles share one configured default; fallback is used only when it is unset. */
+export function resolveConfiguredLionModel(cwd: string, isProjectTrusted: () => boolean, _role: LionModelRole): string | undefined {
 	const config = loadNervousConfig({ cwd, isProjectTrusted });
-	const roleModel = resolveNervousModel(config, modelKeyForRole(role)).model;
-	if (roleModel) return roleModel;
-	if (role !== "default") return resolveNervousModel(config, "lion.default").model;
-	return undefined;
+	return resolveNervousModel(config, "lion.default").model
+		?? resolveNervousModel(config, "lion.fallback").model;
 }
 
 function isRunnerMode(value: unknown): value is LionRunnerMode {

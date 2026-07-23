@@ -18,21 +18,16 @@ const NERVOUS_CONFIG_FILENAME = "nervous.json";
 
 export const NERVOUS_MODEL_KEYS = [
 	"lion.default",
-	"lion.implementationDefault",
-	"lion.reviewDefault",
-	"magi.councillorDefault",
-	"magi.synthesisDefault",
+	"lion.fallback",
+	"magi.default",
+	"magi.fallback",
 ] as const;
 export type NervousModelKey = (typeof NERVOUS_MODEL_KEYS)[number];
 export type NervousModelValue = string | null;
 
 export interface NervousModelConfig {
-	lion?: {
-		default?: NervousModelValue;
-		implementationDefault?: NervousModelValue;
-		reviewDefault?: NervousModelValue;
-	};
-	magi?: { councillorDefault?: NervousModelValue; synthesisDefault?: NervousModelValue };
+	lion?: { default?: NervousModelValue; fallback?: NervousModelValue };
+	magi?: { default?: NervousModelValue; fallback?: NervousModelValue };
 }
 
 export interface NervousConfig {
@@ -100,7 +95,7 @@ export function resolveProjectConfigRoot(cwd: string): string {
 }
 
 export function emptyNervousConfig(): NervousConfig {
-	return { version: 1, models: { lion: {}, magi: {} } };
+	return { version: 2, models: { lion: {}, magi: {} } };
 }
 
 export function readNervousConfigFile(filePath: string): NervousConfig {
@@ -145,11 +140,34 @@ export function normalizeNervousConfig(raw: unknown): NervousConfig {
 	const out = emptyNervousConfig();
 	if (!isPlainObject(raw)) return out;
 	if (typeof raw.version === "number" && Number.isFinite(raw.version)) out.version = Math.floor(raw.version);
+	const versionOne = out.version < 2;
 	const models = isPlainObject(raw.models) ? raw.models : {};
+	// An older active session may retain version 2 while writing only legacy fields.
+	const legacyLion = versionOne || hasRawModelKey(models, "lion", "implementationDefault") || hasRawModelKey(models, "lion", "reviewDefault");
+	const legacyMagi = versionOne || hasRawModelKey(models, "magi", "councillorDefault") || hasRawModelKey(models, "magi", "synthesisDefault");
 	for (const key of NERVOUS_MODEL_KEYS) {
+		// In the legacy LION schema, `default` meant fallback rather than default.
+		if (legacyLion && key === "lion.default") continue;
 		const value = readModelValue(models, key);
 		if (value !== undefined) setModelValue(out.models, key, value);
 	}
+	if (legacyLion && !hasModelKey(out.models, "lion.default")) {
+		const value = firstLegacyModelValue(models, "lion", ["implementationDefault", "reviewDefault"]);
+		if (value !== undefined) setModelValue(out.models, "lion.default", value);
+	}
+	if (legacyLion && !hasModelKey(out.models, "lion.fallback")) {
+		const value = legacyModelValue(models, "lion", "default");
+		if (value !== undefined) setModelValue(out.models, "lion.fallback", value);
+	}
+	if (legacyMagi && !hasModelKey(out.models, "magi.default")) {
+		const value = legacyModelValue(models, "magi", "councillorDefault");
+		if (value !== undefined) setModelValue(out.models, "magi.default", value);
+	}
+	if (legacyMagi && !hasModelKey(out.models, "magi.fallback")) {
+		const value = legacyModelValue(models, "magi", "synthesisDefault");
+		if (value !== undefined) setModelValue(out.models, "magi.fallback", value);
+	}
+	if (versionOne) out.version = 2;
 	return out;
 }
 
@@ -245,78 +263,38 @@ function modelValue(raw: unknown): NervousModelValue | undefined {
 }
 
 function readModelValue(models: NervousModelConfig | Record<string, unknown>, key: NervousModelKey): NervousModelValue | undefined {
-	switch (key) {
-		case "lion.default":
-			return modelValue(isPlainObject(models.lion) ? models.lion.default : undefined);
-		case "lion.implementationDefault":
-			return modelValue(isPlainObject(models.lion) ? models.lion.implementationDefault : undefined);
-		case "lion.reviewDefault":
-			return modelValue(isPlainObject(models.lion) ? models.lion.reviewDefault : undefined);
-		case "magi.councillorDefault":
-			return modelValue(isPlainObject(models.magi) ? models.magi.councillorDefault : undefined);
-		case "magi.synthesisDefault":
-			return modelValue(isPlainObject(models.magi) ? models.magi.synthesisDefault : undefined);
-	}
+	const [component, setting] = key.split(".") as ["lion" | "magi", "default" | "fallback"];
+	return modelValue(isPlainObject(models[component]) ? models[component][setting] : undefined);
+}
+
+function hasRawModelKey(models: Record<string, unknown>, component: "lion" | "magi", setting: string): boolean {
+	return isPlainObject(models[component]) && Object.prototype.hasOwnProperty.call(models[component], setting);
+}
+
+function legacyModelValue(models: Record<string, unknown>, component: "lion" | "magi", setting: string): NervousModelValue | undefined {
+	return modelValue(isPlainObject(models[component]) ? models[component][setting] : undefined);
+}
+
+/** Returns the first present legacy key, including an explicit null unset. */
+function firstLegacyModelValue(models: Record<string, unknown>, component: "lion" | "magi", settings: string[]): NervousModelValue | undefined {
+	for (const setting of settings) if (hasRawModelKey(models, component, setting)) return legacyModelValue(models, component, setting);
+	return undefined;
 }
 
 function hasModelKey(models: NervousModelConfig, key: NervousModelKey): boolean {
-	switch (key) {
-		case "lion.default":
-			return Object.prototype.hasOwnProperty.call(models.lion ?? {}, "default");
-		case "lion.implementationDefault":
-			return Object.prototype.hasOwnProperty.call(models.lion ?? {}, "implementationDefault");
-		case "lion.reviewDefault":
-			return Object.prototype.hasOwnProperty.call(models.lion ?? {}, "reviewDefault");
-		case "magi.councillorDefault":
-			return Object.prototype.hasOwnProperty.call(models.magi ?? {}, "councillorDefault");
-		case "magi.synthesisDefault":
-			return Object.prototype.hasOwnProperty.call(models.magi ?? {}, "synthesisDefault");
-	}
+	const [component, setting] = key.split(".") as ["lion" | "magi", "default" | "fallback"];
+	return Object.prototype.hasOwnProperty.call(models[component] ?? {}, setting);
 }
 
 function setModelValue(models: NervousModelConfig, key: NervousModelKey, value: NervousModelValue): void {
-	switch (key) {
-		case "lion.default":
-			models.lion ??= {};
-			models.lion.default = value;
-			return;
-		case "lion.implementationDefault":
-			models.lion ??= {};
-			models.lion.implementationDefault = value;
-			return;
-		case "lion.reviewDefault":
-			models.lion ??= {};
-			models.lion.reviewDefault = value;
-			return;
-		case "magi.councillorDefault":
-			models.magi ??= {};
-			models.magi.councillorDefault = value;
-			return;
-		case "magi.synthesisDefault":
-			models.magi ??= {};
-			models.magi.synthesisDefault = value;
-			return;
-	}
+	const [component, setting] = key.split(".") as ["lion" | "magi", "default" | "fallback"];
+	models[component] ??= {};
+	models[component][setting] = value;
 }
 
 function clearModelValue(models: NervousModelConfig, key: NervousModelKey): void {
-	switch (key) {
-		case "lion.default":
-			if (models.lion) delete models.lion.default;
-			return;
-		case "lion.implementationDefault":
-			if (models.lion) delete models.lion.implementationDefault;
-			return;
-		case "lion.reviewDefault":
-			if (models.lion) delete models.lion.reviewDefault;
-			return;
-		case "magi.councillorDefault":
-			if (models.magi) delete models.magi.councillorDefault;
-			return;
-		case "magi.synthesisDefault":
-			if (models.magi) delete models.magi.synthesisDefault;
-			return;
-	}
+	const [component, setting] = key.split(".") as ["lion" | "magi", "default" | "fallback"];
+	if (models[component]) delete models[component][setting];
 }
 
 function projectExplicitlyUnsets(resolution: NervousConfigResolution, key: NervousModelKey): boolean {

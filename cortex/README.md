@@ -144,8 +144,8 @@ Drain mode is togglable with persistent CORTEX config. `/nervous:config` also ma
 /nervous:config drain=always risk=strict policy=conservative
 /nervous:config max_parallel=6
 /nervous:config risk=disabled dangerous_opt_in=true evidence="explicit user-approved automation window"
-/nervous:config lion_implementation_model=provider/fast lion_review_model=provider/strong magi_model=provider/balanced magi_synthesis_model=provider/strong:high
-/nervous:config lion_review_model=unset
+/nervous:config lion_model=provider/fast lion_fallback_model=provider/backup magi_model=provider/balanced magi_fallback_model=provider/backup
+/nervous:config lion_model=unset
 
 cortex get_config
 cortex set_config drain_mode="on_explicit_nervous" default_drain_policy="default" risk_gate_mode="auto_deliberate"
@@ -178,8 +178,8 @@ Risk gate modes:
 Model defaults:
 
 - Model defaults are stored in `~/.pi/agent/nervous.json`, with trusted project overlay from `<repo>/.pi/nervous.json`. Root-package suite `enabled` is user-scoped and defaults to `true` when omitted.
-- Keys: `models.lion.default`, `models.lion.implementationDefault`, `models.lion.reviewDefault`, `models.magi.councillorDefault`, `models.magi.synthesisDefault`.
-- Runtime precedence preserves explicit choices: `lion run model=...` beats configured LION defaults; then `model_role="implementation"` uses `lion.implementationDefault`, `model_role="review"` uses `lion.reviewDefault`, and either falls back to `lion.default`. MAGI council `model` / `synthesis_model` beats configured MAGI defaults. If only `magi.councillorDefault` is set, synthesis follows MAGI's existing synthesizer-model fallback.
+- Keys, shown in default-then-fallback order: `models.lion.default`, `models.lion.fallback`, `models.magi.default`, `models.magi.fallback`.
+- Runtime precedence preserves explicit choices: `lion run model=...` beats configured LION models; otherwise every LION role uses `lion.default`, then `lion.fallback`. MAGI council `model` / `synthesis_model` beats configured MAGI models; otherwise MAGI uses `magi.default`, then `magi.fallback` for councillors and synthesis.
 - Unset keys preserve the previous behavior: NERVous passes no `--model`, so the subprocess uses pi's current/default model.
 
 Safety/recovery semantics:
