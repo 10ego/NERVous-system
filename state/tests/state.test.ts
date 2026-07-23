@@ -8,6 +8,7 @@ import {
 	applyNervousModelPatch,
 	getNervousModel,
 	loadNervousConfig,
+	normalizeNervousConfig,
 	readUserNervousConfig,
 	resolveNervousModel,
 	resolveNervousStateFile,
@@ -108,6 +109,25 @@ describe("NERVous model config", () => {
 		assert.equal(getNervousModel(resolution.effective, "lion.fallback"), "provider/legacy-fallback");
 		assert.equal(getNervousModel(resolution.effective, "magi.default"), "provider/legacy-magi-default");
 		assert.equal(getNervousModel(resolution.effective, "magi.fallback"), "provider/legacy-magi-fallback");
+	});
+
+	it("preserves a legacy explicit null from a trusted project overlay", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-config-test-"));
+		const agentDir = path.join(dir, "agent");
+		writeUserNervousConfig(applyNervousModelPatch(readUserNervousConfig(agentDir), { "lion.default": "provider/user-default" }), agentDir);
+		fs.mkdirSync(path.join(dir, ".pi"), { recursive: true });
+		fs.writeFileSync(path.join(dir, ".pi", "nervous.json"), JSON.stringify({ version: 1, models: { lion: { implementationDefault: null } } }));
+		const resolution = loadNervousConfig({ cwd: dir, agentDir, isProjectTrusted: true });
+		assert.equal(resolveNervousModel(resolution, "lion.default").source, "default");
+	});
+
+	it("migrates legacy fields retained under version 2", () => {
+		const config = normalizeNervousConfig({
+			version: 2,
+			models: { lion: { default: "provider/legacy-fallback", implementationDefault: "provider/legacy-default" } },
+		});
+		assert.equal(getNervousModel(config, "lion.default"), "provider/legacy-default");
+		assert.equal(getNervousModel(config, "lion.fallback"), "provider/legacy-fallback");
 	});
 
 	it("lets a trusted project null explicitly restore pi default over a user model", () => {

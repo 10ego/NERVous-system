@@ -140,33 +140,34 @@ export function normalizeNervousConfig(raw: unknown): NervousConfig {
 	const out = emptyNervousConfig();
 	if (!isPlainObject(raw)) return out;
 	if (typeof raw.version === "number" && Number.isFinite(raw.version)) out.version = Math.floor(raw.version);
-	const legacy = out.version < 2;
+	const versionOne = out.version < 2;
 	const models = isPlainObject(raw.models) ? raw.models : {};
+	// An older active session may retain version 2 while writing only legacy fields.
+	const legacyLion = versionOne || hasRawModelKey(models, "lion", "implementationDefault") || hasRawModelKey(models, "lion", "reviewDefault");
+	const legacyMagi = versionOne || hasRawModelKey(models, "magi", "councillorDefault") || hasRawModelKey(models, "magi", "synthesisDefault");
 	for (const key of NERVOUS_MODEL_KEYS) {
-		// Version 1 named the LION fallback `default`; it is not the new default key.
-		if (legacy && key === "lion.default") continue;
+		// In the legacy LION schema, `default` meant fallback rather than default.
+		if (legacyLion && key === "lion.default") continue;
 		const value = readModelValue(models, key);
 		if (value !== undefined) setModelValue(out.models, key, value);
 	}
-	// Version 1 used role-specific keys and named its LION fallback `default`.
-	// Version 2 is the consolidated default/fallback schema.
-	if (legacy && !hasModelKey(out.models, "lion.default")) {
-		const value = legacyModelValue(models, "lion", "implementationDefault") ?? legacyModelValue(models, "lion", "reviewDefault");
+	if (legacyLion && !hasModelKey(out.models, "lion.default")) {
+		const value = firstLegacyModelValue(models, "lion", ["implementationDefault", "reviewDefault"]);
 		if (value !== undefined) setModelValue(out.models, "lion.default", value);
 	}
-	if (legacy && !hasModelKey(out.models, "lion.fallback")) {
+	if (legacyLion && !hasModelKey(out.models, "lion.fallback")) {
 		const value = legacyModelValue(models, "lion", "default");
 		if (value !== undefined) setModelValue(out.models, "lion.fallback", value);
 	}
-	if (legacy && !hasModelKey(out.models, "magi.default")) {
+	if (legacyMagi && !hasModelKey(out.models, "magi.default")) {
 		const value = legacyModelValue(models, "magi", "councillorDefault");
 		if (value !== undefined) setModelValue(out.models, "magi.default", value);
 	}
-	if (legacy && !hasModelKey(out.models, "magi.fallback")) {
+	if (legacyMagi && !hasModelKey(out.models, "magi.fallback")) {
 		const value = legacyModelValue(models, "magi", "synthesisDefault");
 		if (value !== undefined) setModelValue(out.models, "magi.fallback", value);
 	}
-	if (legacy) out.version = 2;
+	if (versionOne) out.version = 2;
 	return out;
 }
 
@@ -266,8 +267,18 @@ function readModelValue(models: NervousModelConfig | Record<string, unknown>, ke
 	return modelValue(isPlainObject(models[component]) ? models[component][setting] : undefined);
 }
 
+function hasRawModelKey(models: Record<string, unknown>, component: "lion" | "magi", setting: string): boolean {
+	return isPlainObject(models[component]) && Object.prototype.hasOwnProperty.call(models[component], setting);
+}
+
 function legacyModelValue(models: Record<string, unknown>, component: "lion" | "magi", setting: string): NervousModelValue | undefined {
 	return modelValue(isPlainObject(models[component]) ? models[component][setting] : undefined);
+}
+
+/** Returns the first present legacy key, including an explicit null unset. */
+function firstLegacyModelValue(models: Record<string, unknown>, component: "lion" | "magi", settings: string[]): NervousModelValue | undefined {
+	for (const setting of settings) if (hasRawModelKey(models, component, setting)) return legacyModelValue(models, component, setting);
+	return undefined;
 }
 
 function hasModelKey(models: NervousModelConfig, key: NervousModelKey): boolean {
