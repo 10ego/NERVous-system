@@ -28,7 +28,7 @@ NERVous runtime state is global but isolated by project and work context. By def
 ```
 
 - **Project namespace** prevents cross-repository contamination. It is derived from the git root path; set `NERVOUS_PROJECT=<name>` to override it.
-- **Context namespace** isolates workstreams only when their context names differ. It defaults to the current Git branch, or `default` outside Git, so unrelated work on the same branch shares history; set `NERVOUS_CONTEXT=<work-id>` to intentionally start or resume a distinct workstream.
+- **Context namespace** isolates workstreams only when their context names differ. At session startup it defaults to the current Git branch, or `default` outside Git, and remains pinned for that Pi process and its workers even if the worktree later switches branches. A new Pi session adopts the branch active when it starts. Set `NERVOUS_CONTEXT=<work-id>` to intentionally start or resume a distinct workstream.
 - Set `NERVOUS_STATE_ROOT=/path/to/root` to move all NERVous state elsewhere.
 - Existing explicit component paths still win, including `AXON_LEDGER_PATH`, `CORTEX_PATH`, `SYNAPSE_PATH`, `LION_RUNS_PATH`, `CEREBEL_PATH`, `GANGLION_PATH`, `AMYGDALA_PATH`, and `MAGI_HISTORY_PATH`. LION resolves a direct-file symlink override to one canonical operational target so canonical data, the namespace lock, active ownership, and adjacent `runs.json.progress/` sidecars cannot split namespaces. Cleanup supervision is process-local only; after restart, persisted PID/PGID data is observational and never authorizes reattachment or signaling.
 
@@ -36,7 +36,7 @@ NERVous runtime state is global but isolated by project and work context. By def
 
 The context is the cleanup boundary. CORTEX, MAGI, AXON, LION, CEREBEL, GANGLION, and AMYGDALA records are durable: they have no age-based expiry and remain until that whole context is explicitly reset. This is required for cross-component references and interruption recovery. SYNAPSE alone is transient; by default it keeps notes for 24 hours with a 1,000-note cap, applied on the next SYNAPSE mutation or explicit prune. Tool and dashboard list limits, where present, limit output only—they never delete stored records.
 
-Because the default context is the Git branch, unrelated tasks repeatedly run on `main` intentionally share one durable namespace. Use a named `NERVOUS_CONTEXT` when workstreams must remain independently resumable, or inspect and reset the current context from Pi:
+Because the implicit context starts from the Git branch, unrelated tasks repeatedly launched on `main` intentionally share one durable namespace. Branch creation or checkout during a live Pi session does not relocate its ledgers; restart Pi on the new branch to adopt that branch context. Use a named `NERVOUS_CONTEXT` when workstreams must remain independently resumable, or inspect and reset the current context from Pi:
 
 ```text
 /nervous:state                 # namespace, paths, counts, open records, retention, and other contexts
