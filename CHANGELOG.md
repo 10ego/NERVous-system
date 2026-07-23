@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.0](https://github.com/10ego/NERVous-system/compare/v1.8.1...v1.9.0) (2026-07-23)
+
+
+### Features
+
+* **config:** simplify LION and MAGI model defaults ([#64](https://github.com/10ego/NERVous-system/issues/64)) ([ff256f6](https://github.com/10ego/NERVous-system/commit/ff256f6866cc1bd5e9c2ee474b7b918343be1158))
+
 ## [1.8.1](https://github.com/10ego/NERVous-system/compare/v1.8.0...v1.8.1) (2026-07-17)
 
 
