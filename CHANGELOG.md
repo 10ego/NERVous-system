@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.9.1](https://github.com/10ego/NERVous-system/compare/v1.9.0...v1.9.1) (2026-07-29)
+
+
+### Bug Fixes
+
+* **state:** keep live sessions on one context ([#66](https://github.com/10ego/NERVous-system/issues/66)) ([2664ccf](https://github.com/10ego/NERVous-system/commit/2664ccfb09a9ff2b2419a1e07e7a1e45614b7acc))
+
 ## [1.9.0](https://github.com/10ego/NERVous-system/compare/v1.8.1...v1.9.0) (2026-07-23)
 
 
