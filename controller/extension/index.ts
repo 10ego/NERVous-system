@@ -8,11 +8,19 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { initializeNervousSessionContext } from "@nervous-system/state";
+import { resolveContextSlug } from "@nervous-system/state";
 import { markNervousRootControlPlane, registerNervousConfigCommand } from "../../cortex/extension/index.ts";
 import { installNervousActivationGate } from "./activation-gate.ts";
 import { setRootPackageEnabled } from "./package-toggle.ts";
 import { installNervousStateControl } from "./state-control.ts";
+
+function pinNervousSessionContext(cwd: string): void {
+	if (process.env.NERVOUS_CONTEXT?.trim()) return;
+	// The root package intentionally depends on the separately published state
+	// package. Use its long-standing resolver API, then make the result explicit
+	// and inherited instead of requiring a newer runtime export.
+	process.env.NERVOUS_CONTEXT = resolveContextSlug(cwd);
+}
 
 export default function nervousControlPlane(pi: ExtensionAPI): void {
 	const releaseRootControlPlane = markNervousRootControlPlane(pi);
@@ -20,7 +28,7 @@ export default function nervousControlPlane(pi: ExtensionAPI): void {
 	installNervousStateControl(pi);
 	// Pin before any session tool can launch a worker. Standalone worker-spawning
 	// packages also initialize defensively at their own subprocess boundary.
-	pi.on("session_start", (_event, ctx) => { initializeNervousSessionContext(ctx.cwd); });
+	pi.on("session_start", (_event, ctx) => { pinNervousSessionContext(ctx.cwd); });
 	// Pi keeps its event bus across resource reloads, so release this generation's
 	// ownership before the next extension set is loaded.
 	pi.on("session_shutdown", releaseRootControlPlane);

@@ -6,6 +6,7 @@ import { describe, test } from "node:test";
 import {
 	assertPackageContents,
 	assertPackageMetadata,
+	assertStateRuntimeImports,
 	EXPECTED_PACKAGE_FILES,
 	verifyPackageContents,
 } from "../../scripts/verify-package-contents.mjs";
@@ -47,6 +48,20 @@ describe("npm release package policy", () => {
 			const files = current.package.files.filter((file) => file.path !== required);
 			assert.throws(() => assertPackageContents(files), /missing required path/);
 		}
+	});
+
+	test("rejects workspace-only state exports that the published dependency cannot provide", () => {
+		assert.doesNotThrow(() => assertStateRuntimeImports(packageJson, [{
+			filePath: "controller/extension/index.ts",
+			source: 'import { resolveContextSlug } from "@nervous-system/state";',
+		}, {
+			filePath: "controller/extension/types.ts",
+			source: 'import type { NervousConfig } from "@nervous-system/state";',
+		}]));
+		assert.throws(() => assertStateRuntimeImports(packageJson, [{
+			filePath: "controller/extension/index.ts",
+			source: 'import { initializeNervousSessionContext } from "@nervous-system/state";',
+		}]), /unavailable from @nervous-system\/state@1\.0\.0/);
 	});
 
 	test("rejects unsafe package metadata and lifecycle scripts", () => {

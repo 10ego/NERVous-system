@@ -16,7 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
-import { initializeNervousSessionContext } from "@nervous-system/state";
+import { resolveContextSlug } from "@nervous-system/state";
 import type { GenerateFn, GenerateRequest } from "./council.ts";
 
 export interface SubprocessRunnerOptions {
@@ -80,6 +80,7 @@ interface RunOptions {
 	systemPrompt: string;
 	userPrompt: string;
 	cwd: string;
+	env: NodeJS.ProcessEnv;
 	model?: string;
 	tools?: string[];
 	signal?: AbortSignal;
@@ -126,6 +127,7 @@ function collectMessages(args: string[], opts: RunOptions, forceBinary?: boolean
 		const invocation = getPiInvocation([...args, ...(opts.extraArgs ?? [])], { forceBinary });
 		const proc = spawn(invocation.command, invocation.args, {
 			cwd: opts.cwd,
+			env: opts.env,
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
 		});
@@ -187,15 +189,25 @@ function collectMessages(args: string[], opts: RunOptions, forceBinary?: boolean
  * Create a {@link GenerateFn} backed by headless `pi` subprocesses.
  * Each call gets its own isolated context window.
  */
+export function createSubprocessEnvironment(cwd: string): NodeJS.ProcessEnv {
+	const explicitContext = process.env.NERVOUS_CONTEXT;
+	const context = explicitContext?.trim() ? explicitContext : resolveContextSlug(cwd);
+	return { ...process.env, NERVOUS_CONTEXT: context };
+}
+
 export function createSubprocessRunner(runnerOpts: SubprocessRunnerOptions): GenerateFn {
-	// Standalone MAGI may not load the root control plane. Establish the inherited
-	// namespace synchronously before the first councillor subprocess can spawn.
-	initializeNervousSessionContext(runnerOpts.cwd);
+	// Standalone MAGI may not load the root control plane. Capture a runner-local
+	// inherited namespace before the first councillor subprocess can spawn without
+	// contaminating a long-lived host that creates runners for other repositories.
+	// Keep this compatible with the exact external state dependency used by the
+	// published root package rather than requiring a workspace-only new export.
+	const env = createSubprocessEnvironment(runnerOpts.cwd);
 	return async (req: GenerateRequest, signal?: AbortSignal): Promise<string> => {
 		return runPiOnce({
 			systemPrompt: req.systemPrompt,
 			userPrompt: req.userPrompt,
 			cwd: runnerOpts.cwd,
+			env,
 			model: req.model,
 			tools: req.tools,
 			signal,
