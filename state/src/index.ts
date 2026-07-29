@@ -15,6 +15,8 @@ export interface NervousStateInfo {
 const PI_CONFIG_DIR_NAME = ".pi";
 const PI_AGENT_DIR_ENV = "PI_CODING_AGENT_DIR";
 const NERVOUS_CONFIG_FILENAME = "nervous.json";
+/** Internal inherited map that keeps one Pi session on its original implicit context. */
+const NERVOUS_SESSION_CONTEXTS_ENV = "NERVOUS_SESSION_CONTEXTS";
 
 export const NERVOUS_MODEL_KEYS = [
 	"lion.default",
@@ -218,14 +220,33 @@ export function resolveProjectSlug(cwd: string): string {
 	return `${slug(name, "project")}-${hash(root)}`;
 }
 
+/** Establish and return the context inherited by this Pi session's workers. */
+export function initializeNervousSessionContext(cwd: string): string {
+	return resolveContextSlug(cwd);
+}
+
 export function resolveContextSlug(cwd: string): string {
 	const configured = process.env.NERVOUS_CONTEXT;
 	if (configured?.trim()) return slug(configured, "default");
+
+	const projectRoot = git(cwd, ["rev-parse", "--show-toplevel"]) ?? canonicalPath(cwd);
+	const sessionContexts = readSessionContexts();
+	const pinned = sessionContexts[projectRoot];
+	if (pinned) return pinned;
+
 	const branch = git(cwd, ["branch", "--show-current"]);
-	if (branch?.trim()) return slug(branch, "default");
-	const sha = git(cwd, ["rev-parse", "--short", "HEAD"]);
-	if (sha?.trim()) return `detached-${slug(sha, "head")}`;
-	return "default";
+	const sha = branch?.trim() ? undefined : git(cwd, ["rev-parse", "--short", "HEAD"]);
+	const context = branch?.trim()
+		? slug(branch, "default")
+		: sha?.trim()
+			? `detached-${slug(sha, "head")}`
+			: "default";
+	// State stores resolve paths independently, and workers are separate Pi
+	// processes. Persist the first implicit choice in the environment so a Git
+	// branch switch cannot relocate a live session and child processes inherit
+	// the same namespace. Explicit NERVOUS_CONTEXT remains dynamic and wins.
+	process.env[NERVOUS_SESSION_CONTEXTS_ENV] = JSON.stringify({ ...sessionContexts, [projectRoot]: context });
+	return context;
 }
 
 export function slug(input: string, fallback: string): string {
@@ -241,6 +262,18 @@ export function slug(input: string, fallback: string): string {
 function canonicalPath(cwd: string): string {
 	const resolved = path.resolve(cwd);
 	return existsSync(resolved) ? realpathSync(resolved) : resolved;
+}
+
+function readSessionContexts(): Record<string, string> {
+	try {
+		const parsed = JSON.parse(process.env[NERVOUS_SESSION_CONTEXTS_ENV] ?? "{}") as unknown;
+		if (!isPlainObject(parsed)) return {};
+		return Object.fromEntries(Object.entries(parsed).flatMap(([projectRoot, context]) =>
+			typeof context === "string" && context.trim() ? [[projectRoot, slug(context, "default")]] : [],
+		));
+	} catch {
+		return {};
+	}
 }
 
 function trusted(check: boolean | (() => boolean) | undefined): boolean {

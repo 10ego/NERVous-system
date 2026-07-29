@@ -55,6 +55,42 @@ describe("NERVous state resolver", () => {
 			assert.equal(resolveContextSlug("/tmp/proj"), "branch-one");
 		});
 	});
+
+	it("pins an implicit context when the live session switches Git branches", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-context-test-"));
+		try {
+			execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "ignore" });
+			execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir });
+			execFileSync("git", ["config", "user.name", "Test"], { cwd: dir });
+			fs.writeFileSync(path.join(dir, "tracked"), "initial");
+			execFileSync("git", ["add", "tracked"], { cwd: dir });
+			execFileSync("git", ["commit", "-m", "initial"], { cwd: dir, stdio: "ignore" });
+
+			withEnv({ NERVOUS_CONTEXT: undefined, NERVOUS_SESSION_CONTEXTS: undefined }, () => {
+				const before = resolveNervousStateFile(dir, "cortex", "cortex.json");
+				assert.equal(resolveContextSlug(dir), "main");
+				execFileSync("git", ["switch", "-c", "fix/state-stability"], { cwd: dir, stdio: "ignore" });
+				const after = resolveNervousStateFile(dir, "cortex", "cortex.json");
+				assert.equal(resolveContextSlug(dir), "main");
+				assert.equal(after, before, "a branch switch must not make the active ledger disappear");
+			});
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps explicit contexts authoritative after an implicit context was pinned", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-context-override-test-"));
+		try {
+			withEnv({ NERVOUS_CONTEXT: undefined, NERVOUS_SESSION_CONTEXTS: undefined }, () => {
+				assert.equal(resolveContextSlug(dir), "default");
+				process.env.NERVOUS_CONTEXT = "Explicit Work";
+				assert.equal(resolveContextSlug(dir), "explicit-work");
+			});
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
 });
 
 describe("NERVous model config", () => {
