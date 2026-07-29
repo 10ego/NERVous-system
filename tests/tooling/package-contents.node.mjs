@@ -54,6 +54,9 @@ describe("npm release package policy", () => {
 		assert.doesNotThrow(() => assertStateRuntimeImports(packageJson, [{
 			filePath: "controller/extension/index.ts",
 			source: 'import { resolveContextSlug } from "@nervous-system/state";',
+		}, {
+			filePath: "controller/extension/types.ts",
+			source: 'import type { NervousConfig } from "@nervous-system/state";',
 		}]));
 		assert.throws(() => assertStateRuntimeImports(packageJson, [{
 			filePath: "controller/extension/index.ts",

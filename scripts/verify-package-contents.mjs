@@ -186,7 +186,7 @@ export function assertStateRuntimeImports(packageJson, sources) {
 	for (const { filePath, source } of sources) {
 		const imports = source.matchAll(/^\s*import\s+([^;]+?)\s+from\s+["']@nervous-system\/state["'];?/gm);
 		for (const match of imports) {
-			const clause = match[1]?.trim() ?? "";
+			const clause = (match[1]?.trim() ?? "").replace(/^type\s+/, "");
 			invariant(clause.startsWith("{") && clause.endsWith("}"), `unsupported state import form in ${filePath}`);
 			for (const entry of clause.slice(1, -1).split(",")) {
 				const imported = entry.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]?.trim();
