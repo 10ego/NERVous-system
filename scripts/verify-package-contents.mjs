@@ -124,6 +124,16 @@ const FORBIDDEN_LIFECYCLE_SCRIPTS = Object.freeze([
 
 const ALLOWED_EXTENSIONS = new Set([".json", ".md", ".ts"]);
 
+/** Public contract of the exact external dependency declared in package.json. */
+const STATE_RUNTIME_EXPORTS_BY_VERSION = Object.freeze({
+	"1.0.0": new Set([
+		"NERVOUS_MODEL_KEYS", "NervousConfig", "NervousConfigResolution", "NervousModelConfig", "NervousModelKey", "NervousModelValue", "NervousStateInfo",
+		"applyNervousModelPatch", "emptyNervousConfig", "getNervousModel", "getPiAgentDir", "loadNervousConfig", "mergeNervousConfigs", "normalizeNervousConfig",
+		"projectNervousConfigPath", "readNervousConfigFile", "readUserNervousConfig", "resolveContextSlug", "resolveNervousModel", "resolveNervousStateFile",
+		"resolveNervousStateInfo", "resolveProjectConfigRoot", "resolveProjectSlug", "resolveRoot", "slug", "userNervousConfigPath", "writeUserNervousConfig",
+	]),
+});
+
 function invariant(condition, message) {
 	if (!condition) throw new Error(`Package invariant failed: ${message}`);
 }
@@ -167,6 +177,23 @@ export function assertPackageContents(files) {
 		invariant(paths.includes(requiredPath), `package is missing required path: ${requiredPath}`);
 	}
 	return paths;
+}
+
+export function assertStateRuntimeImports(packageJson, sources) {
+	const stateVersion = packageJson.dependencies?.["@nervous-system/state"];
+	const allowed = STATE_RUNTIME_EXPORTS_BY_VERSION[stateVersion];
+	invariant(allowed, `state package ${JSON.stringify(stateVersion)} has no audited runtime export contract`);
+	for (const { filePath, source } of sources) {
+		const imports = source.matchAll(/^\s*import\s+([^;]+?)\s+from\s+["']@nervous-system\/state["'];?/gm);
+		for (const match of imports) {
+			const clause = match[1]?.trim() ?? "";
+			invariant(clause.startsWith("{") && clause.endsWith("}"), `unsupported state import form in ${filePath}`);
+			for (const entry of clause.slice(1, -1).split(",")) {
+				const imported = entry.trim().replace(/^type\s+/, "").split(/\s+as\s+/)[0]?.trim();
+				if (imported) invariant(allowed.has(imported), `${filePath} imports ${imported} which is unavailable from @nervous-system/state@${stateVersion}`);
+			}
+		}
+	}
 }
 
 export function assertPackageMetadata(packageData, packageJson, pathCount) {
@@ -223,6 +250,10 @@ export function verifyPackageContents(rootDir = process.cwd()) {
 	const packageJson = JSON.parse(fs.readFileSync(path.join(rootDir, "package.json"), "utf8"));
 	const paths = assertPackageContents(payload[0].files);
 	assertPackageMetadata(payload[0], packageJson, paths.length);
+	assertStateRuntimeImports(packageJson, paths.filter((filePath) => filePath.endsWith(".ts")).map((filePath) => ({
+		filePath,
+		source: fs.readFileSync(path.join(rootDir, filePath), "utf8"),
+	})));
 	return { package: payload[0], paths };
 }
 
