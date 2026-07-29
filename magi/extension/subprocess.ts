@@ -16,6 +16,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import type { Message } from "@earendil-works/pi-ai";
+import { initializeNervousSessionContext } from "@nervous-system/state";
 import type { GenerateFn, GenerateRequest } from "./council.ts";
 
 export interface SubprocessRunnerOptions {
@@ -187,6 +188,9 @@ function collectMessages(args: string[], opts: RunOptions, forceBinary?: boolean
  * Each call gets its own isolated context window.
  */
 export function createSubprocessRunner(runnerOpts: SubprocessRunnerOptions): GenerateFn {
+	// Standalone MAGI may not load the root control plane. Establish the inherited
+	// namespace synchronously before the first councillor subprocess can spawn.
+	initializeNervousSessionContext(runnerOpts.cwd);
 	return async (req: GenerateRequest, signal?: AbortSignal): Promise<string> => {
 		return runPiOnce({
 			systemPrompt: req.systemPrompt,

@@ -220,6 +220,11 @@ export function resolveProjectSlug(cwd: string): string {
 	return `${slug(name, "project")}-${hash(root)}`;
 }
 
+/** Establish and return the context inherited by this Pi session's workers. */
+export function initializeNervousSessionContext(cwd: string): string {
+	return resolveContextSlug(cwd);
+}
+
 export function resolveContextSlug(cwd: string): string {
 	const configured = process.env.NERVOUS_CONTEXT;
 	if (configured?.trim()) return slug(configured, "default");

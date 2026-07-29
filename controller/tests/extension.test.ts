@@ -1,9 +1,11 @@
 import * as assert from "node:assert";
+import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, it } from "vitest";
+import { resolveContextSlug } from "@nervous-system/state";
 import factory from "../extension/index.ts";
 import cortexExtension from "../../cortex/extension/index.ts";
 import { CONTROL_EXTENSION, ROOT_EXTENSIONS, ROOT_PROMPTS, ROOT_SKILLS, setRootPackageEnabled } from "../extension/package-toggle.ts";
@@ -219,9 +221,26 @@ describe("NERVous root-package enablement", () => {
 		);
 	});
 
-	it("registers session-start handlers for tool deactivation and recovery reset", () => {
-		const { pi, captured } = stubPi();
-		factory(pi);
-		assert.equal(captured.handlers.get("session_start")?.length ?? 0, 2);
+	it("pins the implicit context at session start before tools can launch workers", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "nervous-controller-context-test-"));
+		const oldContext = process.env.NERVOUS_CONTEXT;
+		const oldSessionContexts = process.env.NERVOUS_SESSION_CONTEXTS;
+		try {
+			delete process.env.NERVOUS_CONTEXT;
+			delete process.env.NERVOUS_SESSION_CONTEXTS;
+			fs.mkdirSync(dir, { recursive: true });
+			const { pi, captured } = stubPi();
+			factory(pi);
+			const handlers = captured.handlers.get("session_start") ?? [];
+			assert.equal(handlers.length, 3);
+			handlers.at(-1)?.({ type: "session_start" }, { cwd: dir });
+			// A repository/branch appearing afterward must not move this live session.
+			execFileSync("git", ["init", "-b", "main"], { cwd: dir, stdio: "ignore" });
+			assert.equal(resolveContextSlug(dir), "default");
+		} finally {
+			if (oldContext === undefined) delete process.env.NERVOUS_CONTEXT; else process.env.NERVOUS_CONTEXT = oldContext;
+			if (oldSessionContexts === undefined) delete process.env.NERVOUS_SESSION_CONTEXTS; else process.env.NERVOUS_SESSION_CONTEXTS = oldSessionContexts;
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

@@ -8,6 +8,7 @@
  */
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { initializeNervousSessionContext } from "@nervous-system/state";
 import { markNervousRootControlPlane, registerNervousConfigCommand } from "../../cortex/extension/index.ts";
 import { installNervousActivationGate } from "./activation-gate.ts";
 import { setRootPackageEnabled } from "./package-toggle.ts";
@@ -17,6 +18,9 @@ export default function nervousControlPlane(pi: ExtensionAPI): void {
 	const releaseRootControlPlane = markNervousRootControlPlane(pi);
 	installNervousActivationGate(pi);
 	installNervousStateControl(pi);
+	// Pin before any session tool can launch a worker. Standalone worker-spawning
+	// packages also initialize defensively at their own subprocess boundary.
+	pi.on("session_start", (_event, ctx) => { initializeNervousSessionContext(ctx.cwd); });
 	// Pi keeps its event bus across resource reloads, so release this generation's
 	// ownership before the next extension set is loaded.
 	pi.on("session_shutdown", releaseRootControlPlane);
